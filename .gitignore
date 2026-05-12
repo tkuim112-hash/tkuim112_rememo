@@ -45,3 +45,5 @@ models/
 **/UserSettings/
 **/obj/
 **/.DS_Store
+
+test/
