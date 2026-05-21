@@ -1,97 +1,95 @@
-# brain.py
-# brain.py
 import os
+from qdrant_client import QdrantClient, models
 from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-from base_knowledge import KNOWLEDGE_BASE
 
 class ElderlyAI:
     def __init__(self, model_name="llama3:8b-instruct-q4_K_M"):
-        self.model_name = model_name
-        # Temperature 設為 0.3，降低隨機性，防止模型亂跳語言
-        self.llm = ChatOllama(model=model_name, temperature=0.3)
-        self.embeddings = OllamaEmbeddings(model="bge-m3")
+        # 從環境變數讀取連線資訊
+        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        
+        self.llm = ChatOllama(model=model_name, temperature=0.3, base_url=ollama_host)
+        self.embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
         self.turn_count = 0
+        self.time_info = {1: "清晨", 2: "中午", 3: "下午", 4: "晚上"}
         
-        self.time_info = {
-            1: {"name": "清晨", "sense": "微涼的空氣、遠處傳來的雞鳴聲"},
-            2: {"name": "中午", "sense": "樹蔭下的蟬鳴、熱騰騰的飯菜香"},
-            3: {"name": "下午", "sense": "昏黃的夕陽、收工時的汗水與充實"},
-            4: {"name": "晚上", "sense": "靜謐的月光、家人的低聲細語"}
-        }
+        # 讀取禁忌詞用於生成端屏蔽
+        self.forbidden_list = ""
+        if os.path.exists("data/Forbidden_words.txt"):
+            with open("data/Forbidden_words.txt", "r", encoding="utf-8") as f:
+                self.forbidden_list = f.read().strip()
 
-        if os.path.exists("./qdrant_db"):
-            client = QdrantClient(path="./qdrant_db")
-            self.db = QdrantVectorStore(client=client, collection_name="elderly_memories", embedding=self.embeddings)
-        else:
-            self.db = None
-
-    def generate_response(self, elder_id, topic):
-        self.turn_count = 1
-        return self._execute_rag(elder_id, topic, "", "開始新的一天")
-
-    def continue_story(self, elder_id, last_output, user_input):
-        self.turn_count += 1
-        return self._execute_rag(elder_id, None, last_output, user_input)
-
-    def _execute_rag(self, elder_id, topic, last_output, user_input):
-        if not self.db: return "資料庫未就緒"
-
-        # 檢索個人記憶
-        query = user_input if user_input else (topic if topic else "當年回憶")
-        docs = self.db.similarity_search(
-            query, k=3,
-            filter=models.Filter(must=[models.FieldCondition(key="metadata.elder_id", match=models.MatchValue(value=elder_id))])
+        # 連線至 Qdrant 容器
+        self.client = QdrantClient(url=qdrant_url)
+        self.db = QdrantVectorStore(
+            client=self.client, 
+            collection_name="safe_reminiscence", 
+            embedding=self.embeddings
         )
-        personal_context = "\n".join([d.page_content for d in docs])
 
-        t_info = self.time_info.get(self.turn_count, self.time_info[4])
-        is_final = (self.turn_count >= 4)
+    def _generate_multi_queries(self, original_query):
+        """RAG-Fusion: 改寫搜尋問題"""
+        prompt = f"請將這句回憶改寫成 3 個不同角度的繁體中文搜尋關鍵字，每行一個：\n{original_query}"
+        try:
+            response = self.llm.invoke(prompt).content
+            queries = [q.strip() for q in response.split('\n') if q.strip()]
+            return queries[:3] if queries else [original_query]
+        except:
+            return [original_query]
 
-        # 1. 系統指令：嚴格鎖定語言
-        system_template = """你是一位專業的台灣懷舊治療師。
-        【絕對命令】：
-        - 你必須全程使用「繁體中文」回覆。
-        - 嚴禁輸出任何英文字母。
-        - 視角固定為「第三人稱」。
-        
-        【範例格式】：
-        ### 當年情境描述 ###
-        那是個清晨，阿明挑著擔子走在碎石路上...
-        ### 治療師的小問題 ###
-        您當時在那條路上，最喜歡聽什麼聲音呢？"""
+    def _rrf_score(self, results_list, k=60):
+        """RRF 排名融合演算法"""
+        fused_scores = {}
+        for docs in results_list:
+            for rank, doc in enumerate(docs):
+                content = doc.page_content
+                fused_scores[content] = fused_scores.get(content, 0) + 1 / (k + rank)
+        sorted_res = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        return [item[0] for item in sorted_res[:3]]
 
-        # 2. 人類指令：注入數據
-        human_template = """
-        現在時間是：{time_name}，感官為：{time_sense}。
-        【主角回憶】：{personal_context}
-        【使用者輸入】：{user_input}
-        {history_block}
+    def _execute_rag(self, elder_id, user_input):
+        # 1. RAG-Fusion 多路檢索
+        multi_queries = self._generate_multi_queries(user_input)
+        all_results = []
+        for q in multi_queries:
+            # 物理過濾：僅檢索 is_forbidden 為 False 的安全記憶
+            hits = self.db.similarity_search(
+                q, k=5,
+                filter=models.Filter(must=[
+                    models.FieldCondition(key="metadata.elder_id", match=models.MatchValue(value=elder_id)),
+                    models.FieldCondition(key="metadata.is_forbidden", match=models.MatchValue(value=False))
+                ])
+            )
+            all_results.append(hits)
 
-        請依照範例格式，用繁體中文描述主角的故事：
-        ### 當年情境描述 ###
-        """
+        # 2. RRF 融合
+        fused_context = self._rrf_score(all_results)
+        safe_context = "\n".join(fused_context)
 
-        history_block = f"\n【前情提要】：{last_output}" if last_output else ""
-        
+        # 3. LLM 生成與指令屏蔽
+        system_template = """你是一位專業台灣懷舊治療師。
+        指令：1. 全程繁體中文。2. 嚴禁提到：{forbidden_list}。3. 以第三人稱、正向口吻續寫故事並提問。"""
+        human_template = """當年時段：{time_name}\n提取記憶：{personal_context}\n長者說：{user_input}\n續寫故事："""
+
         prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_template),
             HumanMessagePromptTemplate.from_template(human_template)
         ])
 
         chain = prompt | self.llm
-        
-        # 這裡強制在結尾處引導生成
-        response = chain.invoke({
-            "time_name": t_info['name'], 
-            "time_sense": t_info['sense'],
-            "personal_context": personal_context, 
-            "user_input": user_input,
-            "history_block": history_block
+        return chain.invoke({
+            "forbidden_list": self.forbidden_list,
+            "time_name": self.time_info.get(self.turn_count, "深夜"),
+            "personal_context": safe_context,
+            "user_input": user_input
         }).content
 
-        # 如果回應中帶有格式標題以外的英文，我們在這裡進行簡單清洗（可選）
-        return response
+    def generate_response(self, elder_id, topic):
+        self.turn_count = 1
+        return self._execute_rag(elder_id, topic)
+
+    def continue_story(self, elder_id, user_input):
+        self.turn_count += 1
+        return self._execute_rag(elder_id, user_input)

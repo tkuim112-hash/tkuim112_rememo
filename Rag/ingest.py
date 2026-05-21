@@ -1,63 +1,66 @@
-# ingest.py
-# ingest.py
 import os
 import re
-import importlib.resources
-from symspellpy import SymSpell
+from ckip_transformers.nlp import CkipTagger
 from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
 from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 class AdvancedCleaner:
     def __init__(self):
-        self.sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-        try:
-            with importlib.resources.path("symspellpy", "frequency_dictionary_en_82_765.txt") as dict_path:
-                self.sym_spell.load_dictionary(str(dict_path), term_index=0, count_index=1)
-        except:
-            pass
-
-    def advanced_clean_text(self, text):
-        """深度清洗：移除贅詞、正規化標點與雜訊"""
-        redundant = ["那個", "然後", "喔", "啦", "欸", "呢", "的一聲"]
-        for word in redundant:
-            text = text.replace(word, "")
+        self.tagger = CkipTagger(level=3, model="albert-base", device=-1)
+        
+    def base_clean(self, text):
         text = re.sub(r'<[^>]+>|https?://\S+', '', text)
-        punc = {"！": "!", "？": "?", "，": ",", "。": ".", "：": ":", "；": ";"}
+        punc = {"！": "!", "？": "?", "，": ",", "。": ".", "：": ":"}
         for old, new in punc.items():
             text = text.replace(old, new)
-        text = re.sub(r'(.)\1{2,}', r'\1', text)
         return re.sub(r'\s+', ' ', text).strip()
 
-def process_and_save(file_path, elder_id):
-    if not os.path.exists(file_path): return
-    
+    def ckip_refine(self, text_list):
+        word_results = self.tagger.word_segmentation(text_list)
+        pos_results = self.tagger.pos_tagging(text_list)
+        cleaned_list = []
+        keep_pos = {'Na', 'Nb', 'Nc', 'Nd', 'VA', 'VC', 'V_2', 'A'}
+        for words, pos in zip(word_results, pos_results):
+            filtered = [w for w, p in zip(words, pos) if p in keep_pos]
+            cleaned_list.append("".join(filtered))
+        return cleaned_list
+
+def process_and_save(elder_id):
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
     cleaner = AdvancedCleaner()
-    with open(file_path, "r", encoding="utf-8") as f:
-        raw_text = f.read()
+    
+    def handle_file(file_path, is_forbidden):
+        if not os.path.exists(file_path): return [], []
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        base = cleaner.base_clean(raw)
+        refined = cleaner.ckip_refine([base])[0]
+        
+        # 效能優化：chunk_size 改為 50
+        splitter = RecursiveCharacterTextSplitter(chunk_size=50, chunk_overlap=10)
+        chunks = splitter.split_text(refined)
+        metadatas = [{"elder_id": elder_id, "is_forbidden": is_forbidden} for _ in chunks]
+        return chunks, metadatas
 
-    cleaned_text = cleaner.advanced_clean_text(raw_text)
-    
-    # 輸出清洗成果
-    os.makedirs("data/cleaned_output", exist_ok=True)
-    with open(f"data/cleaned_output/cleaned_{os.path.basename(file_path)}", "w", encoding="utf-8") as f:
-        f.write(cleaned_text)
+    mem_chunks, mem_meta = handle_file("data/grandpa_wang.txt", is_forbidden=False)
+    forb_chunks, forb_meta = handle_file("data/Forbidden_words.txt", is_forbidden=True)
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=250, chunk_overlap=40)
-    chunks = text_splitter.split_text(cleaned_text)
+    all_chunks = mem_chunks + forb_chunks
+    all_metas = mem_meta + forb_meta
     
-    embeddings = OllamaEmbeddings(model="bge-m3")
-    
-    # 存入 Qdrant 向量資料庫
-    QdrantVectorStore.from_texts(
-        texts=chunks,
-        embedding=embeddings,
-        metadatas=[{"elder_id": elder_id}] * len(chunks),
-        path="./qdrant_db",
-        collection_name="elderly_memories",
-    )
-    print(f"✅ Qdrant 向量資料庫已建立。")
+    if all_chunks:
+        # 使用 URL 連線到 Qdrant 容器
+        QdrantVectorStore.from_texts(
+            texts=all_chunks,
+            embedding=embeddings,
+            metadatas=all_metas,
+            url=qdrant_url,
+            collection_name="safe_reminiscence"
+        )
+        print(f"✅ 資料成功寫入 Qdrant！總片段數: {len(all_chunks)}")
 
 if __name__ == "__main__":
-    process_and_save("data/grandpa_wang.txt", "elder_001")
+    process_and_save("elder_001")
