@@ -26,41 +26,27 @@ class AdvancedCleaner:
             cleaned_list.append("".join(filtered))
         return cleaned_list
 
-def process_and_save(elder_id):
+def process_and_save(elder_id, raw_text):
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
+    
     cleaner = AdvancedCleaner()
+    base = cleaner.base_clean(raw_text)
+    refined = cleaner.ckip_refine([base])[0]
     
-    def handle_file(file_path, is_forbidden):
-        if not os.path.exists(file_path): return [], []
-        with open(file_path, "r", encoding="utf-8") as f:
-            raw = f.read()
-        base = cleaner.base_clean(raw)
-        refined = cleaner.ckip_refine([base])[0]
-        
-        # 效能優化：chunk_size 改為 50
-        splitter = RecursiveCharacterTextSplitter(chunk_size=50, chunk_overlap=10)
-        chunks = splitter.split_text(refined)
-        metadatas = [{"elder_id": elder_id, "is_forbidden": is_forbidden} for _ in chunks]
-        return chunks, metadatas
-
-    mem_chunks, mem_meta = handle_file("data/grandpa_wang.txt", is_forbidden=False)
-    forb_chunks, forb_meta = handle_file("data/Forbidden_words.txt", is_forbidden=True)
-
-    all_chunks = mem_chunks + forb_chunks
-    all_metas = mem_meta + forb_meta
+    # 效能優化平衡點 chunk_size=50
+    splitter = RecursiveCharacterTextSplitter(chunk_size=50, chunk_overlap=10)
+    chunks = splitter.split_text(refined)
+    metadatas = [{"elder_id": elder_id} for _ in chunks]
     
-    if all_chunks:
-        # 使用 URL 連線到 Qdrant 容器
+    if chunks:
         QdrantVectorStore.from_texts(
-            texts=all_chunks,
+            texts=chunks,
             embedding=embeddings,
-            metadatas=all_metas,
+            metadatas=metadatas,
             url=qdrant_url,
             collection_name="safe_reminiscence"
         )
-        print(f"✅ 資料成功寫入 Qdrant！總片段數: {len(all_chunks)}")
-
-if __name__ == "__main__":
-    process_and_save("elder_001")
+        return len(chunks)
+    return 0

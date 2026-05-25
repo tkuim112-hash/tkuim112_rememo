@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+ckip-transformers
+langchain-qdrant
+qdrant-client
+langchain-ollama
+torch
