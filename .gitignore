@@ -1,7 +1,11 @@
-# Python 垃圾檔案
-**/__pycache__/
-*.py[cod]
-get-pip.py
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
 
 # 資料庫與持久化數據 (排除實體資料)
 postgres_data/
@@ -10,7 +14,7 @@ postgres_db/
 pgadmin/
 qdrant_storage/
 
-# 媒體與大型壓縮檔 (剛才的大魔王)
+# 媒體與大型壓縮檔
 *.wav
 *.mp4
 *.zip
@@ -31,6 +35,7 @@ models/
 
 # 環境與工具
 .env
+.env.local
 **/venv/
 .venv/
 .git/
@@ -68,3 +73,15 @@ Kinect-v2-with-MS-SDK*/
 **/Assets/K2Examples/KinectScripts.meta
 **/Assets/K2Examples/Plugins.meta
 **/Assets/K2Examples/Resources.meta
+
+# 生成的媒體檔案（圖片、音訊）
+media/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

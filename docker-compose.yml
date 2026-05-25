@@ -8,15 +8,18 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
-    command: python app/main.py
+      - ./app:/app
+      - ./media:/media
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       - ollama
       - tts
       - db
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/m6_db
-    restart: always
+    env_file:
+      - .env
+    restart: unless-stopped
 
   # M2: 本地大腦 (Llama-3)
   ollama:
