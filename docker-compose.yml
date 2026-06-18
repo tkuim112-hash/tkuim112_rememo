@@ -1,0 +1,142 @@
+name: tku-smart-care  # 正名為智慧照護專案，展現系統完整性
+
+services:
+  # M7: 系統編排器 (中央狀態機)
+  app:
+    build: .
+    container_name: tku-care-app-1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app
+      - ./media:/media
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - ollama
+      - tts
+      - db
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/m6_db
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  # M2: 本地大腦 (Llama-3)
+  ollama:
+    image: ollama/ollama
+    container_name: tku-care-ollama-1
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib  # 強制指向掛載進來的驅動路徑
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  rag-service:
+    build:
+      context: .  # 指向目前的 Rag 資料夾
+      dockerfile: Dockerfile
+    depends_on:
+      - qdrant
+      - ollama
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+
+    # 向量資料庫
+  qdrant:
+    image: qdrant/qdrant
+    container_name: tku-care-qdrant-1
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: always   
+
+  # M3: 本地語音合成 
+  tts:
+     image: neosun/cosyvoice:latest
+     container_name: tku-care-tts-1
+    # 1. 刪除 runtime: nvidia，不讓 Docker 強制調用顯卡驅動
+     ports:
+      - "9233:8188"  # Windows 對應 9233，容器內部跑 8188
+     environment:
+      - PYTHONPATH=/opt/CosyVoice
+      # 2. 關鍵：設定為 -1，讓 PyTorch 完全看不到顯卡，直接進入 CPU 推理模式
+      - CUDA_VISIBLE_DEVICES=-1 
+     volumes:
+      - ./models/cosyvoice:/app/pretrained_models/CosyVoice-300M
+      - ./test:/app/test
+    # 3. 刪除 deploy 中的 GPU 預留資源 (reservations) 區塊
+     restart: always
+
+  # M6: 結構化與向量數據庫 (PostgreSQL)
+  db:
+    image: postgres:15
+    container_name: tku-care-db-1
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=m6_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  # pgAdmin 資料庫管理介面
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: tku-care-pgadmin-1
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+    restart: always
+
+  # Redis 快取
+  redis:
+    image: redis:alpine
+    container_name: tku-care-redis-1
+    ports:
+      - "6379:6379"
+    restart: always
+
+  # Redis Insight 管理介面
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: tku-care-redisinsight-1
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+    restart: always
+
+ # M1: 感知數據處理服務 (OpenAI Whisper STT)
+  kinect-svc:
+    image: fedirz/faster-whisper-server:latest-cuda
+    container_name: tku-care-kinect-1
+    ports:
+      - "8001:8000"  # 規格書定義 Port 8001 [cite: 20, 24]
+    environment:
+      - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: always

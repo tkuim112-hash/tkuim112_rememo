@@ -1,44 +1,100 @@
-# Claude Code local settings
-.claude/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
 
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# 資料庫與持久化數據 (排除實體資料)
+postgres_data/
+ollama_data/
+postgres_db/
+pgadmin/
+qdrant_storage/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# 媒體與大型壓縮檔
+*.wav
+*.mp4
+*.zip
+*.rar
+*.7z
+**/Rag/data/
+**/Rag/venv/
+**/data.zip
+*.npy
+*.data-00000-of-00001
 
-# testing
-/coverage
+# AI 模型與權重檔 (絕對不要上傳)
+models/
+*.pth
+*.bin
+*.onnx
+*.pt
 
-# next.js
-/.next/
-/out/
+# 環境與工具
+.env
+.env.local
+**/venv/
+.venv/
+.git/
 
-# production
-/build
+test/
 
-# misc
+# Unity (Rememo 專案)
+**/Library/
+**/Temp/
+**/Logs/
+**/Build/
+**/Builds/
+**/UserSettings/
+**/obj/
+**/.DS_Store
+**/__MACOSX/
+**/ProjectSettings/EditorBuildSettings.asset
+**/ProjectSettings/ShaderGraphSettings.asset
+
+## Kinect v2 SDK（RF Solutions 版權）
+
+# unitypackage 本體
+*.unitypackage
+
+# SDK 原始資料夾（若放在專案根目錄）
+Kinect-v2-with-MS-SDK*/
+
+# Unity 內的 Kinect 相關資料夾
+**/Assets/K2Examples/KinectScripts/
+**/Assets/K2Examples/Resources/
+**/Assets/K2Examples/Plugins/
+
+# Kinect meta 檔案
+**/Assets/K2Examples.meta
+**/Assets/K2Examples/KinectScripts.meta
+**/Assets/K2Examples/Plugins.meta
+**/Assets/K2Examples/Resources.meta
+
+# Kinect SDK 執行時期 DLL（在專案根目錄）
+**/Rememo/*.dll
+**/Rememo/*.ini
+**/Rememo/*.data
+**/Rememo/NuiDatabase/
+**/Rememo/OpenNI2/
+**/Rememo/vgbtechs/
+
+# Unity 自動產生
+**/Rememo/Assembly-CSharp.csproj
+**/Rememo/Assembly-CSharp-Editor.csproj
+*.csproj.lscache
+
+# 生成的媒體檔案（圖片、音訊）
+media/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
 .DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+Thumbs.db
