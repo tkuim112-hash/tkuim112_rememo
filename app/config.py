@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     stt_model: str = "Systran/faster-whisper-large-v3"
 
     # === TTS (CosyVoice) ===
-    tts_host: str = "http://tts:8188"
+#    tts_host: str = "http://tts:8188"
 
     # === Stability AI ===
     stability_api_key: str = ""

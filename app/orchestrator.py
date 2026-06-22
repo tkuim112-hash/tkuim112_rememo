@@ -38,6 +38,7 @@ class TherapyOrchestrator:
         self,
         user_id: str,
         session_id: str,
+        today_topic: str,
     ) -> dict:
         """
         執行療程開場的完整流程,回傳所有產出物。
@@ -61,6 +62,7 @@ class TherapyOrchestrator:
         if not user:
             raise ValueError(f"找不到使用者: {user_id}")
         
+        user["today_topic"] = today_topic
         print(f"  → 使用者: {user['name']},今日主題: {user['today_topic']}")
         
         # ════════ STEP 2: LLM 規劃圖片內容 ════════

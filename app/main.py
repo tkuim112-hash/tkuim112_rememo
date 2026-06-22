@@ -3,16 +3,19 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from config import settings
 from services.llm import LLMService
 from services.stt import STTService
-from services.user_profile_client import MockUserProfileClient
+from services.user_profile_db import DBUserProfileClient   # ⭐ 改用 DB 版
 from services.image import StabilityImageService
 from services.rag_client import MockRAGClient
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator
+from fastapi.responses import FileResponse          # ⭐ 新增
+from services.tts import TTSService                  # ⭐ 新增
 
 
 llm_service: LLMService | None = None
 stt_service: STTService | None = None
-user_profile_client: MockUserProfileClient | None = None
+tts_service: TTSService | None = None                # ⭐ 新增
+user_profile_client: DBUserProfileClient | None = None
 deidentifier: Deidentifier | None = None
 image_service: StabilityImageService | None = None
 rag_client: MockRAGClient | None = None
@@ -21,18 +24,18 @@ orchestrator: TherapyOrchestrator | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global llm_service, stt_service, user_profile_client, deidentifier
+    global llm_service, stt_service, tts_service, user_profile_client, deidentifier
     global image_service, rag_client, orchestrator
     
     print("🚀 啟動服務...")
     llm_service = LLMService()
     stt_service = STTService()
-    user_profile_client = MockUserProfileClient()
+    tts_service = TTSService()                     # ⭐ 新增初始化
+    user_profile_client = DBUserProfileClient()    # ⭐ DB 版
     deidentifier = Deidentifier()
     image_service = StabilityImageService()
     rag_client = MockRAGClient()
     
-    # ⭐ 把所有 service 注入 orchestrator
     orchestrator = TherapyOrchestrator(
         llm=llm_service,
         image=image_service,
@@ -46,11 +49,12 @@ async def lifespan(app: FastAPI):
     print("👋 關閉服務...")
     await llm_service.close()
     await stt_service.close()
+    await tts_service.close()                        # ⭐ 新增
     await user_profile_client.close()
     await image_service.close()
 
 
-app = FastAPI(title="Rememo Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Rememo Backend", version="0.2.0", lifespan=lifespan)
 
 
 # ════════════ 基礎端點 ════════════
@@ -70,7 +74,7 @@ async def show_config():
         "ollama_host": settings.ollama_host,
         "ollama_model": settings.ollama_model,
         "stt_host": settings.stt_host,
-        "tts_host": settings.tts_host,
+#        "tts_host": settings.tts_host,
     }
 
 
@@ -89,37 +93,30 @@ async def test_stt(file: UploadFile = File(...)):
     return {"filename": file.filename, "transcript": text}
 
 
+@app.post("/test/tts")
+async def test_tts(text: str = "您好,今天天氣很好,想跟您聊聊運動會的回憶。"):
+    """
+    測試 Edge-TTS 台灣女聲合成。
+    Swagger UI 會直接回傳 mp3,可線上播放。
+    """
+    path = await tts_service.synthesize(
+        text=text,
+        session_id="test",
+        round_number=1,
+    )
+    return FileResponse(
+        path=path,
+        media_type="audio/mpeg",
+        filename="tts_test.mp3",
+    )
+
+
 @app.get("/test/user/{user_id}")
 async def test_user_profile(user_id: str):
     user = await user_profile_client.get_user(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
     return user
-
-
-@app.get("/test/deidentify/{user_id}")
-async def test_deidentify(user_id: str):
-    user = await user_profile_client.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
-    example_prompt = (
-        f"水彩畫風,描繪{user['name']}的回憶。"
-        f"場景:{user['birth_year']} 年{user['birth_place']},"
-        f"從事{user['main_occupation']}的場景。"
-        f"主題:{user['today_topic']}。"
-    )
-    
-    desensitized_prompt = deidentifier.desensitize_text(example_prompt, taboos=user["taboos"])
-    desensitized_profile = deidentifier.desensitize_profile(user)
-    
-    return {
-        "original": {"raw_profile": user, "raw_prompt": example_prompt},
-        "desensitized": {
-            "safe_profile_for_cloud": desensitized_profile,
-            "safe_prompt_for_stability": desensitized_prompt,
-        }
-    }
 
 
 @app.post("/test/image")
@@ -131,25 +128,24 @@ async def test_image(prompt: str = "watercolor painting of 1940s Taiwan elementa
 # ════════════ 完整療程端點(orchestrator) ════════════
 
 @app.post("/session/start")
-async def session_start(user_id: str, session_id: str):
+async def session_start(
+    user_id: str,
+    session_id: str,
+    start_scene: str,   # ⭐ 新增:今日主題,由治療師在前端選好傳進來
+):
     """
-    🎯 主要端點:啟動一場療程的開場流程。
+    啟動一場療程的開場流程。
     
-    試試:
-      http://localhost:8000/docs
-      → POST /session/start
-      → user_id=user_001, session_id=sess_test_001
-      → Execute
-    
-    這會跑完整流程:
-      個人資料 → LLM 規劃 → 脫敏 → 生圖 → RAG 檢索 → LLM 生問題
-    
-    預期時間:15-25 秒(主要是 Stability 生圖)
+    Args:
+        user_id:     patients.id 字串(例如 "1")
+        session_id:  本次療程 ID(由前端產生,Phase 2 會改成由 db 給)
+        start_scene: 今日主題(例如「運動會」「童年遊戲」)
     """
     try:
         result = await orchestrator.start_session_opening(
             user_id=user_id,
             session_id=session_id,
+            today_topic=start_scene,   # ⭐ 注入給 orchestrator
         )
         return result
     except ValueError as e:
