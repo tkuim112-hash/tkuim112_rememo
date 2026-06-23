@@ -12,9 +12,10 @@ class Organization(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    contact_phone: Mapped[str | None] = mapped_column(Text)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    login_password: Mapped[str] = mapped_column(Text, nullable=False)
+    address: Mapped[str | None] = mapped_column(Text)             # 🆕
+    contact_phone: Mapped[str | None] = mapped_column(Text)
+    password: Mapped[str] = mapped_column(Text, nullable=False)   # 🔧 改名
 
 
 class Therapist(Base):
@@ -27,7 +28,7 @@ class Therapist(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     specialization: Mapped[str | None] = mapped_column(Text)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    login_password: Mapped[str] = mapped_column(Text, nullable=False)
+    password: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class Patient(Base):
@@ -85,7 +86,7 @@ class TherapyRound(Base):
     response_time: Mapped[float | None] = mapped_column(Float)
     emotion: Mapped[str | None] = mapped_column(Text)
     generated_scene: Mapped[str | None] = mapped_column(Text)
-    therapist_obs: Mapped[str | None] = mapped_column(Text)
+    patient_response: Mapped[str | None] = mapped_column(Text)
 
 
 class PasswordResetCode(Base):

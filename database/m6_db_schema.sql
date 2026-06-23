@@ -1,18 +1,19 @@
 CREATE TABLE ORGANIZATIONS (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,                     
+    email TEXT UNIQUE NOT NULL,            
+    address TEXT,                           
     contact_phone TEXT,                     
-    email TEXT UNIQUE NOT NULL,             
-    login_password TEXT NOT NULL            
+    password TEXT NOT NULL            
 );
 
 CREATE TABLE THERAPISTS (
     id SERIAL PRIMARY KEY,
     organization_id INTEGER REFERENCES ORGANIZATIONS(id) ON DELETE CASCADE,
     name TEXT NOT NULL,                     
-    specialization TEXT,                   
     email TEXT UNIQUE NOT NULL,             
-    login_password TEXT NOT NULL            
+    specialization TEXT,                    
+    password TEXT NOT NULL           
 );
 
 CREATE TABLE PASSWORD_RESET_CODES (
@@ -20,16 +21,16 @@ CREATE TABLE PASSWORD_RESET_CODES (
     email TEXT NOT NULL,                    
     verification_code VARCHAR(6) NOT NULL,  
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP NOT NULL           
+    expires_at TIMESTAMP NOT NULL          
 );
 
 CREATE TABLE PATIENTS (
     id SERIAL PRIMARY KEY,
     organization_id INTEGER REFERENCES ORGANIZATIONS(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    birth_year INTEGER NOT NULL,
-    hometown TEXT,
-    occupation TEXT NOT NULL,
+    name TEXT NOT NULL,                     
+    birth_year INTEGER NOT NULL,            
+    hometown TEXT,                          
+    occupation TEXT NOT NULL,               
     family TEXT,                            
     preferences TEXT,                       
     taboo_words TEXT,                       
@@ -42,15 +43,15 @@ CREATE TABLE SESSIONS (
     patient_id INTEGER REFERENCES PATIENTS(id) ON DELETE CASCADE,
     therapist_id INTEGER REFERENCES THERAPISTS(id) ON DELETE SET NULL,
     organization_id INTEGER REFERENCES ORGANIZATIONS(id) ON DELETE CASCADE,
-    date DATE NOT NULL,
-    mode TEXT NOT NULL,                     
-    start_scene TEXT,
-    score_participation INTEGER,            
+    date DATE NOT NULL,                    
+    mode TEXT NOT NULL,                    
+    start_scene TEXT,                      
+    score_participation INTEGER,          
     score_attention INTEGER,
     score_endurance INTEGER,
     score_emotion INTEGER,
     score_interaction INTEGER,
-    total_score INTEGER,
+    total_score INTEGER,                
     therapist_note TEXT,                    
     story_summary TEXT                      
 );
@@ -62,4 +63,5 @@ CREATE TABLE ROUNDS (
     response_time FLOAT,                    
     emotion TEXT,                           
     generated_scene TEXT,                   
-    therapist_obs TEXT                      
+    patient_response TEXT                   
+);
