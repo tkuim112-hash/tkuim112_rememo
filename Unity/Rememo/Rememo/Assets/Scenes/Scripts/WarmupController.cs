@@ -13,17 +13,32 @@ public class WarmupController : MonoBehaviour
     public Sprite detectingSprite;  // 設備偵測中
     public Sprite successSprite;    // 設備偵測成功
 
+    private KinectCalibrationManager calibrationManager;
+
     void Start()
     {
+        // 預設禁用開始按鈕，等校正完成
+        startButton.interactable = false;
         startButton.onClick.AddListener(OnStart);
-        StartCoroutine(SimulateDetection());
+
+        calibrationManager = Object.FindFirstObjectByType<KinectCalibrationManager>();
+        StartCoroutine(WaitForCalibration());
     }
 
-    IEnumerator SimulateDetection()
+    IEnumerator WaitForCalibration()
     {
-        // 3 秒後換成成功圖片
-        yield return new WaitForSeconds(3f);
+        // 等待校正完成
+        while (calibrationManager != null && !calibrationManager.IsCalibrated)
+        {
+            statusBadge.sprite = detectingSprite;
+            yield return null;
+        }
+
+        // 校正完成
         statusBadge.sprite = successSprite;
+
+        // 等待治療師控制端確認（開始按鈕變可用）
+        startButton.interactable = true;
     }
 
     void OnStart()

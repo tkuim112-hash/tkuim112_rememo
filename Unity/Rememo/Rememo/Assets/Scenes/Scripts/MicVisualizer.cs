@@ -7,6 +7,7 @@ public class MicVisualizer : MonoBehaviour
     public int textureWidth = 1600;
     public int textureHeight = 80;
     public Color waveColor = new Color(0.2f, 0.4f, 0.8f, 1f);
+    public float amplify = 10f;
 
     private AudioClip micClip;
     private Texture2D waveTexture;
@@ -16,23 +17,24 @@ public class MicVisualizer : MonoBehaviour
     {
         waveTexture = new Texture2D(textureWidth, textureHeight);
         waveTexture.filterMode = FilterMode.Point;
-        waveformDisplay.texture = waveTexture;
+        if (waveformDisplay != null)
+            waveformDisplay.texture = waveTexture;
+
         samples = new float[textureWidth];
 
         if (Microphone.devices.Length > 0)
         {
             micClip = Microphone.Start(null, true, 1, 44100);
-            Debug.Log("麥克風啟動：" + Microphone.devices[0]);
-        }
-        else
-        {
-            Debug.LogWarning("找不到麥克風！");
+            Debug.Log("[MicVisualizer] 使用麥克風: " + Microphone.devices[0]);
         }
     }
 
     void Update()
     {
         if (micClip == null) return;
+
+        int pos = Microphone.GetPosition(null);
+        if (pos <= 0) return;
 
         micClip.GetData(samples, 0);
 
@@ -43,19 +45,20 @@ public class MicVisualizer : MonoBehaviour
         for (int x = 0; x < textureWidth; x++)
         {
             float sample = samples[x];
-            int centerY = textureHeight / 2;
-            int waveHeight = Mathf.RoundToInt(sample * textureHeight * 2f);
-
+            int centerY = Mathf.RoundToInt(textureHeight / 2.35f);
+            int waveHeight = Mathf.RoundToInt(sample * textureHeight * amplify);
             int startY = Mathf.Clamp(centerY - Mathf.Abs(waveHeight), 0, textureHeight - 1);
             int endY = Mathf.Clamp(centerY + Mathf.Abs(waveHeight), 0, textureHeight - 1);
-
             for (int y = startY; y <= endY; y++)
-            {
                 pixels[y * textureWidth + x] = waveColor;
-            }
         }
 
         waveTexture.SetPixels(pixels);
         waveTexture.Apply();
+    }
+
+    void OnDestroy()
+    {
+        Microphone.End(null);
     }
 }
