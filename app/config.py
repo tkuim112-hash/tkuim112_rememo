@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # === TTS (CosyVoice) ===
 #    tts_host: str = "http://tts:8188"
 
+    # === Redis ===
+    redis_url: str = "redis://redis:6379"
+
     # === Stability AI ===
     stability_api_key: str = ""
 

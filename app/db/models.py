@@ -53,6 +53,7 @@ class TherapySession(Base):
     __tablename__ = "sessions"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_uuid: Mapped[str | None] = mapped_column(Text, unique=True)
     patient_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("patients.id", ondelete="CASCADE")
     )
