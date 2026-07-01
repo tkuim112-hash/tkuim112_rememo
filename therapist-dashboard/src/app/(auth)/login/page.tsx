@@ -14,9 +14,11 @@ const imgHeart  = "/image/heart.png";  // 裝飾愛心圖案
 
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");           // 電子郵件輸入狀態
-  const [password, setPassword] = useState("");     // 密碼輸入狀態
-  const [showPassword, setShowPassword] = useState(false); // 控制密碼是否顯示
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   return (
     // 整頁容器：暖色背景，左右兩欄排列
@@ -87,9 +89,26 @@ export default function LoginPage() {
           {/* 登入表單 */}
           <form
             className="flex flex-col gap-4 lg:gap-5"
-            onSubmit={(e) => {
-              e.preventDefault(); // 防止表單預設提交行為（頁面重整）
-              window.location.href = "/dashboard"; // 登入成功後跳轉到儀表板
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setError("");
+              if (!email || !password) {
+                setError("請填入電子郵件及密碼");
+                return;
+              }
+              setLoading(true);
+              const res = await fetch("/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email, password }),
+              });
+              setLoading(false);
+              if (res.ok) {
+                window.location.href = "/dashboard";
+              } else {
+                const data = await res.json();
+                setError(data.error ?? "登入失敗");
+              }
             }}
           >
             {/* 電子郵件欄位 */}
@@ -130,8 +149,8 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* 忘記密碼連結（靠右對齊） */}
-            <div className="flex justify-end">
+            <div className="flex justify-between items-center">
+              <span className="text-red-500 text-[13px] lg:text-[14px]">{error}</span>
               <Link
                 href="/forgot-password"
                 className="text-[#666] hover:text-[#1a1a1a] transition-colors text-[14px] lg:text-[16px]"
@@ -143,9 +162,10 @@ export default function LoginPage() {
             {/* 登入按鈕 */}
             <button
               type="submit"
-              className="bg-[#1a1a1a] text-white rounded-xl py-3.5 lg:py-4 font-medium hover:bg-[#333] transition-colors text-[16px] lg:text-[18px]"
+              disabled={loading}
+              className="bg-[#1a1a1a] text-white rounded-xl py-3.5 lg:py-4 font-medium hover:bg-[#333] transition-colors text-[16px] lg:text-[18px] disabled:opacity-50"
             >
-              登入
+              {loading ? "登入中..." : "登入"}
             </button>
           </form>
 

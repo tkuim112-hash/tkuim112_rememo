@@ -79,6 +79,22 @@ services:
 #    # 3. 刪除 deploy 中的 GPU 預留資源 (reservations) 區塊
 #     restart: always
 
+  # 前端 (Next.js)
+  frontend:
+    build:
+      context: ./therapist-dashboard
+      dockerfile: Dockerfile
+    container_name: tku-care-frontend-1
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/m6_db
+      - SESSION_SECRET=sK69vm+c5aGXjAi0gYwulU3AnVbA8R++6dudvqmjSZk=
+      - NODE_ENV=production
+    depends_on:
+      - db
+    restart: unless-stopped
+
   # M6: 結構化與向量數據庫 (PostgreSQL)
   db:
     image: postgres:15

@@ -1,3 +1,6 @@
+# Claude Code local settings
+.claude/
+
 # Python
 __pycache__/
 *.pyc
@@ -41,9 +44,10 @@ models/
 .env.local
 **/venv/
 .venv/
-.git/
 
 test/
+
+Unity/
 
 # Unity (Rememo 專案)
 **/Library/
@@ -59,33 +63,21 @@ test/
 **/ProjectSettings/ShaderGraphSettings.asset
 
 ## Kinect v2 SDK（RF Solutions 版權）
-
-# unitypackage 本體
 *.unitypackage
-
-# SDK 原始資料夾（若放在專案根目錄）
 Kinect-v2-with-MS-SDK*/
-
-# Unity 內的 Kinect 相關資料夾
 **/Assets/K2Examples/KinectScripts/
 **/Assets/K2Examples/Resources/
 **/Assets/K2Examples/Plugins/
-
-# Kinect meta 檔案
 **/Assets/K2Examples.meta
 **/Assets/K2Examples/KinectScripts.meta
 **/Assets/K2Examples/Plugins.meta
 **/Assets/K2Examples/Resources.meta
-
-# Kinect SDK 執行時期 DLL（在專案根目錄）
 **/Rememo/*.dll
 **/Rememo/*.ini
 **/Rememo/*.data
 **/Rememo/NuiDatabase/
 **/Rememo/OpenNI2/
 **/Rememo/vgbtechs/
-
-# Unity 自動產生
 **/Rememo/Assembly-CSharp.csproj
 **/Rememo/Assembly-CSharp-Editor.csproj
 *.csproj.lscache
@@ -101,3 +93,4 @@ media/
 # OS
 .DS_Store
 Thumbs.db
+therapist-dashboard/tsconfig.tsbuildinfo

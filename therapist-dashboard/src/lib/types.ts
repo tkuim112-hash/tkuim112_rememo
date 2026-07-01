@@ -44,6 +44,12 @@ export interface Session {
   storySummary?: string;
 }
 
+export interface RoundExchange {
+  questionNumber: number;
+  question: string;
+  answer?: string;
+}
+
 export interface SessionRound {
   id: string;
   sessionId: string;
@@ -53,6 +59,8 @@ export interface SessionRound {
   sceneName: string;
   content: string;
   emotion: string;
+  exchanges?: RoundExchange[];
+  sceneImage?: string;
 }
 
 export interface ActiveSession {

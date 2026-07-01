@@ -2,28 +2,27 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { mockCases, mockTherapist } from "@/lib/mock-data";
 import type { Case } from "@/lib/types";
 
 export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
   const [search, setSearch] = useState("");
-  const [displayName, setDisplayName] = useState(mockTherapist.name);
-  const [displayInstitution, setDisplayInstitution] = useState(mockTherapist.institution);
+  const [displayName, setDisplayName] = useState("");
+  const [displayInstitution, setDisplayInstitution] = useState("");
 
   useEffect(() => {
-    setDisplayName(localStorage.getItem("rememo_name") ?? mockTherapist.name);
-    setDisplayInstitution(localStorage.getItem("rememo_institution") ?? mockTherapist.institution);
-  }, []);
+    fetch("/api/therapist/me")
+      .then((r) => r.json())
+      .then((data) => {
+        setDisplayName(data.name ?? "");
+        setDisplayInstitution(data.institution ?? "");
+      })
+      .catch(() => {});
 
-  useEffect(() => {
-    const stored: Case[] = JSON.parse(localStorage.getItem("rememo_cases") ?? "[]");
-    const deleted: string[] = JSON.parse(localStorage.getItem("rememo_deleted") ?? "[]");
-    const deletedSet = new Set(deleted);
-    const mockIds = new Set(mockCases.map((c) => c.id));
-    const localOnly = stored.filter((c) => !mockIds.has(c.id) && !deletedSet.has(c.id));
-    const activeMock = mockCases.filter((c) => !deletedSet.has(c.id));
-    setCases([...activeMock, ...localOnly]);
+    fetch("/api/cases")
+      .then((r) => r.json())
+      .then((data) => setCases(Array.isArray(data) ? data : []))
+      .catch(() => {});
   }, []);
 
   const filtered = cases.filter((c) => c.name.includes(search));
@@ -35,7 +34,7 @@ export default function DashboardPage() {
       {/* 頂部導覽列 */}
       <nav className="bg-white rounded-2xl shadow-sm px-8 py-5 flex items-center justify-between">
         <span className="text-[25px] font-medium text-[#1a1a1a] tracking-tight">
-          {displayInstitution}　{displayName}
+          {displayInstitution}　{displayName} 治療師
         </span>
         <div className="flex items-center gap-4">
           <Link
@@ -95,7 +94,6 @@ export default function DashboardPage() {
 
         {/* 內容區：空狀態或個案列表 */}
         {isEmpty ? (
-          /* 無個案初始畫面 */
           <div className="bg-white rounded-2xl flex flex-col items-center justify-center gap-4 py-32">
             <div className="w-20 h-20 rounded-full bg-[#fde8e4] flex items-center justify-center">
               <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
@@ -107,7 +105,6 @@ export default function DashboardPage() {
             <p className="text-[14px] text-[#888]">點擊右上角「個案新建」按鈕建立第一個個案</p>
           </div>
         ) : (
-          /* 個案列表 */
           <div className="flex flex-col gap-3">
             {filtered.length === 0 ? (
               <div className="bg-white rounded-2xl flex flex-col items-center justify-center gap-4 py-24">
@@ -132,7 +129,6 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
-                    {/* 活動中標籤，只有 isActive 為 true 時顯示 */}
                     {c.isActive && (
                       <span className="bg-[#d4f5e2] text-[#2e9e5b] text-[15px] font-medium rounded-full px-[17px] py-[6.2px]">
                         活動中

@@ -2,22 +2,28 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { mockTherapist } from "@/lib/mock-data";
 
 export default function AccountPage() {
-  const [therapistName, setTherapistName] = useState(mockTherapist.name);
+  const [therapistName, setTherapistName] = useState("");
   const [isEditingName, setIsEditingName] = useState(false);
-  const [institution, setInstitution] = useState(mockTherapist.institution);
-  const [email, setEmail] = useState(mockTherapist.email);
-
-  useEffect(() => {
-    setTherapistName(localStorage.getItem("rememo_name") ?? mockTherapist.name);
-    setInstitution(localStorage.getItem("rememo_institution") ?? mockTherapist.institution);
-    setEmail(localStorage.getItem("rememo_email") ?? mockTherapist.email);
-  }, []);
+  const [institution, setInstitution] = useState("");
+  const [email, setEmail] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const [pwMsg, setPwMsg] = useState("");
+
+  useEffect(() => {
+    fetch("/api/therapist/me")
+      .then((r) => r.json())
+      .then((data) => {
+        setTherapistName(data.name ?? "");
+        setInstitution(data.institution ?? "");
+        setEmail(data.email ?? "");
+      })
+      .catch(() => {});
+  }, []);
 
   const inputClass =
     "w-full bg-white border border-[#e0e0e0] rounded-xl px-4 py-2 text-[15px] text-[#1a1a1a] placeholder:text-[#1a1a1a]/30 outline-none focus:border-[#1a1a1a] transition-colors";
@@ -62,7 +68,7 @@ export default function AccountPage() {
               </svg>
             </button>
           </div>
-          <p className="text-[14px] text-[#888] ml-[2%]">{mockTherapist.email}</p>
+          <p className="text-[14px] text-[#888] ml-[2%]">{email}</p>
         </div>
 
         {/* 修改資料 */}
@@ -89,12 +95,18 @@ export default function AccountPage() {
             />
           </div>
 
+          {saveMsg && <p className="text-sm text-green-600">{saveMsg}</p>}
+
           <button
             type="button"
-            onClick={() => {
-              localStorage.setItem("rememo_name", therapistName);
-              localStorage.setItem("rememo_institution", institution);
-              localStorage.setItem("rememo_email", email);
+            onClick={async () => {
+              setSaveMsg("");
+              const res = await fetch("/api/therapist/me", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: therapistName, institution, email }),
+              });
+              setSaveMsg(res.ok ? "已儲存" : "儲存失敗");
             }}
             className="self-start bg-[#5b8ac5] text-white rounded-xl px-6 py-2.5 text-[14px] font-medium hover:bg-[#3a6aa0] transition-colors"
           >
@@ -126,8 +138,26 @@ export default function AccountPage() {
             />
           </div>
 
+          {pwMsg && <p className="text-sm text-green-600">{pwMsg}</p>}
+
           <button
             type="button"
+            onClick={async () => {
+              setPwMsg("");
+              const res = await fetch("/api/therapist/me/password", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ currentPassword, newPassword }),
+              });
+              if (res.ok) {
+                setPwMsg("密碼已更新");
+                setCurrentPassword("");
+                setNewPassword("");
+              } else {
+                const data = await res.json();
+                setPwMsg(data.error ?? "更新失敗");
+              }
+            }}
             className="self-start bg-[#5b8ac5] text-white rounded-xl px-6 py-2.5 text-[14px] font-medium hover:bg-[#3a6aa0] transition-colors"
           >
             更新密碼
@@ -168,8 +198,8 @@ export default function AccountPage() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowDeleteDialog(false);
+                onClick={async () => {
+                  await fetch("/api/therapist/me", { method: "DELETE" });
                   window.location.href = "/login";
                 }}
                 className="px-5 py-2 rounded-xl text-[14px] font-medium text-white bg-[#e05c3a] hover:bg-[#c04a2c] transition-colors"

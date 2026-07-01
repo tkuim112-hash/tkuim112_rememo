@@ -12,6 +12,8 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   if (success) {
     return (
@@ -68,9 +70,23 @@ export default function RegisterPage() {
         {/* 表單 */}
         <form
           className="w-full flex flex-col gap-2"
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
-            setSuccess(true);
+            setError("");
+            if (password !== confirm) { setError("兩次密碼不一致"); return; }
+            setLoading(true);
+            const res = await fetch("/api/auth/register", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ username, institution, email, password }),
+            });
+            setLoading(false);
+            if (res.ok) {
+              setSuccess(true);
+            } else {
+              const data = await res.json();
+              setError(data.error ?? "註冊失敗");
+            }
           }}
         >
           {/* 機構名稱 */}
@@ -163,12 +179,15 @@ export default function RegisterPage() {
             </div>
           </div>
 
+          {error && <p className="text-red-500 text-sm">{error}</p>}
+
           {/* 下一步按鈕 */}
           <button
             type="submit"
-            className="w-full bg-[#1a1a1a] text-white rounded-xl py-3 font-medium hover:bg-[#333] transition-colors text-[17px] mt-2"
+            disabled={loading}
+            className="w-full bg-[#1a1a1a] text-white rounded-xl py-3 font-medium hover:bg-[#333] transition-colors text-[17px] mt-2 disabled:opacity-50"
           >
-            下一步
+            {loading ? "註冊中..." : "下一步"}
           </button>
         </form>
 

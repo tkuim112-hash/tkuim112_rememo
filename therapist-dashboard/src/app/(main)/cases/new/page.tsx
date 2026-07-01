@@ -3,9 +3,6 @@
 import Link from "next/link";
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import type { Case } from "@/lib/types";
-
-const AVATAR_COLORS = ["#d4e4f7", "#f7e4d4", "#e4f7d4", "#f7d4e4", "#e4d4f7", "#f7f0d4"];
 
 export default function NewCasePage() {
   const router = useRouter();
@@ -136,28 +133,13 @@ export default function NewCasePage() {
         <div className="flex items-center gap-3 pt-1">
           <button
             type="button"
-            onClick={() => {
-              const existing: Case[] = JSON.parse(localStorage.getItem("rememo_cases") ?? "[]");
-              const newCase: Case = {
-                id: Date.now().toString(),
-                name,
-                surname: name.charAt(0),
-                age: birthYear ? new Date().getFullYear() - parseInt(birthYear) : 0,
-                gender: "male",
-                avatarColor: AVATAR_COLORS[existing.length % AVATAR_COLORS.length],
-                lastSession: "尚未開始",
-                totalSessions: 0,
-                tabooTopics: tabooTopics ? tabooTopics.split("、").map(s => s.trim()).filter(Boolean) : [],
-                notes: [career, family, hobbies].filter(Boolean).join("；"),
-                birthYear,
-                birthPlace,
-                career,
-                family,
-                hobbies,
-                mode: "輕度模式",
-              };
-              localStorage.setItem("rememo_cases", JSON.stringify([...existing, newCase]));
-              router.push("/dashboard");
+            onClick={async () => {
+              const res = await fetch("/api/cases", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, birthYear, birthPlace, career, family, hobbies, tabooTopics }),
+              });
+              if (res.ok) router.push("/dashboard");
             }}
             className="bg-[#5b8ac5] text-white rounded-xl px-7 py-2 text-[15px] font-medium hover:bg-[#3a6aa0] transition-colors"
           >

@@ -3,13 +3,13 @@
 import Link from "next/link";
 import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { mockCases, mockSessions } from "@/lib/mock-data";
 import type { Case, Session } from "@/lib/types";
 
 const RATING_COLOR: Record<string, string> = {
-  優良: "#4caf7d",
-  普通: "#e09540",
-  需加強: "#e05c3a",
+  適當: "#4caf7d",
+  亢奮: "#e09540",
+  焦躁: "#e09540",
+  低落: "#e05c3a",
 };
 
 const inputClass =
@@ -27,12 +27,11 @@ function InfoCard({ label, value }: { label: string; value?: string }) {
 export default function CaseDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const [caseData, setCaseData] = useState<Case | null>(() => mockCases.find((c) => c.id === id) ?? null);
-  const [sessions, setSessions] = useState<Session[]>(() => mockSessions.filter((s) => s.caseId === id));
+  const [caseData, setCaseData] = useState<Case | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [tab, setTab] = useState<"info" | "history">("info");
   const [isEditing, setIsEditing] = useState(false);
 
-  // 編輯暫存狀態
   const [editBirthYear, setEditBirthYear] = useState("");
   const [editBirthPlace, setEditBirthPlace] = useState("");
   const [editCareer, setEditCareer] = useState("");
@@ -41,12 +40,16 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
   const [editTaboo, setEditTaboo] = useState("");
 
   useEffect(() => {
-    if (!caseData) {
-      const stored: Case[] = JSON.parse(localStorage.getItem("rememo_cases") ?? "[]");
-      const found = stored.find((c) => c.id === id);
-      if (found) setCaseData(found);
-    }
-  }, [id, caseData]);
+    fetch(`/api/cases/${id}`)
+      .then((r) => r.json())
+      .then((data) => setCaseData(data))
+      .catch(() => {});
+
+    fetch(`/api/cases/${id}/sessions`)
+      .then((r) => r.json())
+      .then((data) => setSessions(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [id]);
 
   function startEditing() {
     if (!caseData) return;
@@ -59,37 +62,29 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
     setIsEditing(true);
   }
 
-  function deleteCase() {
-    // 從 localStorage 個案清單移除
-    const stored: Case[] = JSON.parse(localStorage.getItem("rememo_cases") ?? "[]");
-    localStorage.setItem("rememo_cases", JSON.stringify(stored.filter((c) => c.id !== id)));
-    // 記錄已刪除的 id（用來過濾 mock 資料）
-    const deleted: string[] = JSON.parse(localStorage.getItem("rememo_deleted") ?? "[]");
-    if (!deleted.includes(id)) {
-      localStorage.setItem("rememo_deleted", JSON.stringify([...deleted, id]));
-    }
+  async function deleteCase() {
+    await fetch(`/api/cases/${id}`, { method: "DELETE" });
     router.push("/dashboard");
   }
 
-  function saveEditing() {
+  async function saveEditing() {
     if (!caseData) return;
-    const updated: Case = {
-      ...caseData,
-      birthYear: editBirthYear,
-      birthPlace: editBirthPlace,
-      career: editCareer,
-      family: editFamily,
-      hobbies: editHobbies,
-      tabooTopics: editTaboo ? editTaboo.split("、").map((s) => s.trim()).filter(Boolean) : [],
-    };
-    setCaseData(updated);
-
-    // 如果是 localStorage 的個案，寫回去
-    const stored: Case[] = JSON.parse(localStorage.getItem("rememo_cases") ?? "[]");
-    const idx = stored.findIndex((c) => c.id === id);
-    if (idx !== -1) {
-      stored[idx] = updated;
-      localStorage.setItem("rememo_cases", JSON.stringify(stored));
+    const res = await fetch(`/api/cases/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: caseData.name,
+        birthYear: editBirthYear,
+        birthPlace: editBirthPlace,
+        career: editCareer,
+        family: editFamily,
+        hobbies: editHobbies,
+        tabooTopics: editTaboo,
+      }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setCaseData(updated);
     }
     setIsEditing(false);
   }
@@ -131,7 +126,6 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
             </p>
           </div>
 
-          {/* 編輯 / 儲存 / 取消 按鈕 */}
           <div className="ml-auto flex gap-2">
             {isEditing ? (
               <>
@@ -193,7 +187,6 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
         {tab === "info" && (
           <div className="flex flex-col gap-3">
             {isEditing ? (
-              /* 編輯模式 */
               <>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-white rounded-xl px-6 py-4 flex flex-col gap-2">
@@ -232,7 +225,6 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                 </div>
               </>
             ) : (
-              /* 顯示模式 */
               <>
                 <div className="grid grid-cols-2 gap-3">
                   <InfoCard
@@ -257,7 +249,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
               <div className="flex flex-col gap-3 mt-2">
                 <h2 className="text-[22px] font-bold text-[#e05c3a]">最近療程</h2>
                 {recentSessions.map((s, idx) => {
-                  const pct = s.score && s.totalScore ? Math.round((s.score / s.totalScore) * 100) : 0;
+                  const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
                   const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
                   return (
                     <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
@@ -268,7 +260,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                         </div>
                         <div className="flex items-center gap-3">
                           <span className="text-[13px] text-[#888]">{s.rounds} 個回合</span>
-                          <span className="text-[13px] text-[#888]">總分 {s.score}/{s.totalScore}</span>
+                          <span className="text-[13px] text-[#888]">總分 {s.score ?? "—"}</span>
                           <div className="w-28 h-2 bg-[#eee] rounded-full overflow-hidden">
                             <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
                           </div>
@@ -292,7 +284,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
               <div className="bg-white rounded-xl px-6 py-10 text-center text-[#888] text-[15px]">尚無療程記錄</div>
             ) : (
               sessions.map((s, idx) => {
-                const pct = s.score && s.totalScore ? Math.round((s.score / s.totalScore) * 100) : 0;
+                const pct = s.score != null ? s.score : 0;
                 const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
                 return (
                   <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
@@ -303,7 +295,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-[13px] text-[#888]">{s.rounds} 個回合</span>
-                        <span className="text-[13px] text-[#888]">總分 {s.score}/{s.totalScore}</span>
+                        <span className="text-[13px] text-[#888]">總分 {s.score ?? "—"}</span>
                         <div className="w-28 h-2 bg-[#eee] rounded-full overflow-hidden">
                           <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
                         </div>
