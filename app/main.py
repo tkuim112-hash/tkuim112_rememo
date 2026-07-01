@@ -12,7 +12,7 @@ from services.stt import STTService
 from services.tts import TTSService 
 from services.user_profile_db import DBUserProfileClient
 from services.image import StabilityImageService
-from services.rag_client import MockRAGClient
+from services.rag_client import RealRAGClient   
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator
 from routers import ws_stt, ws_calibration, session, sensor
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     app.state.user_profile       = DBUserProfileClient()
     app.state.deidentifier       = Deidentifier()
     app.state.image_service      = StabilityImageService()
-    app.state.rag_client         = MockRAGClient()
+    app.state.rag_client    = RealRAGClient()   
     app.state.orchestrator       = TherapyOrchestrator(
         llm=app.state.llm_service,
         image=app.state.image_service,
