@@ -43,13 +43,18 @@ services:
 
   rag-service:
     build:
-      context: .  # 指向目前的 Rag 資料夾
+      context: ./Rag
       dockerfile: Dockerfile
+    container_name: tku-care-rag-service-1
+    ports:
+      - "8002:8000"
     depends_on:
       - qdrant
       - ollama
     environment:
-      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_HOST=http://ollama:11434
+    restart: always
 
     # 向量資料庫
   qdrant:
