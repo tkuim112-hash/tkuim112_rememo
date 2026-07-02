@@ -258,7 +258,7 @@ class TherapyOrchestrator:
 
         if can_continue:
             # STEP2：承接情緒 + 開放追問（Track C），包上禁忌話題防護
-            result = await safety.taboo_checker.guarded_generate(
+            result = await guarded_generate(
                 self._generate_open_followup,
                 taboo_words=user["taboos"],
                 llm_service=self.llm,
@@ -304,7 +304,7 @@ class TherapyOrchestrator:
         target_w: str,
         state: dict,
     ) -> dict:
-        result = await safety.taboo_checker.guarded_generate(
+        result = await guarded_generate(
             self._generate_supplement_question,
             taboo_words=user["taboos"],
             llm_service=self.llm,
@@ -335,7 +335,7 @@ class TherapyOrchestrator:
         if current_round >= 3:
             print("  → 三回合完成，療程結束")
             closing = (
-                await safety.taboo_checker.guarded_generate(
+                await guarded_generate(
                     self._generate_closing,
                     taboo_words=user["taboos"],
                     llm_service=self.llm,
