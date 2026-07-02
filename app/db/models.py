@@ -1,5 +1,5 @@
 """
-SQLAlchemy ORM models,對應 database/m6_db_schema.sql 的 6 張表。
+SQLAlchemy ORM models，對應 database/m6_db_schema.sql 的表。
 """
 from datetime import datetime, date
 from sqlalchemy import String, Integer, Text, Date, DateTime, Float, ForeignKey
@@ -9,18 +9,18 @@ from db.session import Base
 
 class Organization(Base):
     __tablename__ = "organizations"
-    
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    address: Mapped[str | None] = mapped_column(Text)             # 🆕
+    address: Mapped[str | None] = mapped_column(Text)
     contact_phone: Mapped[str | None] = mapped_column(Text)
-    password: Mapped[str] = mapped_column(Text, nullable=False)   # 🔧 改名
+    password: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class Therapist(Base):
     __tablename__ = "therapists"
-    
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("organizations.id", ondelete="CASCADE")
@@ -33,7 +33,7 @@ class Therapist(Base):
 
 class Patient(Base):
     __tablename__ = "patients"
-    
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("organizations.id", ondelete="CASCADE")
@@ -78,7 +78,7 @@ class TherapySession(Base):
 
 class TherapyRound(Base):
     __tablename__ = "rounds"
-    
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("sessions.id", ondelete="CASCADE")
@@ -92,7 +92,7 @@ class TherapyRound(Base):
 
 class PasswordResetCode(Base):
     __tablename__ = "password_reset_codes"
-    
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(Text, nullable=False)
     verification_code: Mapped[str] = mapped_column(String(6), nullable=False)
