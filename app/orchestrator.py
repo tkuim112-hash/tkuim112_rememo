@@ -31,7 +31,7 @@
 import json
 from services.llm import LLMService
 from services.image import StabilityImageService
-from services.rag_client import MockRAGClient
+from services.rag_client import RAGClient
 from services.user_profile_db import DBUserProfileClient
 from privacy.deidentifier import Deidentifier
 
@@ -76,7 +76,7 @@ class TherapyOrchestrator:
         self,
         llm: LLMService,
         image: StabilityImageService,
-        rag: MockRAGClient,
+        rag: RAGClient,
         user_profile: DBUserProfileClient,
         deidentifier: Deidentifier,
     ):

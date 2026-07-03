@@ -147,20 +147,6 @@ services:
     depends_on:
       - redis
     restart: always
-  
-  # FastAPI(m7-backend)
-  m7-backend:
-    build: ./m7_backend
-    container_name: tku-care-m7-backend-1
-    ports:
-      - "8080:8080"   # 使用 8080，把 8000 留給隊友的 app
-    volumes:
-      - ./m7_backend:/app
-    depends_on:
-      - db
-      - redis
-    restart: always
-
   # M1: 感知數據處理服務 (OpenAI Whisper STT)
   kinect-svc:
     image: fedirz/faster-whisper-server:latest-cuda

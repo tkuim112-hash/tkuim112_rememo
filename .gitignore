@@ -12,6 +12,7 @@ __pycache__/
 
 # DPO 訓練資料（自動產生，不入版控）
 dpo/data/
+dpo/output/
 
 # 資料庫與持久化數據 (排除實體資料)
 postgres_data/
