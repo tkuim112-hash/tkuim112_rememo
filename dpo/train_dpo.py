@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
+import os
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # 停用 Rust 加速下載，避免記憶體分配失敗
+
 """
-DPO 微調腳本
+DPO 微調腳本（Unsloth 版）
 
 用 dpo/data/train.jsonl 微調 yentinglin/Llama-3-Taiwan-8B-Instruct，
 使模型學會懷舊療法問題設計規則與情緒引導。
@@ -8,8 +13,8 @@ DPO 微調腳本
 微調完成後需要轉換成 GGUF 格式才能在 Ollama 上執行。
 
 執行需求：
-  - GPU（VRAM >= 8GB，已針對 8GB 優化：precompute_ref_log_probs + gradient_checkpointing）
-  - pip install trl transformers datasets torch bitsandbytes peft
+  - GPU（VRAM >= 8GB）
+  - pip install unsloth trl transformers datasets torch
 
 執行：
   python dpo/train_dpo.py
@@ -18,40 +23,33 @@ DPO 微調腳本
 import json
 from pathlib import Path
 
-import torch
 from datasets import Dataset
-from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from unsloth import FastLanguageModel, is_bfloat16_supported
 from trl import DPOConfig, DPOTrainer
 
 # ─── 設定 ───────────────────────────────────────────────────────────────────
 
-BASE_MODEL = "yentinglin/Llama-3-Taiwan-8B-Instruct"
+BASE_MODEL = str(Path(__file__).parent / "models" / "taiwan-llama")
 DATA_FILE = Path(__file__).parent / "data" / "train.jsonl"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
-# DPO 超參數（針對 8B 模型在有限 VRAM 下的保守設定）
-DPO_BETA = 0.1          # 越高越保守，越低越激進；0.1 是常見起點
+MAX_SEQ_LENGTH = 512
+DPO_BETA = 0.1
 LEARNING_RATE = 5e-7
 NUM_EPOCHS = 3
 BATCH_SIZE = 1
-GRAD_ACCUM = 8          # 等效 batch size = 8，節省 VRAM
+GRAD_ACCUM = 8
 
 
 # ─── 資料載入 ────────────────────────────────────────────────────────────────
 
 def load_dataset_from_jsonl(path: Path) -> Dataset:
-    """
-    從 JSONL 載入資料，並轉換成 DPOTrainer 期望的格式。
-
-    DPOTrainer 支援 messages 格式的 prompt/chosen/rejected：
-      prompt:   list[dict]  — system + user messages
-      chosen:   list[dict]  — [{"role": "assistant", "content": "..."}]
-      rejected: list[dict]  — [{"role": "assistant", "content": "..."}]
-    """
     records = []
     with path.open(encoding="utf-8") as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                continue
             rec = json.loads(line)
             records.append({
                 "prompt": rec["prompt"],
@@ -63,46 +61,42 @@ def load_dataset_from_jsonl(path: Path) -> Dataset:
     return Dataset.from_list(records)
 
 
-# ─── 模型載入（4-bit 量化，節省 VRAM） ───────────────────────────────────────
+# ─── 模型載入（Unsloth 4-bit，比 bitsandbytes 更省 VRAM） ────────────────────
 
 def load_model_and_tokenizer():
-    bnb_config = BitsAndBytesConfig(
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=BASE_MODEL,
+        max_seq_length=MAX_SEQ_LENGTH,
         load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
+        dtype=None,  # 自動偵測：支援 bfloat16 就用，否則用 float16
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        use_gradient_checkpointing="unsloth",  # Unsloth 優化版 gradient checkpointing
+        random_state=42,
+    )
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-    )
-
     return model, tokenizer
-
-
-# ─── LoRA 設定（QLoRA，減少訓練參數量） ──────────────────────────────────────
-
-def get_lora_config() -> LoraConfig:
-    return LoraConfig(
-        r=8,
-        lora_alpha=16,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
 
 
 # ─── 訓練 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    if not Path(BASE_MODEL).exists():
+        raise FileNotFoundError(
+            f"找不到本地模型：{BASE_MODEL}\n"
+            "請先執行 python dpo/download_model.py 下載模型。"
+        )
+
     if not DATA_FILE.exists():
         raise FileNotFoundError(
             f"找不到訓練資料：{DATA_FILE}\n"
@@ -114,15 +108,13 @@ def main() -> None:
     print("載入訓練資料...")
     dataset = load_dataset_from_jsonl(DATA_FILE)
 
-    # 分割 90% 訓練、10% 驗證
     split = dataset.train_test_split(test_size=0.1, seed=42)
     train_dataset = split["train"]
     eval_dataset = split["test"]
     print(f"訓練集：{len(train_dataset)} 筆，驗證集：{len(eval_dataset)} 筆")
 
-    print("載入基底模型（4-bit 量化）...")
+    print("載入基底模型（Unsloth 4-bit 量化）...")
     model, tokenizer = load_model_and_tokenizer()
-    lora_config = get_lora_config()
 
     training_args = DPOConfig(
         output_dir=str(OUTPUT_DIR / "checkpoints"),
@@ -133,20 +125,18 @@ def main() -> None:
         learning_rate=LEARNING_RATE,
         beta=DPO_BETA,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
-        bf16=True,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        warmup_steps=50,
+        bf16=is_bfloat16_supported(),
+        fp16=not is_bfloat16_supported(),
         logging_steps=10,
         eval_strategy="epoch",
         save_strategy="epoch",
-        load_best_model_at_end=True,
+        load_best_model_at_end=False,
         report_to="none",
-        # 8GB VRAM 優化：預算完參考模型後移出 VRAM，訓練時只需一個模型
-        precompute_ref_log_probs=True,
-        # 資料實際長度 ~350-450 tokens，512 足夠
-        max_length=512,
+        precompute_ref_log_probs=False,
+        max_length=MAX_SEQ_LENGTH,
         max_prompt_length=384,
+        dataloader_num_workers=0,
     )
 
     trainer = DPOTrainer(
@@ -155,7 +145,6 @@ def main() -> None:
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        peft_config=lora_config,
     )
 
     print("開始 DPO 訓練...")
