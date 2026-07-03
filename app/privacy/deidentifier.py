@@ -11,18 +11,17 @@
    之後可升級加入 CKIP NER (中研院中文命名實體辨識) 處理姓名/組織等開放領域實體。
 """
 import re
-from services.user_profile_client import UserProfile
 
 
 class Deidentifier:
     """個人資料脫敏處理器。"""
 
-    def desensitize_profile(self, profile: UserProfile) -> dict:
+    def desensitize_profile(self, profile: dict) -> dict:
         """
         把整份個人資料脫敏。
         
         Args:
-            profile: 從 user_profile_client 拿到的原始資料
+            profile: 從 user_profile_db 拿到的原始資料
         
         Returns:
             脫敏後的 dict,可安全送雲端 LLM 或 Stability AI
