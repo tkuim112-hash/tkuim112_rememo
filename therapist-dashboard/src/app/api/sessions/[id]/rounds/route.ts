@@ -21,7 +21,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const roundMap = new Map<string, { round: typeof rows[0]; exchanges: typeof rows }>();
   for (const row of rows) {
     const key = row.id.toString();
-    if (!roundMap.has(key)) roundMap.set(key, { round: row, exchanges: [] as typeof rows });
+    if (!roundMap.has(key)) roundMap.set(key, { round: row, exchanges: [] as unknown as typeof rows });
     if (row.exchange_id != null) roundMap.get(key)!.exchanges.push(row);
   }
 
