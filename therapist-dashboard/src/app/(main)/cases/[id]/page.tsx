@@ -288,7 +288,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
               <div className="bg-white rounded-xl px-6 py-10 text-center text-[#888] text-[15px]">尚無療程記錄</div>
             ) : (
               sessions.map((s, idx) => {
-                const pct = s.score != null ? s.score : 0;
+                const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
                 const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
                 return (
                   <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
