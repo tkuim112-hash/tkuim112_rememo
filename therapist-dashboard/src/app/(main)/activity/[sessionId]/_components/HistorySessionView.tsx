@@ -103,7 +103,7 @@ export function HistorySessionView({
 
 
        {/* 逐筆渲染每個回合卡片 */}
-       {rounds.map((round, idx) => {
+       {rounds.map((round) => {
          const dotColor = EMOTION_DOT[round.emotion] ?? "#888";
          return (
            // 白色圓角卡片，左右對齊內容
@@ -143,7 +143,7 @@ export function HistorySessionView({
 
 
                {/* 只有第一筆（心得欄）顯示查看按鈕，點擊開啟心得彈窗 */}
-               {idx === 0 && (
+               {round.type === "心得" && (
                  <button
                    onClick={() => setShowModal(true)}
                    className="text-[14px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors"
