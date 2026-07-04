@@ -53,18 +53,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
   const { id } = await params;
-  const { birthYear, birthPlace, career, family, hobbies, tabooTopics } = await req.json();
+  const { birthYear, birthPlace, career, family, hobbies, tabooTopics, avatar } = await req.json();
 
   const tabooStr = Array.isArray(tabooTopics) ? tabooTopics.join("、") : (tabooTopics ?? "");
 
   await sql`
     UPDATE patients SET
-      birth_year = ${birthYear ? parseInt(birthYear) : 0},
-      hometown   = ${birthPlace ?? ""},
-      occupation = ${career ?? ""},
-      family     = ${family ?? ""},
+      birth_year  = ${birthYear ? parseInt(birthYear) : 0},
+      hometown    = ${birthPlace ?? ""},
+      occupation  = ${career ?? ""},
+      family      = ${family ?? ""},
       preferences = ${hobbies ?? ""},
-      taboo_words = ${tabooStr}
+      taboo_words = ${tabooStr},
+      avatar      = ${avatar ?? null}
     WHERE id = ${parseInt(id)} AND organization_id = ${session.organizationId}
   `;
 
