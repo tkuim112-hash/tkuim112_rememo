@@ -26,7 +26,6 @@ export function HistorySessionView({
  rounds: SessionRound[];
 }) {
  const [showModal, setShowModal] = useState(false);
- const [selectedRound, setSelectedRound] = useState<typeof rounds[0] | null>(null);
  const heartRound = rounds.find((r) => r.type === "心得");
 
 
@@ -151,12 +150,12 @@ export function HistorySessionView({
                    查看 ›
                  </button>
                ) : (
-                 <button
-                   onClick={() => setSelectedRound(round)}
+                 <Link
+                   href={`/activity/${session.id}/round/${round.roundNumber}`}
                    className="text-[14px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors"
                  >
                    查看 ›
-                 </button>
+                 </Link>
                )}
              </div>
            </div>
@@ -164,65 +163,6 @@ export function HistorySessionView({
        })}
      </div>
 
-
-     {/* ── 回合詳情彈窗 ── */}
-     {selectedRound && (
-       <div
-         className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
-         onClick={() => setSelectedRound(null)}
-       >
-         <div
-           className="bg-white rounded-2xl px-8 py-7 w-[680px] flex flex-col gap-4 relative max-h-[80vh] overflow-y-auto"
-           onClick={(e) => e.stopPropagation()}
-         >
-           <button
-             onClick={() => setSelectedRound(null)}
-             className="absolute top-5 right-5 text-[#888] hover:text-[#1a1a1a] transition-colors"
-           >
-             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-               <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-             </svg>
-           </button>
-
-           <div className="inline-flex">
-             <span className="bg-[#ddeeff] text-[#5b8ac5] text-[13px] font-medium rounded-full px-4 py-1">
-               {caseData.name}·第 {session.sessionNumber} 次療程
-             </span>
-           </div>
-
-           <div className="flex flex-col gap-1">
-             <h2 className="text-[24px] font-bold text-[#1a1a1a]">回合 {selectedRound.roundNumber} 紀錄</h2>
-             <p className="text-[14px] text-[#888]">{session.date}</p>
-           </div>
-
-           {selectedRound.sceneName && (
-             <div className="flex flex-col gap-1">
-               <p className="text-[13px] text-[#aaa]">場景</p>
-               <p className="text-[15px] text-[#1a1a1a]">{selectedRound.sceneName}</p>
-             </div>
-           )}
-
-           {selectedRound.content && (
-             <div className="flex flex-col gap-1">
-               <p className="text-[13px] text-[#aaa]">長者回應</p>
-               <p className="text-[15px] text-[#1a1a1a]">{selectedRound.content}</p>
-             </div>
-           )}
-
-           {selectedRound.exchanges && selectedRound.exchanges.length > 0 && (
-             <div className="flex flex-col gap-3">
-               <p className="text-[13px] text-[#aaa]">問答紀錄</p>
-               {selectedRound.exchanges.map((ex) => (
-                 <div key={ex.questionNumber} className="bg-[#f9f9f9] rounded-xl px-5 py-4 flex flex-col gap-2">
-                   <p className="text-[14px] text-[#5b8ac5] font-medium">Q{ex.questionNumber}：{ex.question}</p>
-                   <p className="text-[14px] text-[#1a1a1a]">A：{ex.answer || "—"}</p>
-                 </div>
-               ))}
-             </div>
-           )}
-         </div>
-       </div>
-     )}
 
      {/* ── 心得彈窗 ── */}
      {showModal && (
