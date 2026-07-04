@@ -1,7 +1,7 @@
 "use client";
 
 
-import { use, useState, useEffect } from "react";
+import { use, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 
@@ -30,6 +30,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const [scores, setScores] = useState<number[]>(DEFAULT_SCORES);
  const [notes, setNotes] = useState("");
  const [isEditing, setIsEditing] = useState(false);
+ const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
  useEffect(() => {
    fetch(`/api/sessions/${sessionId}`)
@@ -37,6 +38,19 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
      .then(async (s) => {
        setSessionNumber(s.sessionNumber ?? null);
        setSessionDate(s.date ?? "—");
+       if (s.therapistNote) setNotes(s.therapistNote);
+       if (
+         s.scoreParticipation != null && s.scoreAttention != null &&
+         s.scoreEndurance != null && s.scoreEmotion != null && s.scoreInteraction != null
+       ) {
+         setScores([
+           s.scoreParticipation - 1,
+           s.scoreAttention - 1,
+           s.scoreEndurance - 1,
+           s.scoreEmotion - 1,
+           s.scoreInteraction - 1,
+         ]);
+       }
        if (s.caseId) {
          const c = await fetch(`/api/cases/${s.caseId}`).then((r) => r.json());
          setCaseName(c.name ?? "—");
@@ -44,6 +58,17 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
      })
      .catch(() => {});
  }, [sessionId]);
+
+ useEffect(() => {
+   if (notesTimerRef.current) clearTimeout(notesTimerRef.current);
+   notesTimerRef.current = setTimeout(() => {
+     fetch(`/api/sessions/${sessionId}`, {
+       method: "PUT",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify({ notes }),
+     }).catch(() => {});
+   }, 1000);
+ }, [notes, sessionId]);
 
  const total = scores.reduce((sum, s) => sum + (s + 1), 0);
  const maxScore = CRITERIA.length * 4;
@@ -68,7 +93,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        scoreInteraction:   scores[4] + 1,
      }),
    }).catch(() => {});
-   router.push("/dashboard");
+   router.push(backUrl);
  }
 
  return (

@@ -43,6 +43,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       s.total_score,
       s.story_summary,
       s.emotional_status,
+      s.score_participation,
+      s.score_attention,
+      s.score_endurance,
+      s.score_emotion,
+      s.score_interaction,
+      s.therapist_note,
       (SELECT COUNT(*)::int FROM sessions s2
         WHERE s2.patient_id = s.patient_id AND s2.id <= s.id) AS session_number,
       (SELECT COUNT(*)::int FROM rounds r WHERE r.session_id = s.id) AS rounds_count,
@@ -69,5 +75,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     storySummary: s.story_summary ?? "",
     rating: s.emotional_status ?? "—",
     mode: s.mode,
+    scoreParticipation: s.score_participation ?? null,
+    scoreAttention: s.score_attention ?? null,
+    scoreEndurance: s.score_endurance ?? null,
+    scoreEmotion: s.score_emotion ?? null,
+    scoreInteraction: s.score_interaction ?? null,
+    therapistNote: s.therapist_note ?? "",
   });
 }
