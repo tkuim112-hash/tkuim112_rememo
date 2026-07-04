@@ -2,7 +2,7 @@
 
 
 import { use, useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 
 const CRITERIA = [
@@ -20,6 +20,9 @@ const DEFAULT_SCORES = [2, 3, 2, 3, 3];
 export default function SessionEndPage({ params }: { params: Promise<{ sessionId: string }> }) {
  const { sessionId } = use(params);
  const router = useRouter();
+ const searchParams = useSearchParams();
+ const from = searchParams.get("from");
+ const backUrl = from === "history" ? `/activity/${sessionId}` : "/cases";
 
  const [caseName, setCaseName] = useState("—");
  const [sessionNumber, setSessionNumber] = useState<number | null>(null);
@@ -161,7 +164,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        </button>
        <button
          type="button"
-         onClick={() => router.push("/dashboard")}
+         onClick={() => router.push(backUrl)}
          className="bg-white border border-[#d0d0d0] text-[#1a1a1a] rounded-xl px-4 py-2 md:px-5 md:py-2.5 lg:px-6 lg:py-3 xl:px-7 xl:py-[14px] 2xl:px-8 2xl:py-4 text-[12px] md:text-[13px] lg:text-[14px] xl:text-[14.5px] 2xl:text-[16px] font-medium hover:bg-[#f5f5f5] transition-colors"
        >
          稍後填寫

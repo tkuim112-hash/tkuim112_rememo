@@ -120,7 +120,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
  };
  const handleEnd = async () => {
    await sendControl("end");
-   router.push(`/activity/${sessionId}/end`);
+   router.push(`/activity/${sessionId}/end?from=live`);
  };
 
 
