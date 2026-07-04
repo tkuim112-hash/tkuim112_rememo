@@ -78,7 +78,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
    setScores((prev) => prev.map((s, i) => (i === rowIdx ? colIdx : s)));
  }
 
- async function handleSave() {
+ async function saveToDb() {
    await fetch(`/api/sessions/${sessionId}`, {
      method: "PUT",
      headers: { "Content-Type": "application/json" },
@@ -93,6 +93,15 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        scoreInteraction:   scores[4] + 1,
      }),
    }).catch(() => {});
+ }
+
+ async function handleSave() {
+   await saveToDb();
+   router.push(backUrl);
+ }
+
+ async function handleLater() {
+   await saveToDb();
    router.push(backUrl);
  }
 
@@ -189,7 +198,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        </button>
        <button
          type="button"
-         onClick={() => router.push(backUrl)}
+         onClick={handleLater}
          className="bg-white border border-[#d0d0d0] text-[#1a1a1a] rounded-xl px-4 py-2 md:px-5 md:py-2.5 lg:px-6 lg:py-3 xl:px-7 xl:py-[14px] 2xl:px-8 2xl:py-4 text-[12px] md:text-[13px] lg:text-[14px] xl:text-[14.5px] 2xl:text-[16px] font-medium hover:bg-[#f5f5f5] transition-colors"
        >
          稍後填寫
