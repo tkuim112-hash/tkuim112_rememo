@@ -84,6 +84,36 @@ services:
 #    # 3. 刪除 deploy 中的 GPU 預留資源 (reservations) 區塊
 #     restart: always
 
+  # M3: 本地語音合成 (BreezyVoice, RTX 50 系列/Blackwell 專用建置)
+  tts:
+    build:
+      context: ./breezyvoice
+      dockerfile: Dockerfile
+    container_name: tku-care-tts-1
+    ports:
+      - "9233:8080"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
+      - MODEL_PATH=MediaTek-Research/BreezyVoice
+      # 先用官方內建的預設參考音檔 (./data/example.wav) 聽聽原始版本。
+      # 之後要換參考音檔：把音檔 + 對應 .lab 逐字稿放進 ./breezyvoice/references/，
+      # 再取消註解下面兩行（路徑/檔名依實際放的檔案調整）
+      # - SPEAKER_PROMPT_AUDIO_PATH=/breezyvoice/data/reference/<檔名>.wav
+      # - SPEAKER_PROMPT_TEXT_TRANSCRIPTION=<音檔逐字稿>
+    volumes:
+      - ./models/breezyvoice:/root/.cache/huggingface
+      - ./breezyvoice/references:/breezyvoice/data/reference:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
   # 前端 (Next.js)
   frontend:
     build:
