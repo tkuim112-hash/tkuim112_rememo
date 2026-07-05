@@ -2,11 +2,12 @@
 
 import { use, useState, useEffect } from "react";
 import Link from "next/link";
-import Image from "next/image";
+
 import { useRouter } from "next/navigation";
 import type { Session, SessionRound, Case } from "@/lib/types";
 
 const ROUND_LABELS = ["一", "二", "三"];
+const AI_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function RoundDetailPage({
   params,
@@ -88,11 +89,9 @@ export default function RoundDetailPage({
         {/* 左欄：場景圖片 */}
         <div className="flex-none w-[700px] h-[700px] bg-white rounded-2xl overflow-hidden">
           {currentRound.sceneImage ? (
-            <Image
-              src={currentRound.sceneImage}
+            <img
+              src={`${AI_BASE}${currentRound.sceneImage}`}
               alt={currentRound.sceneName}
-              width={700}
-              height={700}
               className="w-full h-full object-cover"
             />
           ) : (

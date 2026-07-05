@@ -10,7 +10,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   const rows = await sql`
     SELECT
-      r.id, r.round_number, r.type, r.response_time, r.emotion, r.generated_scene, r.patient_response,
+      r.id, r.round_number, r.type, r.response_time, r.emotion, r.generated_scene, r.patient_response, r.scene_image,
       re.id AS exchange_id, re.question_number, re.question, re.answer
     FROM rounds r
     LEFT JOIN round_exchanges re ON re.round_id = r.id
@@ -34,7 +34,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     sceneName: r.generated_scene ?? "",
     content: r.patient_response ?? "",
     emotion: r.emotion ?? "—",
-    sceneImage: null,
+    sceneImage: r.scene_image ? (r.scene_image as string).replace("/media", "") : null,
     exchanges: exchanges.map(e => ({
       questionNumber: e.question_number,
       question: e.question,
