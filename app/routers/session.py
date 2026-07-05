@@ -320,4 +320,6 @@ async def session_respond(request: Request, body: RespondRequest):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"處理回應失敗: {str(e)}")

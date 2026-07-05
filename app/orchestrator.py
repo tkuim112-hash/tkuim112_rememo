@@ -27,13 +27,19 @@
   - STEP1 問題 → build_inference_prompt（Track A）
   - 自由追問   → build_track_c_inference_prompt（Track C，對應 PDF STEP2）
   - STEP3 補問 → build_inference_prompt（Track A）
+
+===  禁忌話題防護整合 ===
+生成完成後，透過 app/safety/crisis_detector.py 的 guarded_generate() 包裝，
+檢查 AI 輸出是否觸及 Patient.taboo_words 相關話題（字面 + 語意兩層），
+違規時重新生成或退回安全保底語句。詳見 app/safety/taboo_checker.py。
 """
 import json
 from services.llm import LLMService
 from services.image import StabilityImageService
-from services.rag_client import RAGClient
+from services.rag_client import RealRAGClient
 from services.user_profile_db import DBUserProfileClient
 from privacy.deidentifier import Deidentifier
+from safety.taboo_checker import guarded_generate
 
 # 5W1H 優先順序（由易到難，對齊 問題設計規則.pdf；Why 條件式使用）
 _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
@@ -88,7 +94,7 @@ class TherapyOrchestrator:
         self,
         llm: LLMService,
         image: StabilityImageService,
-        rag: RAGClient,
+        rag: RealRAGClient,
         user_profile: DBUserProfileClient,
         deidentifier: Deidentifier,
     ):
@@ -143,7 +149,10 @@ class TherapyOrchestrator:
             limit=3,
         )
 
-        q = await self._generate_question(
+        q = await guarded_generate(
+            self._generate_question,
+            taboo_words=user["taboos"],
+            llm_service=self.llm,
             step="STEP1",
             user=user,
             scene_elements=image_plan["elements"],
@@ -178,7 +187,12 @@ class TherapyOrchestrator:
         """backward-compat：直接呼叫 start_round(1)。"""
         return await self.start_round(user_id, session_id, round_number=1)
 
-    async def process_response(self, elder_response: str, state: dict, emotion: str = "happy") -> dict:
+    async def process_response(
+        self,
+        elder_response: str,
+        state: dict,
+        emotion: str = "happy",
+    ) -> dict:
         """
         狀態機核心：根據長者回應決定下一步。
 
@@ -257,9 +271,13 @@ class TherapyOrchestrator:
         print(f"  → 話題能否繼續: {can_continue}")
 
         if can_continue:
-            # STEP2：承接情緒 + 開放追問（Track C）
-            result = await self._generate_open_followup(
-                user, scene_els, covered_w, skipped_w, elder_response, emotion
+            # STEP2：承接情緒 + 開放追問（Track C），包上禁忌話題防護
+            result = await guarded_generate(
+                self._generate_open_followup,
+                taboo_words=user["taboos"],
+                llm_service=self.llm,
+                user=user, scene_elements=scene_els, covered_w=covered_w,
+                skipped_w=skipped_w, elder_response=elder_response, emotion=emotion,
             )
             new_state = {
                 **state,
@@ -301,8 +319,12 @@ class TherapyOrchestrator:
         state: dict,
         emotion: str = "happy",
     ) -> dict:
-        result = await self._generate_supplement_question(
-            user, scene_els, covered_w, target_w, emotion
+        result = await guarded_generate(
+            self._generate_supplement_question,
+            taboo_words=user["taboos"],
+            llm_service=self.llm,
+            user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
+            emotion=emotion,
         )
         print(f"  → 補問 W({target_w}): {result['question']}")
         new_state = {
@@ -320,12 +342,29 @@ class TherapyOrchestrator:
         }
 
     async def _end_action(
-        self, state: dict, user: dict = None, elder_response: str = "", emotion: str = "happy"
+        self,
+        state: dict,
+        user: dict = None,
+        elder_response: str = "",
+        emotion: str = "happy",
     ) -> dict:
         current_round = state["round"]
         if current_round >= 3:
             print("  → 三回合完成，療程結束")
-            closing = await self._generate_closing(user, elder_response, emotion) if user else {"closing_text": "", "question": ""}
+            closing = (
+                await guarded_generate(
+                    self._generate_closing,
+                    taboo_words=user["taboos"],
+                    llm_service=self.llm,
+                    text_keys=("closing_text", "question"),
+                    fallback={
+                        "closing_text": "謝謝您今天的分享，辛苦了。",
+                        "question": "今天過得還好嗎？",
+                    },
+                    user=user, elder_response=elder_response, emotion=emotion,
+                )
+                if user else {"closing_text": "", "question": ""}
+            )
             return {
                 "action": "end_session",
                 "scene_text": closing["closing_text"],
@@ -447,7 +486,12 @@ class TherapyOrchestrator:
         raw = await self.llm.ask(prompt)
         return raw.strip().upper().startswith("Y")
 
-    async def _generate_closing(self, user: dict, elder_response: str = "", emotion: str = "happy") -> dict:
+    async def _generate_closing(
+        self,
+        user: dict,
+        elder_response: str = "",
+        emotion: str = "happy",
+    ) -> dict:
         """收尾引導：三回合結束後帶領長者從回憶回到現實，詢問感受或正向回憶。"""
         system_content = (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -455,6 +499,7 @@ class TherapyOrchestrator:
             "三回合懷舊療程剛結束，你要溫柔地帶領長者回到現實，"
             "並以一句輕柔的問題詢問他們現在的感受或正向回憶，為今天的療程畫上句點。"
         )
+
         last_response_section = (
             f"\n【長者最後說的話】\n{elder_response}\n" if elder_response else ""
         )

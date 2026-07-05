@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # === LLM (Ollama) ===
     ollama_host: str = "http://ollama:11434"
-    ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:Q4_K_M"
+    ollama_model: str = "rememo-llama3"
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://kinect:8000"
