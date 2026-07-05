@@ -93,7 +93,7 @@ async def show_config():
         "ollama_host": settings.ollama_host,
         "ollama_model": settings.ollama_model,
         "stt_host": settings.stt_host,
-#        "tts_host": settings.tts_host,
+        "tts_host": settings.tts_host,
     }
 
 
@@ -158,9 +158,9 @@ async def test_image(
 
 @app.post("/test/tts")
 async def test_tts(request: Request, text: str = "您好，今天天氣很好，想跟您聊聊運動會的回憶。"):
-    """測試 Edge-TTS 台灣女聲合成。"""
+    """測試 BreezyVoice 台灣女聲合成。"""
     from fastapi.responses import FileResponse
     path = await request.app.state.tts_service.synthesize(
         text=text, session_id="test", round_number=1,
     )
-    return FileResponse(path=path, media_type="audio/mpeg", filename="tts_test.mp3")
+    return FileResponse(path=path, media_type="audio/wav", filename="tts_test.wav")
