@@ -66,7 +66,8 @@ CREATE TABLE ROUNDS (
     emotion TEXT,
     type TEXT,
     generated_scene TEXT,
-    patient_response TEXT
+    patient_response TEXT,
+    scene_image TEXT
 );
 
 CREATE TABLE ROUND_EXCHANGES (
