@@ -103,7 +103,7 @@ export default function RoundDetailPage({
         {/* 左欄：場景圖片 */}
         <div className="flex-none w-[700px] h-[700px] bg-white rounded-2xl overflow-hidden">
           {currentRound.sceneImage ? (
-            <ImageWithFallback src={currentRound.sceneImage!} alt={currentRound.sceneName} />
+            <ImageWithFallback src={`${AI_BASE}${currentRound.sceneImage}`} alt={currentRound.sceneName} />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-[#888] text-[16px]">
               尚無場景圖片
