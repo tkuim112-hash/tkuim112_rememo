@@ -93,7 +93,7 @@ async def show_config():
         "ollama_host": settings.ollama_host,
         "ollama_model": settings.ollama_model,
         "stt_host": settings.stt_host,
-        "tts_host": settings.tts_host,
+#        "tts_host": settings.tts_host,
     }
 
 
