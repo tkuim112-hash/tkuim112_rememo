@@ -9,6 +9,20 @@ import type { Session, SessionRound, Case } from "@/lib/types";
 const ROUND_LABELS = ["一", "二", "三"];
 const AI_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+function ImageWithFallback({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-[#888] text-[16px]">
+        圖片載入失敗
+      </div>
+    );
+  }
+  return (
+    <img src={src} alt={alt} className="w-full h-full object-cover" onError={() => setFailed(true)} />
+  );
+}
+
 export default function RoundDetailPage({
   params,
 }: {
@@ -89,14 +103,10 @@ export default function RoundDetailPage({
         {/* 左欄：場景圖片 */}
         <div className="flex-none w-[700px] h-[700px] bg-white rounded-2xl overflow-hidden">
           {currentRound.sceneImage ? (
-            <img
-              src={`${AI_BASE}${currentRound.sceneImage}`}
-              alt={currentRound.sceneName}
-              className="w-full h-full object-cover"
-            />
+            <ImageWithFallback src={`${AI_BASE}${currentRound.sceneImage}`} alt={currentRound.sceneName} />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-[#888] text-[16px]">
-              {currentRound.sceneName}
+              尚無場景圖片
             </div>
           )}
         </div>
