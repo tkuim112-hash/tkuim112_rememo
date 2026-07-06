@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     stt_model: str = "Systran/faster-whisper-large-v3"
 
     # === TTS (CosyVoice 已停用，改用 Edge-TTS) ===
-#    tts_host: str = "http://tts:8188"
+    tts_host: str = "http://tts:8080"
 
     # === Stability AI ===
     stability_api_key: str = ""

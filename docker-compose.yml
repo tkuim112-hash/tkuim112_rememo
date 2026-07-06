@@ -177,6 +177,7 @@ services:
     depends_on:
       - redis
     restart: always
+  
   # M1: 感知數據處理服務 (OpenAI Whisper STT)
   kinect-svc:
     image: fedirz/faster-whisper-server:latest-cuda
