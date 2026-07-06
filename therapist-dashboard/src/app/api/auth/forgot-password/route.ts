@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Resend } from "resend";
 import sql from "@/lib/db";
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(req: NextRequest) {
   const { email } = await req.json();
@@ -23,8 +26,12 @@ export async function POST(req: NextRequest) {
     VALUES (${email}, ${code}, ${expiresAt})
   `;
 
-  // TODO: 改成用 Resend 發送真實 email
-  console.log(`[DEV] 驗證碼：${code}`);
+  await resend.emails.send({
+    from: "onboarding@resend.dev",
+    to: email,
+    subject: "Rememo 密碼重設驗證碼",
+    html: `<p>您的驗證碼為：<strong style="font-size:24px">${code}</strong></p><p>此驗證碼將於 10 分鐘後失效。</p>`,
+  });
 
   return NextResponse.json({ ok: true });
 }
