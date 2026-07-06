@@ -265,7 +265,7 @@ public class GameController : MonoBehaviour
                     micButton.interactable = true;
                     break;
                 case "end":
-                    SceneManager.LoadScene("ShareScene");
+                    Application.Quit();
                     break;
             }
             return;
