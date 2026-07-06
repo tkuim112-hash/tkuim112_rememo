@@ -12,7 +12,7 @@ from services.stt import STTService
 from services.tts import TTSService 
 from services.user_profile_db import DBUserProfileClient
 from services.image import StabilityImageService
-from services.rag_client import MockRAGClient
+from services.rag_client import RealRAGClient   
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator
 from routers import ws_stt, ws_calibration, session, sensor
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     app.state.user_profile       = DBUserProfileClient()
     app.state.deidentifier       = Deidentifier()
     app.state.image_service      = StabilityImageService()
-    app.state.rag_client         = MockRAGClient()
+    app.state.rag_client    = RealRAGClient()   
     app.state.orchestrator       = TherapyOrchestrator(
         llm=app.state.llm_service,
         image=app.state.image_service,
@@ -158,9 +158,9 @@ async def test_image(
 
 @app.post("/test/tts")
 async def test_tts(request: Request, text: str = "您好，今天天氣很好，想跟您聊聊運動會的回憶。"):
-    """測試 Edge-TTS 台灣女聲合成。"""
+    """測試 BreezyVoice 台灣女聲合成。"""
     from fastapi.responses import FileResponse
     path = await request.app.state.tts_service.synthesize(
         text=text, session_id="test", round_number=1,
     )
-    return FileResponse(path=path, media_type="audio/mpeg", filename="tts_test.mp3")
+    return FileResponse(path=path, media_type="audio/wav", filename="tts_test.wav")

@@ -1,65 +1,56 @@
-# ingest.py
 import os
 import re
-import importlib.resources
-from dotenv import load_dotenv
-from symspellpy import SymSpell
+from ckip_transformers.nlp import CkipWordSegmenter, CkipPosTagger
 from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
 from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-load_dotenv()
-
 class AdvancedCleaner:
     def __init__(self):
-        self.sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-        try:
-            with importlib.resources.path("symspellpy", "frequency_dictionary_en_82_765.txt") as dict_path:
-                self.sym_spell.load_dictionary(str(dict_path), term_index=0, count_index=1)
-        except:
-            pass
-
-    def advanced_clean_text(self, text):
-        """深度清洗：移除贅詞、正規化標點與雜訊"""
-        redundant = ["那個", "然後", "喔", "啦", "欸", "呢", "的一聲"]
-        for word in redundant:
-            text = text.replace(word, "")
+        self.ws = CkipWordSegmenter(model="albert-base", device=-1)
+        self.pos = CkipPosTagger(model="albert-base", device=-1)
+        
+    def base_clean(self, text):
         text = re.sub(r'<[^>]+>|https?://\S+', '', text)
-        punc = {"！": "!", "？": "?", "，": ",", "。": ".", "：": ":", "；": ";"}
+        punc = {"！": "!", "？": "?", "，": ",", "。": ".", "：": ":"}
         for old, new in punc.items():
             text = text.replace(old, new)
-        text = re.sub(r'(.)\1{2,}', r'\1', text)
         return re.sub(r'\s+', ' ', text).strip()
 
-def process_and_save(file_path, elder_id):
-    if not os.path.exists(file_path): return
+    def ckip_refine(self, text_list):
+        word_results = self.ws(text_list)
+        pos_results = self.pos(word_results)   # ⭐ pos 要吃 ws 的輸出，不是原始 text
+        cleaned_list = []
+        keep_pos = {'Na', 'Nb', 'Nc', 'Nd', 'VA', 'VC', 'V_2', 'A'}
+        for words, pos in zip(word_results, pos_results):
+            if words is None or pos is None:
+                cleaned_list.append(text_list[0])  # fallback 用原文
+                continue
+            filtered = [w for w, p in zip(words, pos) if p in keep_pos]
+            cleaned_list.append("".join(filtered) if filtered else text_list[0])
+        return cleaned_list
+
+def process_and_save(elder_id, raw_text):
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
     
     cleaner = AdvancedCleaner()
-    with open(file_path, "r", encoding="utf-8") as f:
-        raw_text = f.read()
-
-    cleaned_text = cleaner.advanced_clean_text(raw_text)
+    base = cleaner.base_clean(raw_text)
+    refined = cleaner.ckip_refine([base])[0]
     
-    # 輸出清洗成果
-    os.makedirs("data/cleaned_output", exist_ok=True)
-    with open(f"data/cleaned_output/cleaned_{os.path.basename(file_path)}", "w", encoding="utf-8") as f:
-        f.write(cleaned_text)
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=250, chunk_overlap=40)
-    chunks = text_splitter.split_text(cleaned_text)
+    # 效能優化平衡點 chunk_size=50
+    splitter = RecursiveCharacterTextSplitter(chunk_size=50, chunk_overlap=10)
+    chunks = splitter.split_text(refined)
+    metadatas = [{"elder_id": elder_id} for _ in chunks]
     
-    embeddings = OllamaEmbeddings(model=os.getenv("EMBEDDING_MODEL", "bge-m3"))
-
-    # 存入 Qdrant 向量資料庫
-    QdrantVectorStore.from_texts(
-        texts=chunks,
-        embedding=embeddings,
-        metadatas=[{"elder_id": elder_id}] * len(chunks),
-        path=os.getenv("QDRANT_PATH", "./qdrant_db"),
-        collection_name=os.getenv("QDRANT_COLLECTION", "elderly_memories"),
-    )
-    print(f"✅ Qdrant 向量資料庫已建立。")
-
-if __name__ == "__main__":
-    process_and_save("data/grandpa_wang.txt", "elder_001")
+    if chunks:
+        QdrantVectorStore.from_texts(
+            texts=chunks,
+            embedding=embeddings,
+            metadatas=metadatas,
+            url=qdrant_url,
+            collection_name="safe_reminiscence"
+        )
+        return len(chunks)
+    return 0

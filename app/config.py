@@ -11,14 +11,14 @@ class Settings(BaseSettings):
 
     # === LLM (Ollama) ===
     ollama_host: str = "http://ollama:11434"
-    ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:Q4_K_M"
+    ollama_model: str = "rememo-llama3"
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://kinect:8000"
     stt_model: str = "Systran/faster-whisper-large-v3"
 
     # === TTS (CosyVoice 已停用，改用 Edge-TTS) ===
-#    tts_host: str = "http://tts:8188"
+    tts_host: str = "http://tts:8080"
 
     # === Stability AI ===
     stability_api_key: str = ""

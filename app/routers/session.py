@@ -119,6 +119,14 @@ async def session_start(request: Request, user_id: str, session_id: str, therapi
             session_id=session_id,
             round_number=1,
         )
+        tts = request.app.state.tts_service
+        audio_path = await tts.synthesize(
+            text=result["scene_text"] + result["question"],
+            session_id=session_id,
+            round_number=1,
+            turn_number=None,
+        )
+        result["audio_path"] = audio_path
         await _init_session_meta(request.app.state.redis, session_id, user_id, therapist_id)
         return result
     except ValueError as e:
@@ -144,6 +152,15 @@ async def session_round(request: Request, user_id: str, session_id: str, round_n
             session_id=session_id,
             round_number=round_number,
         )
+        if result.get("question"):
+            tts = request.app.state.tts_service
+            audio_path = await tts.synthesize(
+                text=result["scene_text"] + result["question"],
+                session_id=session_id,
+                round_number=round_number,
+                turn_number=None,
+            )
+            result["audio_path"] = audio_path
         await _init_session_meta(request.app.state.redis, session_id, user_id, therapist_id)
         return result
     except ValueError as e:
@@ -309,11 +326,27 @@ async def session_respond(request: Request, body: RespondRequest):
     """
     orchestrator = request.app.state.orchestrator
     try:
-        return await orchestrator.process_response(
+        r = request.app.state.redis
+        metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
+        emotion = metrics.get("emotion_raw", "happy")
+        result = await orchestrator.process_response(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
+            emotion=emotion,
         )
+        if result.get("question"):                     
+            tts = request.app.state.tts_service
+            audio_path = await tts.synthesize(
+                text=result["scene_text"] + result["question"],
+                session_id=body.state.session_id,
+                round_number=body.state.round,
+                turn_number=None,
+            )
+            result["audio_path"] = audio_path
+        return result                                 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"處理回應失敗: {str(e)}")
