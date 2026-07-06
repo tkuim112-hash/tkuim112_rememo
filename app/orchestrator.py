@@ -74,6 +74,18 @@ _STEP_TYPE_LABEL = {
     "STEP3": "STEP3補問",
 }
 
+# Kinect 即時偵測情緒（app/routers/sensor.py 的 emotion_raw）→ 給 LLM 的語氣指引
+_EMOTION_GUIDANCE = {
+    "sad":     "長者目前情緒低落，請優先給予溫暖同理與正向肯定，語氣放柔，暫緩深入提問，可引導至輕鬆或正向的話題。",
+    "angry":   "長者目前情緒焦躁不安，請先安撫情緒、語氣放緩，避免追問敏感或原因類問題。",
+    "excited": "長者目前情緒較亢奮，維持溫暖但避免過度刺激。",
+    "happy":   "長者情緒穩定，正常延續對話即可。",
+}
+
+
+def _emotion_guidance(emotion: str) -> str:
+    return _EMOTION_GUIDANCE.get(emotion, _EMOTION_GUIDANCE["happy"])
+
 
 class TherapyOrchestrator:
     """指揮所有 service，實作懷舊療法完整狀態機。"""
@@ -179,6 +191,7 @@ class TherapyOrchestrator:
         self,
         elder_response: str,
         state: dict,
+        emotion: str = "happy",
     ) -> dict:
         """
         狀態機核心：根據長者回應決定下一步。
@@ -186,6 +199,7 @@ class TherapyOrchestrator:
         Args:
             elder_response: 長者說的話（STT 轉譯結果）
             state: 上一輪回傳的 state dict
+            emotion: Kinect 即時偵測的情緒（happy/excited/angry/sad，見 app/routers/sensor.py）
 
         Returns dict 含：
           action     : "open_followup" | "ask_supplement_w" | "end_round" | "end_session"
@@ -232,7 +246,7 @@ class TherapyOrchestrator:
             else:
                 skipped_w.append(last_w)
                 return await self._next_step_or_end(
-                    user, scene_els, covered_w, skipped_w, elder_response, state,
+                    user, scene_els, covered_w, skipped_w, elder_response, state, emotion
                 )
 
         # ── STEP2：自由對話中背景追蹤 W 覆蓋 ────────────────────
@@ -247,7 +261,7 @@ class TherapyOrchestrator:
         # ── 5W1H 全部涵蓋 → 結束回合 ─────────────────────────────
         if not self._next_uncovered_w(covered_w, skipped_w):
             print("  → 5W1H 全部涵蓋，結束回合")
-            return await self._end_action(state, user, elder_response)
+            return await self._end_action(state, user, elder_response, emotion)
 
         # ── 話題能否繼續？ ────────────────────────────────────────
         if quick_end:
@@ -263,7 +277,7 @@ class TherapyOrchestrator:
                 taboo_words=user["taboos"],
                 llm_service=self.llm,
                 user=user, scene_elements=scene_els, covered_w=covered_w,
-                skipped_w=skipped_w, elder_response=elder_response,
+                skipped_w=skipped_w, elder_response=elder_response, emotion=emotion,
             )
             new_state = {
                 **state,
@@ -281,7 +295,7 @@ class TherapyOrchestrator:
         else:
             # STEP3：話題結束，切入未問的 W
             return await self._next_step_or_end(
-                user, scene_els, covered_w, skipped_w, elder_response, state,
+                user, scene_els, covered_w, skipped_w, elder_response, state, emotion
             )
 
     # ══════════════════════════════════════════════════════════════
@@ -303,12 +317,14 @@ class TherapyOrchestrator:
         skipped_w: list,
         target_w: str,
         state: dict,
+        emotion: str = "happy",
     ) -> dict:
         result = await guarded_generate(
             self._generate_supplement_question,
             taboo_words=user["taboos"],
             llm_service=self.llm,
             user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
+            emotion=emotion,
         )
         print(f"  → 補問 W({target_w}): {result['question']}")
         new_state = {
@@ -330,6 +346,7 @@ class TherapyOrchestrator:
         state: dict,
         user: dict = None,
         elder_response: str = "",
+        emotion: str = "happy",
     ) -> dict:
         current_round = state["round"]
         if current_round >= 3:
@@ -344,7 +361,7 @@ class TherapyOrchestrator:
                         "closing_text": "謝謝您今天的分享，辛苦了。",
                         "question": "今天過得還好嗎？",
                     },
-                    user=user, elder_response=elder_response,
+                    user=user, elder_response=elder_response, emotion=emotion,
                 )
                 if user else {"closing_text": "", "question": ""}
             )
@@ -371,23 +388,24 @@ class TherapyOrchestrator:
         skipped_w: list,
         elder_response: str,
         state: dict,
+        emotion: str = "happy",
     ) -> dict:
         """話題結束後：找下一個W補問，或結束回合。Why 需長者狀態良好才問。"""
         next_w = self._next_uncovered_w(covered_w, skipped_w)
         if not next_w:
-            return await self._end_action(state, user, elder_response)
+            return await self._end_action(state, user, elder_response, emotion)
 
         if next_w == "Why":
-            elder_state_good = await self._check_elder_state_good(elder_response)
+            elder_state_good = await self._check_elder_state_good(elder_response, emotion)
             print(f"  → Why 長者狀態良好: {elder_state_good}")
             if not elder_state_good:
                 skipped_w.append("Why")
                 next_w = self._next_uncovered_w(covered_w, skipped_w)
                 if not next_w:
-                    return await self._end_action(state, user, elder_response)
+                    return await self._end_action(state, user, elder_response, emotion)
 
         return await self._ask_supplement(
-            user, scene_els, covered_w, skipped_w, next_w, state,
+            user, scene_els, covered_w, skipped_w, next_w, state, emotion
         )
 
     # ══════════════════════════════════════════════════════════════
@@ -454,8 +472,10 @@ class TherapyOrchestrator:
             if w.strip() in _W_DESC
         ]
 
-    async def _check_elder_state_good(self, elder_response: str) -> bool:
+    async def _check_elder_state_good(self, elder_response: str, emotion: str = "happy") -> bool:
         """判斷長者狀態是否良好，適合詢問 Why（原因/動機）。"""
+        if emotion in ("sad", "angry"):
+            return False
         prompt = (
             f"長者剛才說：「{elder_response}」\n\n"
             "請判斷長者目前狀態是否良好（情緒穩定、回應積極、有分享意願）？\n"
@@ -470,6 +490,7 @@ class TherapyOrchestrator:
         self,
         user: dict,
         elder_response: str = "",
+        emotion: str = "happy",
     ) -> dict:
         """收尾引導：三回合結束後帶領長者從回憶回到現實，詢問感受或正向回憶。"""
         system_content = (
@@ -487,6 +508,7 @@ class TherapyOrchestrator:
             f"姓名：{user['name']}\n"
             f"今日主題：{user['today_topic']}\n"
             f"{last_response_section}"
+            f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【任務】\n"
             f"三回合療程剛剛結束。請設計收尾引導，需包含：\n"
             f"1. 收尾語：1-2句，溫暖肯定長者今天的分享，語氣輕鬆自然，不誇張\n"
@@ -561,6 +583,7 @@ class TherapyOrchestrator:
         covered_w: list[str],
         elder_response: str = "",
         memories: list[dict] | None = None,
+        emotion: str = "happy",
     ) -> dict:
         """
         生成 STEP1/2/3 問題。
@@ -595,6 +618,7 @@ class TherapyOrchestrator:
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"{elder_section}"
             f"{memory_section}"
+            f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n{_STEP_TASKS[step]}\n"
             f"\n【輸出格式】\n"
@@ -618,6 +642,7 @@ class TherapyOrchestrator:
         covered_w: list[str],
         skipped_w: list[str],
         elder_response: str,
+        emotion: str = "happy",
     ) -> dict:
         """
         STEP2 開放式追問（Track C）：承接長者情緒，自然延伸問題，順道帶出未涵蓋的W。
@@ -642,6 +667,7 @@ class TherapyOrchestrator:
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"\n【尚未涵蓋的W維度】\n{uncovered_str}\n"
+            f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n請先承接長者的情緒（1-2句，符合他當下的心情），"
             f"再順著長者說的話問下一個問題（≤15字，開頭含畫面元素，開放式）。\n"
@@ -664,6 +690,7 @@ class TherapyOrchestrator:
         scene_elements: list[str],
         covered_w: list[str],
         target_w: str,
+        emotion: str = "happy",
     ) -> dict:
         """
         W 補問：明確針對尚未涵蓋的 W 維度切入（STEP3 格式）。
@@ -688,6 +715,7 @@ class TherapyOrchestrator:
             f"懷舊治療主題類別：{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
+            f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n"
             f"生成一個【補充問題】，探索還未涵蓋的W維度。{_W_HINT[target_w]}\n"

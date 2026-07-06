@@ -326,6 +326,9 @@ async def session_respond(request: Request, body: RespondRequest):
     """
     orchestrator = request.app.state.orchestrator
     try:
+        r = request.app.state.redis
+        metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
+        emotion = metrics.get("emotion_raw", "happy")
         result = await orchestrator.process_response(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
