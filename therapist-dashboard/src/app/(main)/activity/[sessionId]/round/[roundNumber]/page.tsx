@@ -101,7 +101,7 @@ export default function RoundDetailPage({
       <div className="flex gap-4 flex-1 min-h-0">
 
         {/* 左欄：場景圖片 */}
-        <div className="flex-none w-[700px] h-[700px] bg-white rounded-2xl overflow-hidden">
+        <div className="flex-none w-[600px] h-[600px] xl:w-[700px] xl:h-[700px] bg-white rounded-2xl overflow-hidden">
           {currentRound.sceneImage ? (
             <ImageWithFallback src={`${AI_BASE}${currentRound.sceneImage}`} alt={currentRound.sceneName} />
           ) : (
