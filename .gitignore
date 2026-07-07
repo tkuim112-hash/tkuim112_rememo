@@ -48,8 +48,6 @@ models/
 
 test/
 
-Unity/
-
 # Unity (Rememo 專案)
 **/Library/
 **/Temp/
@@ -60,7 +58,6 @@ Unity/
 **/obj/
 **/.DS_Store
 **/__MACOSX/
-**/ProjectSettings/EditorBuildSettings.asset
 **/ProjectSettings/ShaderGraphSettings.asset
 
 ## Kinect v2 SDK（RF Solutions 版權）

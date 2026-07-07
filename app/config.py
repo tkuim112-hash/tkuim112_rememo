@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     redis_password: str = ""
     redis_url: str = ""  # 若為空，由 build_urls 自動組裝
 
+    # === JWT (Unity 治療師登入) ===
+    jwt_secret: str = ""
+    jwt_expire_minutes: int = 60 * 12  # 12 小時
+
     # === PostgreSQL ===
     postgres_host: str = "db"
     postgres_port: int = 5432
