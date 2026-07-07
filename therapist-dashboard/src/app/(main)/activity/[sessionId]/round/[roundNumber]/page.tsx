@@ -43,7 +43,7 @@ export default function RoundDetailPage({
     ]).then(async ([sessionData, roundsData]) => {
       if (sessionData) {
         setSession(sessionData);
-        setRounds((roundsData as SessionRound[]).filter((r) => r.type === "回合"));
+        setRounds((roundsData as SessionRound[]).filter((r) => r.type !== "心得"));
         const caseRes = await fetch(`/api/cases/${sessionData.caseId}`);
         if (caseRes.ok) setCaseData(await caseRes.json());
       }

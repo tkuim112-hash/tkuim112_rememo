@@ -26,12 +26,16 @@ export async function POST(req: NextRequest) {
     VALUES (${email}, ${code}, ${expiresAt})
   `;
 
-  await resend.emails.send({
-    from: "onboarding@resend.dev",
-    to: email,
-    subject: "Rememo 密碼重設驗證碼",
-    html: `<p>您的驗證碼為：<strong style="font-size:24px">${code}</strong></p><p>此驗證碼將於 10 分鐘後失效。</p>`,
-  });
+  try {
+    await resend.emails.send({
+      from: "onboarding@resend.dev",
+      to: email,
+      subject: "Rememo 密碼重設驗證碼",
+      html: `<p>您的驗證碼為：<strong style="font-size:24px">${code}</strong></p><p>此驗證碼將於 10 分鐘後失效。</p>`,
+    });
+  } catch {
+    return NextResponse.json({ error: "驗證碼寄送失敗，請稍後再試" }, { status: 500 });
+  }
 
   return NextResponse.json({ ok: true });
 }
