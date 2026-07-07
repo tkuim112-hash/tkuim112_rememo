@@ -123,9 +123,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/m6_db
-      - SESSION_SECRET=sK69vm+c5aGXjAi0gYwulU3AnVbA8R++6dudvqmjSZk=
+      - DATABASE_URL=${FRONTEND_DATABASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
       - NODE_ENV=production
+    env_file:
+      - .env
     depends_on:
       - db
     restart: unless-stopped

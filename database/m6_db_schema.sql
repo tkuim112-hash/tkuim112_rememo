@@ -27,14 +27,15 @@ CREATE TABLE PASSWORD_RESET_CODES (
 CREATE TABLE PATIENTS (
     id SERIAL PRIMARY KEY,
     organization_id INTEGER REFERENCES ORGANIZATIONS(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,                     
-    birth_year INTEGER NOT NULL,            
-    hometown TEXT,                          
-    occupation TEXT NOT NULL,               
-    family TEXT,                            
-    preferences TEXT,                       
-    taboo_words TEXT,                       
-    scene_weights TEXT,                     
+    name TEXT NOT NULL,
+    birth_year INTEGER NOT NULL,
+    hometown TEXT,
+    occupation TEXT NOT NULL,
+    family TEXT,
+    preferences TEXT,
+    taboo_words TEXT,
+    scene_weights TEXT,
+    avatar TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -43,25 +44,36 @@ CREATE TABLE SESSIONS (
     patient_id INTEGER REFERENCES PATIENTS(id) ON DELETE CASCADE,
     therapist_id INTEGER REFERENCES THERAPISTS(id) ON DELETE SET NULL,
     organization_id INTEGER REFERENCES ORGANIZATIONS(id) ON DELETE CASCADE,
-    date DATE NOT NULL,                    
-    mode TEXT NOT NULL,                    
-    start_scene TEXT,                      
-    score_participation INTEGER,          
+    date DATE NOT NULL,
+    mode TEXT NOT NULL,
+    start_scene TEXT,
+    score_participation INTEGER,
     score_attention INTEGER,
     score_endurance INTEGER,
     score_emotion INTEGER,
     score_interaction INTEGER,
-    total_score INTEGER,                
-    therapist_note TEXT,                    
-    story_summary TEXT                      
+    total_score INTEGER,
+    emotional_status TEXT,
+    therapist_note TEXT,
+    story_summary TEXT
 );
 
 CREATE TABLE ROUNDS (
     id SERIAL PRIMARY KEY,
     session_id INTEGER REFERENCES SESSIONS(id) ON DELETE CASCADE,
-    round_number INTEGER NOT NULL,          
-    response_time FLOAT,                    
-    emotion TEXT,                           
-    generated_scene TEXT,                   
-    patient_response TEXT                   
+    round_number INTEGER NOT NULL,
+    response_time FLOAT,
+    emotion TEXT,
+    type TEXT,
+    generated_scene TEXT,
+    patient_response TEXT,
+    scene_image TEXT
+);
+
+CREATE TABLE ROUND_EXCHANGES (
+    id SERIAL PRIMARY KEY,
+    round_id INTEGER REFERENCES ROUNDS(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL,
+    question TEXT,
+    answer TEXT
 );

@@ -2,6 +2,32 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
+
+  const { id } = await params;
+  const {
+    totalScore, emotionalStatus, notes,
+    scoreParticipation, scoreAttention, scoreEndurance, scoreEmotion, scoreInteraction,
+  } = await req.json();
+
+  await sql`
+    UPDATE sessions SET
+      total_score          = ${totalScore ?? null},
+      emotional_status     = ${emotionalStatus ?? null},
+      therapist_note       = ${notes ?? null},
+      score_participation  = ${scoreParticipation ?? null},
+      score_attention      = ${scoreAttention ?? null},
+      score_endurance      = ${scoreEndurance ?? null},
+      score_emotion        = ${scoreEmotion ?? null},
+      score_interaction    = ${scoreInteraction ?? null}
+    WHERE id = ${parseInt(id)}
+  `;
+
+  return NextResponse.json({ ok: true });
+}
+
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
@@ -17,12 +43,18 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       s.total_score,
       s.story_summary,
       s.emotional_status,
+      s.score_participation,
+      s.score_attention,
+      s.score_endurance,
+      s.score_emotion,
+      s.score_interaction,
+      s.therapist_note,
       (SELECT COUNT(*)::int FROM sessions s2
         WHERE s2.patient_id = s.patient_id AND s2.id <= s.id) AS session_number,
-      (SELECT COUNT(*)::int FROM rounds r WHERE r.session_id = s.id) AS rounds_count,
+      (SELECT COUNT(*)::int FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS rounds_count,
       (SELECT ROUND(AVG(r.response_time)::numeric, 1)
-        FROM rounds r WHERE r.session_id = s.id) AS avg_response_time,
-      (SELECT r.emotion FROM rounds r WHERE r.session_id = s.id
+        FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS avg_response_time,
+      (SELECT r.emotion FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')
         GROUP BY r.emotion ORDER BY COUNT(*) DESC LIMIT 1) AS overall_emotion
     FROM sessions s
     WHERE s.id = ${parseInt(id)}
@@ -43,5 +75,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     storySummary: s.story_summary ?? "",
     rating: s.emotional_status ?? "—",
     mode: s.mode,
+    scoreParticipation: s.score_participation ?? null,
+    scoreAttention: s.score_attention ?? null,
+    scoreEndurance: s.score_endurance ?? null,
+    scoreEmotion: s.score_emotion ?? null,
+    scoreInteraction: s.score_interaction ?? null,
+    therapistNote: s.therapist_note ?? "",
   });
 }

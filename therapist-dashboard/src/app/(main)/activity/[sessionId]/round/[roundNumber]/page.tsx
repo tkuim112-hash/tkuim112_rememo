@@ -2,11 +2,26 @@
 
 import { use, useState, useEffect } from "react";
 import Link from "next/link";
-import Image from "next/image";
+
 import { useRouter } from "next/navigation";
 import type { Session, SessionRound, Case } from "@/lib/types";
 
 const ROUND_LABELS = ["一", "二", "三"];
+const AI_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+function ImageWithFallback({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-[#888] text-[16px]">
+        圖片載入失敗
+      </div>
+    );
+  }
+  return (
+    <img src={src} alt={alt} className="w-full h-full object-cover" onError={() => setFailed(true)} />
+  );
+}
 
 export default function RoundDetailPage({
   params,
@@ -28,7 +43,7 @@ export default function RoundDetailPage({
     ]).then(async ([sessionData, roundsData]) => {
       if (sessionData) {
         setSession(sessionData);
-        setRounds((roundsData as SessionRound[]).filter((r) => r.type === "回合"));
+        setRounds((roundsData as SessionRound[]).filter((r) => r.type !== "心得"));
         const caseRes = await fetch(`/api/cases/${sessionData.caseId}`);
         if (caseRes.ok) setCaseData(await caseRes.json());
       }
@@ -86,18 +101,12 @@ export default function RoundDetailPage({
       <div className="flex gap-4 flex-1 min-h-0">
 
         {/* 左欄：場景圖片 */}
-        <div className="flex-none w-[600px] h-[600px] bg-white rounded-2xl overflow-hidden">
+        <div className="flex-none w-[600px] h-[600px] xl:w-[700px] xl:h-[700px] bg-white rounded-2xl overflow-hidden">
           {currentRound.sceneImage ? (
-            <Image
-              src={currentRound.sceneImage}
-              alt={currentRound.sceneName}
-              width={600}
-              height={600}
-              className="w-full h-full object-cover"
-            />
+            <ImageWithFallback src={`${AI_BASE}${currentRound.sceneImage}`} alt={currentRound.sceneName} />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-[#888] text-[16px]">
-              {currentRound.sceneName}
+              尚無場景圖片
             </div>
           )}
         </div>
