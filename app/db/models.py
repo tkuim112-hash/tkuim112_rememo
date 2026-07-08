@@ -2,7 +2,7 @@
 SQLAlchemy ORM models，對應 database/m6_db_schema.sql 的表。
 """
 from datetime import datetime, date
-from sqlalchemy import String, Integer, Text, Date, DateTime, Float, ForeignKey
+from sqlalchemy import String, Integer, Text, Date, DateTime, Float, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 from db.session import Base
 
@@ -46,7 +46,10 @@ class Patient(Base):
     preferences: Mapped[str | None] = mapped_column(Text)
     taboo_words: Mapped[str | None] = mapped_column(Text)
     scene_weights: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    avatar: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=func.now()
+    )
 
 
 class TherapySession(Base):
@@ -72,6 +75,7 @@ class TherapySession(Base):
     score_emotion: Mapped[int | None] = mapped_column(Integer)
     score_interaction: Mapped[int | None] = mapped_column(Integer)
     total_score: Mapped[int | None] = mapped_column(Integer)
+    emotional_status: Mapped[str | None] = mapped_column(Text)
     therapist_note: Mapped[str | None] = mapped_column(Text)
     story_summary: Mapped[str | None] = mapped_column(Text)
 
@@ -86,8 +90,22 @@ class TherapyRound(Base):
     round_number: Mapped[int] = mapped_column(Integer, nullable=False)
     response_time: Mapped[float | None] = mapped_column(Float)
     emotion: Mapped[str | None] = mapped_column(Text)
+    type: Mapped[str | None] = mapped_column(Text)
     generated_scene: Mapped[str | None] = mapped_column(Text)
     patient_response: Mapped[str | None] = mapped_column(Text)
+    scene_image: Mapped[str | None] = mapped_column(Text)
+
+
+class RoundExchange(Base):
+    __tablename__ = "round_exchanges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    round_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("rounds.id", ondelete="CASCADE")
+    )
+    question_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    question: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(Text)
 
 
 class PasswordResetCode(Base):
@@ -96,5 +114,7 @@ class PasswordResetCode(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(Text, nullable=False)
     verification_code: Mapped[str] = mapped_column(String(6), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=func.now()
+    )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

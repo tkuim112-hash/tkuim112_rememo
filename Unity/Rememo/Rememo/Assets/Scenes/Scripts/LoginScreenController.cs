@@ -30,13 +30,13 @@ public class LoginScreenController : MonoBehaviour
 
         if (string.IsNullOrEmpty(email))
         {
-            if (errorText != null) errorText.text = "請輸入帳號";
+            AuthService.ShowError(errorText, "請輸入帳號");
             return;
         }
 
         if (string.IsNullOrEmpty(password))
         {
-            if (errorText != null) errorText.text = "請輸入密碼";
+            AuthService.ShowError(errorText, "請輸入密碼");
             return;
         }
 
@@ -59,7 +59,7 @@ public class LoginScreenController : MonoBehaviour
     void OnLoginFail(string message)
     {
         loginButton.interactable = true;
-        Debug.LogWarning(message);
+        PlayerPrefs.SetString("LoginErrorMessage", message);
         SceneManager.LoadScene("LoginFailScene");
     }
 }

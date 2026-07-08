@@ -43,6 +43,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def build_urls(self) -> "Settings":
+        if not self.jwt_secret:
+            raise ValueError(
+                "JWT_SECRET 未設定：這會讓任何人都能偽造合法的治療師登入 token，"
+                "請在 .env 設定 JWT_SECRET 後再啟動服務。"
+            )
         if not self.redis_url:
             if self.redis_password:
                 self.redis_url = f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}"

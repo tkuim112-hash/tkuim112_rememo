@@ -23,6 +23,13 @@ public class LoginFailController : MonoBehaviour
         // 預設密碼隱藏
         passwordInput.contentType = TMP_InputField.ContentType.Password;
         passwordInput.ForceLabelUpdate();
+
+        // 顯示上一次登入失敗的實際原因（帳密錯誤 / 連線失敗等），顯示完即清除避免殘留給下次進場景用
+        if (PlayerPrefs.HasKey("LoginErrorMessage"))
+        {
+            AuthService.ShowError(errorText, PlayerPrefs.GetString("LoginErrorMessage"));
+            PlayerPrefs.DeleteKey("LoginErrorMessage");
+        }
     }
 
     void OnLoginClicked()
@@ -32,13 +39,13 @@ public class LoginFailController : MonoBehaviour
 
         if (string.IsNullOrEmpty(email))
         {
-            if (errorText != null) errorText.text = "請輸入帳號";
+            AuthService.ShowError(errorText, "請輸入帳號");
             return;
         }
 
         if (string.IsNullOrEmpty(password))
         {
-            if (errorText != null) errorText.text = "請輸入密碼";
+            AuthService.ShowError(errorText, "請輸入密碼");
             return;
         }
 
@@ -61,7 +68,6 @@ public class LoginFailController : MonoBehaviour
     void OnLoginFail(string message)
     {
         loginButton.interactable = true;
-        if (errorText != null) errorText.text = message;
-        else Debug.LogWarning(message);
+        AuthService.ShowError(errorText, message);
     }
 }

@@ -22,7 +22,15 @@ public static class AuthService
         public string token;
         public int therapist_id;
         public string name;
+        // 0 代表沒有掛任何機構（後端 organizations.id 是流水號，從 1 開始，不會撞號）。
         public int organization_id;
+    }
+
+    /// <summary>沒有 errorText 就退回 log，避免登入表單在漏接 UI 元件時完全無聲無息。</summary>
+    public static void ShowError(TMPro.TMP_Text errorText, string message)
+    {
+        if (errorText != null) errorText.text = message;
+        else Debug.LogWarning(message);
     }
 
     public static IEnumerator Login(
