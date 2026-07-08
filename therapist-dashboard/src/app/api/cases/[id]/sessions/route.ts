@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { logAccess } from "@/lib/audit";
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
@@ -28,6 +29,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     WHERE s.patient_id = ${parseInt(id)}
     ORDER BY s.id DESC
   `;
+
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: parseInt(id),
+    action: "view_patient_sessions",
+    resource: `patients:${id}`,
+    req,
+  });
 
   return NextResponse.json(sessions.map(s => ({
     id: s.id.toString(),

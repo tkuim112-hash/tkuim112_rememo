@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { logAccess } from "@/lib/audit";
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -12,7 +13,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     scoreParticipation, scoreAttention, scoreEndurance, scoreEmotion, scoreInteraction,
   } = await req.json();
 
-  await sql`
+  const [updated] = await sql`
     UPDATE sessions SET
       total_score          = ${totalScore ?? null},
       emotional_status     = ${emotionalStatus ?? null},
@@ -23,12 +24,21 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       score_emotion        = ${scoreEmotion ?? null},
       score_interaction    = ${scoreInteraction ?? null}
     WHERE id = ${parseInt(id)}
+    RETURNING patient_id
   `;
+
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: updated?.patient_id ?? null,
+    action: "update_session_assessment",
+    resource: `sessions:${id}`,
+    req,
+  });
 
   return NextResponse.json({ ok: true });
 }
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
@@ -61,6 +71,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   `;
 
   if (!s) return NextResponse.json({ error: "找不到療程" }, { status: 404 });
+
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: s.patient_id,
+    action: "view_session",
+    resource: `sessions:${id}`,
+    req,
+  });
 
   return NextResponse.json({
     id: s.id.toString(),

@@ -108,6 +108,25 @@ class RoundExchange(Base):
     answer: Mapped[str | None] = mapped_column(Text)
 
 
+class AuditLog(Base):
+    """存取稽核紀錄：誰（therapist_id）、什麼時候（created_at）、看了哪個病患的資料（patient_id）。"""
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    therapist_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("therapists.id", ondelete="SET NULL")
+    )
+    patient_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("patients.id", ondelete="SET NULL")
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    resource: Mapped[str | None] = mapped_column(Text)
+    ip_address: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=func.now()
+    )
+
+
 class PasswordResetCode(Base):
     __tablename__ = "password_reset_codes"
 

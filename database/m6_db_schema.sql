@@ -78,3 +78,14 @@ CREATE TABLE ROUND_EXCHANGES (
     question TEXT,
     answer TEXT
 );
+
+-- 存取稽核紀錄：誰（therapist_id）、什麼時候（created_at）、看了哪個病患的資料（patient_id）
+CREATE TABLE AUDIT_LOGS (
+    id SERIAL PRIMARY KEY,
+    therapist_id INTEGER REFERENCES THERAPISTS(id) ON DELETE SET NULL,
+    patient_id INTEGER REFERENCES PATIENTS(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    resource TEXT,
+    ip_address TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

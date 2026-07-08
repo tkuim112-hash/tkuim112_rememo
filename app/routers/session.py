@@ -7,11 +7,19 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
 from db.models import TherapySession
 
 router = APIRouter(prefix="/session", tags=["session"])
+
+
+def _to_int(val) -> int | None:
+    try:
+        return int(val) or None
+    except (TypeError, ValueError):
+        return None
 
 
 async def _init_session_meta(r, session_id: str, patient_id: str, therapist_id: str = "") -> None:
@@ -134,6 +142,12 @@ async def session_start(
         )
         result["audio_path"] = audio_path
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
+        await log_access(
+            therapist_id=therapist_id,
+            patient_id=_to_int(user_id),
+            action="start_session",
+            resource=f"session:{session_id}",
+        )
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -285,12 +299,6 @@ async def session_assessment(
 
     # PostgreSQL 永久寫入
     try:
-        def _to_int(val) -> int | None:
-            try:
-                return int(val) or None
-            except (TypeError, ValueError):
-                return None
-
         total = sum(scores.values())
         stmt = (
             pg_insert(TherapySession)
@@ -321,6 +329,12 @@ async def session_assessment(
         )
         await db.execute(stmt)
         await db.commit()
+        await log_access(
+            therapist_id=therapist_id,
+            patient_id=_to_int(meta.get("patient_id")),
+            action="generate_assessment",
+            resource=f"session:{session_id}",
+        )
 
         # DB 寫入成功後清除所有 session Redis key
         await r.delete(
