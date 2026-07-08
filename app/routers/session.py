@@ -372,7 +372,7 @@ async def session_respond(
     try:
         r = request.app.state.redis
         metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
-        emotion = metrics.get("emotion_raw", "happy")
+        emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
         result = await orchestrator.process_response(
             elder_response=body.elder_response,
             state=body.state.model_dump(),

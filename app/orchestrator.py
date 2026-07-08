@@ -191,7 +191,7 @@ class TherapyOrchestrator:
         self,
         elder_response: str,
         state: dict,
-        emotion: str = "happy",
+        emotion: str = "",
     ) -> dict:
         """
         狀態機核心：根據長者回應決定下一步。
@@ -222,17 +222,18 @@ class TherapyOrchestrator:
         print(f"[Orchestrator] process_response | round={state['round']} "
               f"last={last_type} covered={covered_w} skipped={skipped_w}")
 
-        # ── 後台資料更新 ──────────────────────────────────────────
-        await self.rag.save_memory(
-            user_id=user_id,
-            session_id=state["session_id"],
-            text=elder_response,
-            emotion="",
-        )
-
         # ── 快速結束判斷（不叫 LLM）───────────────────────────────
         quick_end = self._is_quick_end(elder_response)
         print(f"  → 快速結束: {quick_end}")
+
+        # ── 後台資料更新（放棄性/過短回答不入庫，避免汙染向量檢索）──
+        if not quick_end:
+            await self.rag.save_memory(
+                user_id=user_id,
+                session_id=state["session_id"],
+                text=elder_response,
+                emotion=emotion,
+            )
 
         # ── 補問路徑：先確認上一個 W 是否被回答 ─────────────────
         if last_type == "supplement_w" and last_w:

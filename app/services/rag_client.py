@@ -41,9 +41,9 @@ class RealRAGClient:
                 {
                     "text": m.get("text", ""),
                     "summary": m.get("text", "")[:20],
-                    "emotion_tag": "懷念",
+                    "emotion_tag": m.get("emotion") or "懷念",
                     "importance": m.get("score", 0.5),
-                    "timestamp": "2026-01-01",
+                    "timestamp": m.get("created_at", ""),
                 }
                 for m in memories
             ]
@@ -56,7 +56,12 @@ class RealRAGClient:
         try:
             response = await self.client.post(
                 f"{self.base_url}/api/v1/memory/ingest",
-                json={"elder_id": user_id, "text": text},
+                json={
+                    "elder_id": user_id,
+                    "text": text,
+                    "session_id": session_id,
+                    "emotion": emotion,
+                },
             )
             response.raise_for_status()
             print(f"[RAG] 儲存成功: {text[:30]}...")

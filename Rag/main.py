@@ -13,6 +13,8 @@ ai_engine = ElderlyAI()
 class IngestRequest(BaseModel):
     elder_id: str
     text: str
+    session_id: str = ""
+    emotion: str = ""
 
 class RetrieveRequest(BaseModel):
     elder_id: str
@@ -20,9 +22,13 @@ class RetrieveRequest(BaseModel):
     limit: int = 3
 
 @app.post("/api/v1/memory/ingest")
-async def api_ingest_memory(payload: IngestRequest):
+def api_ingest_memory(payload: IngestRequest):
+    # 同步端點：CKIP/embedding 是阻塞呼叫，交給 FastAPI threadpool 跑，避免卡住 event loop
     try:
-        total_chunks = process_and_save(payload.elder_id, payload.text)
+        total_chunks = process_and_save(
+            payload.elder_id, payload.text,
+            session_id=payload.session_id, emotion=payload.emotion,
+        )
         return {
             "status": "success",
             "message": f"資料成功寫入 Qdrant！總片段數: {total_chunks}",
@@ -32,7 +38,7 @@ async def api_ingest_memory(payload: IngestRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/memory/retrieve")
-async def api_retrieve_memory(payload: RetrieveRequest):
+def api_retrieve_memory(payload: RetrieveRequest):
     try:
         memories = ai_engine.retrieve_memories(
             elder_id=payload.elder_id,
