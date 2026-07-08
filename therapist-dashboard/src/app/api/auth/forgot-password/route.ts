@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 import sql from "@/lib/db";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// 延後到真的要寄信才建立 client：build 階段（next build 收集 route 資訊時）
+// 不一定拿得到 runtime 的 RESEND_API_KEY，在 module scope 建構會直接讓 build 失敗。
+let resend: Resend | null = null;
+function getResend(): Resend {
+  if (!resend) resend = new Resend(process.env.RESEND_API_KEY);
+  return resend;
+}
 
 export async function POST(req: NextRequest) {
   const { email } = await req.json();
@@ -27,7 +33,7 @@ export async function POST(req: NextRequest) {
   `;
 
   try {
-    await resend.emails.send({
+    await getResend().emails.send({
       from: "onboarding@resend.dev",
       to: email,
       subject: "Rememo 密碼重設驗證碼",
