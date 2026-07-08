@@ -81,6 +81,9 @@ app.add_middleware(
     allow_origins=["http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # /session 有些端點是治療師後台瀏覽器直接呼叫、帶 rememo_session cookie 驗證身分，
+    # 瀏覽器跨網域請求要帶 cookie 一定要開這個（前端 fetch 也要記得帶 credentials: "include"）。
+    allow_credentials=True,
 )
 
 app.include_router(ws_stt.router)

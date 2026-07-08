@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import create_access_token
+from auth import create_access_token, get_current_therapist_id, revoke_therapist_tokens
 from db.deps import get_db
 from db.models import Therapist
 
@@ -66,10 +66,22 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
 
     await r.delete(fail_key)
 
-    token = create_access_token(therapist.id, therapist.organization_id)
+    token = await create_access_token(r, therapist.id, therapist.organization_id)
     return LoginResponse(
         token=token,
         therapist_id=therapist.id,
         name=therapist.name,
         organization_id=therapist.organization_id or 0,
     )
+
+
+@router.post(
+    "/revoke",
+    summary="登出所有裝置（例如裝置遺失時使用，讓目前所有已簽發的 token 立即失效）",
+)
+async def revoke_all_devices(
+    request: Request,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    await revoke_therapist_tokens(request.app.state.redis, therapist_id)
+    return {"ok": True}

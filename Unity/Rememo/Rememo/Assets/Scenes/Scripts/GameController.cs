@@ -92,7 +92,7 @@ public class GameController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(sttServerUrl);
+        ws = new WebSocket(AuthService.AppendToken(sttServerUrl));
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
@@ -289,6 +289,7 @@ public class GameController : MonoBehaviour
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
         req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
         if (req.result != UnityWebRequest.Result.Success)
             Debug.LogWarning($"[Transcript] POST 失敗: {req.error}");
@@ -334,6 +335,7 @@ public class GameController : MonoBehaviour
             : $"{backendUrl}/session/round?user_id={userId}&session_id={sessionId}&round_number={roundNum}";
 
         using var req = UnityWebRequest.PostWwwForm(url, "");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
 
         if (req.result != UnityWebRequest.Result.Success)
@@ -413,6 +415,7 @@ public class GameController : MonoBehaviour
         req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(body)));
         req.downloadHandler = new DownloadHandlerBuffer();
         req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
 
         loadingSpinner.SetActive(false);

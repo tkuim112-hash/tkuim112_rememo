@@ -1,8 +1,10 @@
 import json
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, field_validator
+
+from auth import get_current_therapist_id
 
 router = APIRouter(prefix="/sensor", tags=["sensor"])
 
@@ -276,7 +278,11 @@ async def _update_session_stats(r, session_id: str, p: SensorPayload, emotion_ra
 # ════════════ 端點 ════════════════════════════════════════════════════
 
 @router.post("/emotion", summary="接收 Kinect 原始感測資料，後端分類後存 Redis")
-async def receive_sensor(request: Request, body: SensorPayload):
+async def receive_sensor(
+    request: Request,
+    body: SensorPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     r = request.app.state.redis
     calib = await _load_calibration(r, body.session_id)
 

@@ -65,6 +65,7 @@ public class KinectCalibrationManager : MonoBehaviour
         string wsUrl = string.IsNullOrEmpty(sessionId)
             ? calibrationUrl
             : $"{calibrationUrl}?session_id={sessionId}";
+        wsUrl = AuthService.AppendToken(wsUrl);
 
         ws = new WebSocket(wsUrl);
         ws.OnOpen += (s, e) => Debug.Log("[Calibration WS] 已連線");

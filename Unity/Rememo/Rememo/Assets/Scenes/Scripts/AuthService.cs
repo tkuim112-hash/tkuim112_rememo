@@ -33,6 +33,29 @@ public static class AuthService
         else Debug.LogWarning(message);
     }
 
+    /// <summary>
+    /// 幫任何打 /session、/sensor 的 UnityWebRequest 帶上登入時拿到的 JWT。
+    /// 沒登入（AuthSession.Token 是空的）就不加 header，讓後端回 401，
+    /// 而不是在這裡靜默放行或丟例外。
+    /// </summary>
+    public static void AttachAuthHeader(UnityWebRequest req)
+    {
+        if (!AuthSession.IsLoggedIn) return;
+        req.SetRequestHeader("Authorization", $"Bearer {AuthSession.Token}");
+    }
+
+    /// <summary>
+    /// 幫 WebSocket 連線網址帶上 token（WS handshake 沒辦法像一般 HTTP header 那樣
+    /// 通用地帶 Authorization，query string 是各家 WS client 都支援的做法）。
+    /// 自動判斷網址本來有沒有 "?"，接在對的位置。
+    /// </summary>
+    public static string AppendToken(string wsUrl)
+    {
+        if (!AuthSession.IsLoggedIn) return wsUrl;
+        string separator = wsUrl.Contains("?") ? "&" : "?";
+        return $"{wsUrl}{separator}token={AuthSession.Token}";
+    }
+
     public static IEnumerator Login(
         string backendUrl,
         string email,

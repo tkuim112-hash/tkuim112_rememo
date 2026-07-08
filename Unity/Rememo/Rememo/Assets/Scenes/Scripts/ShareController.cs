@@ -319,6 +319,7 @@ public class ShareController : MonoBehaviour
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
         req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
         if (req.result != UnityWebRequest.Result.Success)
             Debug.LogWarning($"[Share Transcript] POST 失敗: {req.error}");
