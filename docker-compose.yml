@@ -48,6 +48,10 @@ services:
     container_name: tku-care-rag-service-1
     ports:
       - "8002:8000"
+    volumes:
+      - ./Rag:/app                                    # 程式碼熱更新，改完 restart 即生效
+      - ./models/ckip_cache:/root/.cache/huggingface  # CKIP 模型只下載一次
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     depends_on:
       - qdrant
       - ollama
