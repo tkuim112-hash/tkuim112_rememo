@@ -16,6 +16,7 @@ dpo/output/
 
 # 資料庫與持久化數據 (排除實體資料)
 postgres_data/
+postgres_backups/
 ollama_data/
 postgres_db/
 pgadmin/

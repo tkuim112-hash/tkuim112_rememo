@@ -150,6 +150,27 @@ services:
       - ./postgres_data:/var/lib/postgresql/data
     restart: always
 
+  # 自動備份 Postgres：每天 pg_dump 一次，壓縮後依天/週/月輪替保留，
+  # 存到跟 postgres_data 分開的獨立資料夾（同一顆硬碟壞掉還是會兩邊一起沒，
+  # 正式上線後應該再把 ./postgres_backups 同步一份到異地/雲端儲存）。
+  db-backup:
+    image: prodrigestivill/postgres-backup-local:15
+    container_name: tku-care-db-backup-1
+    restart: always
+    volumes:
+      - ./postgres_backups:/backups
+    depends_on:
+      - db
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - SCHEDULE=@daily
+      - BACKUP_KEEP_DAYS=7
+      - BACKUP_KEEP_WEEKS=4
+      - BACKUP_KEEP_MONTHS=6
+
   # pgAdmin 資料庫管理介面
   pgadmin:
     image: dpage/pgadmin4
