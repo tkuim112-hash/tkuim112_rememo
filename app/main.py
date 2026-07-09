@@ -96,6 +96,10 @@ _media_dir = Path("/media/images")
 _media_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/images", StaticFiles(directory=str(_media_dir)), name="images")
 
+_audio_dir = Path("/media/audio")
+_audio_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/audio", StaticFiles(directory=str(_audio_dir)), name="audio")
+
 
 # ════════════ 基礎端點 ════════════
 
