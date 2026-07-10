@@ -88,6 +88,7 @@ class TherapyRound(Base):
     emotion: Mapped[str | None] = mapped_column(Text)
     generated_scene: Mapped[str | None] = mapped_column(Text)
     patient_response: Mapped[str | None] = mapped_column(Text)
+    scene_image: Mapped[str | None] = mapped_column(Text)
 
 
 class PasswordResetCode(Base):
