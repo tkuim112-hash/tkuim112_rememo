@@ -37,7 +37,7 @@ public class KinectAudioSender : MonoBehaviour
 
     void Start()
     {
-        wsStt = new WebSocket(sttUrl);
+        wsStt = new WebSocket(AuthService.AppendToken(sttUrl));
         wsStt.OnOpen    += (s, e) => Debug.Log("[STT WS Kinect] 已連線");
         wsStt.OnError   += (s, e) => Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}");
         wsStt.OnClose   += (s, e) => Debug.Log("[STT WS Kinect] 已關閉");

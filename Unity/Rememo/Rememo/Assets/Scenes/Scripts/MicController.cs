@@ -76,7 +76,7 @@ public class MicController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(serverUrl);
+        ws = new WebSocket(AuthService.AppendToken(serverUrl));
         ws.OnOpen  += (s, e) => Debug.Log("[STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[STT WS] 已關閉");

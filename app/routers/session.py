@@ -7,10 +7,19 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from audit import log_access
+from auth import get_current_therapist_id
 from db.deps import get_db
 from db.models import TherapySession
 
 router = APIRouter(prefix="/session", tags=["session"])
+
+
+def _to_int(val) -> int | None:
+    try:
+        return int(val) or None
+    except (TypeError, ValueError):
+        return None
 
 
 async def _init_session_meta(r, session_id: str, patient_id: str, therapist_id: str = "") -> None:
@@ -106,7 +115,12 @@ class RespondRequest(BaseModel):
 
 
 @router.post("/start")
-async def session_start(request: Request, user_id: str, session_id: str, therapist_id: str = ""):
+async def session_start(
+    request: Request,
+    user_id: str,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     """
     啟動療程第一回合（backward-compat，等同 /session/round?round_number=1）。
 
@@ -127,7 +141,13 @@ async def session_start(request: Request, user_id: str, session_id: str, therapi
             turn_number=None,
         )
         result["audio_path"] = audio_path
-        await _init_session_meta(request.app.state.redis, session_id, user_id, therapist_id)
+        await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
+        await log_access(
+            therapist_id=therapist_id,
+            patient_id=_to_int(user_id),
+            action="start_session",
+            resource=f"session:{session_id}",
+        )
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -138,7 +158,13 @@ async def session_start(request: Request, user_id: str, session_id: str, therapi
 
 
 @router.post("/round")
-async def session_round(request: Request, user_id: str, session_id: str, round_number: int = 1, therapist_id: str = ""):
+async def session_round(
+    request: Request,
+    user_id: str,
+    session_id: str,
+    round_number: int = 1,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     """
     開始指定回合（n=1,2,3）。
 
@@ -161,7 +187,7 @@ async def session_round(request: Request, user_id: str, session_id: str, round_n
                 turn_number=None,
             )
             result["audio_path"] = audio_path
-        await _init_session_meta(request.app.state.redis, session_id, user_id, therapist_id)
+        await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -170,7 +196,11 @@ async def session_round(request: Request, user_id: str, session_id: str, round_n
 
 
 @router.get("/{session_id}/metrics", summary="取得即時檢測回饋（供治療師頁面 polling）")
-async def session_metrics(request: Request, session_id: str):
+async def session_metrics(
+    request: Request,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     r = request.app.state.redis
     data: dict = await r.hgetall(f"session:{session_id}:metrics")
     return {
@@ -184,7 +214,12 @@ class TranscriptPayload(BaseModel):
 
 
 @router.post("/{session_id}/response", summary="記錄 STT 最終辨識結果（供互動頻率統計）")
-async def session_transcript(request: Request, session_id: str, body: TranscriptPayload):
+async def session_transcript(
+    request: Request,
+    session_id: str,
+    body: TranscriptPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     if not body.text.strip():
         return {"ok": True, "skipped": True}
     r = request.app.state.redis
@@ -198,7 +233,12 @@ async def session_transcript(request: Request, session_id: str, body: Transcript
 
 
 @router.get("/{session_id}/assessment", summary="產出療程結束五指標評估分數（1-4 分）並寫入 PostgreSQL")
-async def session_assessment(request: Request, session_id: str, db: AsyncSession = Depends(get_db)):
+async def session_assessment(
+    request: Request,
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     r = request.app.state.redis
     raw: dict = await r.hgetall(f"session:{session_id}:stats")
     if not raw:
@@ -259,12 +299,6 @@ async def session_assessment(request: Request, session_id: str, db: AsyncSession
 
     # PostgreSQL 永久寫入
     try:
-        def _to_int(val) -> int | None:
-            try:
-                return int(val) or None
-            except (TypeError, ValueError):
-                return None
-
         total = sum(scores.values())
         stmt = (
             pg_insert(TherapySession)
@@ -295,6 +329,12 @@ async def session_assessment(request: Request, session_id: str, db: AsyncSession
         )
         await db.execute(stmt)
         await db.commit()
+        await log_access(
+            therapist_id=therapist_id,
+            patient_id=_to_int(meta.get("patient_id")),
+            action="generate_assessment",
+            resource=f"session:{session_id}",
+        )
 
         # DB 寫入成功後清除所有 session Redis key
         await r.delete(
@@ -312,7 +352,11 @@ async def session_assessment(request: Request, session_id: str, db: AsyncSession
 
 
 @router.post("/respond")
-async def session_respond(request: Request, body: RespondRequest):
+async def session_respond(
+    request: Request,
+    body: RespondRequest,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
     """
     長者說完話後呼叫此端點，取得下一步動作。
 
@@ -328,7 +372,7 @@ async def session_respond(request: Request, body: RespondRequest):
     try:
         r = request.app.state.redis
         metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
-        emotion = metrics.get("emotion_raw", "happy")
+        emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
         result = await orchestrator.process_response(
             elder_response=body.elder_response,
             state=body.state.model_dump(),

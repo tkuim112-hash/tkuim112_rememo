@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { logAccess } from "@/lib/audit";
 
 const AVATAR_COLORS = ["#d4e4f7", "#f7e4d4", "#e4f7d4", "#f7d4e4", "#e4d4f7", "#f7f0d4"];
 
@@ -28,7 +29,7 @@ function mapPatient(p: Record<string, unknown>) {
   };
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
@@ -42,6 +43,13 @@ export async function GET() {
     WHERE p.organization_id = ${session.organizationId}
     ORDER BY p.id DESC
   `;
+
+  await logAccess({
+    therapistId: session.therapistId,
+    action: "view_patient_list",
+    resource: "patients",
+    req,
+  });
 
   return NextResponse.json(cases.map(mapPatient));
 }
@@ -73,6 +81,14 @@ export async function POST(req: NextRequest) {
     )
     RETURNING id
   `;
+
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: newCase.id,
+    action: "create_patient",
+    resource: `patients:${newCase.id}`,
+    req,
+  });
 
   return NextResponse.json({ id: newCase.id.toString() }, { status: 201 });
 }

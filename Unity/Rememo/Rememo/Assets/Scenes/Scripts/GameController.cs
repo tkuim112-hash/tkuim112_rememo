@@ -26,6 +26,8 @@ public class GameController : MonoBehaviour
     public Button submitButton;
     public Button micButton;
     public Image micButtonImage;
+    public Button replayButton;
+    public AudioSource audioSource;
     public TMP_Text aiText;
     public TMP_Text inputText;
     public GameObject loadingSpinner;
@@ -76,8 +78,12 @@ public class GameController : MonoBehaviour
 
     void Start()
     {
+        string selectedPatientId = PlayerPrefs.GetString("SelectedPatientId", "");
+        if (!string.IsNullOrEmpty(selectedPatientId)) userId = selectedPatientId;
+
         submitButton.onClick.AddListener(OnSubmit);
         if (micButton != null) micButton.onClick.AddListener(OnMicToggle);
+        if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);
         ResetInputText();
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
@@ -92,7 +98,7 @@ public class GameController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(sttServerUrl);
+        ws = new WebSocket(AuthService.AppendToken(sttServerUrl));
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
@@ -289,6 +295,7 @@ public class GameController : MonoBehaviour
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
         req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
         if (req.result != UnityWebRequest.Result.Success)
             Debug.LogWarning($"[Transcript] POST 失敗: {req.error}");
@@ -334,6 +341,7 @@ public class GameController : MonoBehaviour
             : $"{backendUrl}/session/round?user_id={userId}&session_id={sessionId}&round_number={roundNum}";
 
         using var req = UnityWebRequest.PostWwwForm(url, "");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
 
         if (req.result != UnityWebRequest.Result.Success)
@@ -352,6 +360,8 @@ public class GameController : MonoBehaviour
         kinectSensorSender?.OnQuestionAsked();
 
         StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
+        if (!string.IsNullOrEmpty(resp.audio_path))
+            StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -370,6 +380,41 @@ public class GameController : MonoBehaviour
         int idx = serverPath.IndexOf(prefix);
         string relative = idx >= 0 ? serverPath.Substring(idx + prefix.Length) : serverPath.TrimStart('/');
         return $"{backendUrl}/images/{relative}";
+    }
+
+    // ─── TTS 語音播放 ─────────────────────────────────────────────
+
+    string BuildAudioUrl(string serverPath)
+    {
+        const string prefix = "/media/audio/";
+        int idx = serverPath.IndexOf(prefix);
+        string relative = idx >= 0 ? serverPath.Substring(idx + prefix.Length) : serverPath.TrimStart('/');
+        return $"{backendUrl}/audio/{relative}";
+    }
+
+    IEnumerator PlayTTS(string audioUrl)
+    {
+        using var req = UnityWebRequestMultimedia.GetAudioClip(audioUrl, AudioType.WAV);
+        yield return req.SendWebRequest();
+
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            Debug.LogWarning($"[TTS] 語音載入失敗: {req.error}");
+            yield break;
+        }
+
+        if (audioSource == null) yield break;
+        AudioClip clip = DownloadHandlerAudioClip.GetContent(req);
+        audioSource.Stop();
+        audioSource.clip = clip;
+        audioSource.Play();
+    }
+
+    void OnReplayAudio()
+    {
+        if (audioSource == null || audioSource.clip == null) return;
+        audioSource.Stop();
+        audioSource.Play();
     }
 
     void OnSubmit()
@@ -413,6 +458,7 @@ public class GameController : MonoBehaviour
         req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(body)));
         req.downloadHandler = new DownloadHandlerBuffer();
         req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
 
         loadingSpinner.SetActive(false);
@@ -450,6 +496,8 @@ public class GameController : MonoBehaviour
         aiText.text = resp.question;
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
+        if (!string.IsNullOrEmpty(resp.audio_path))
+            StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
     }
 
     void UpdateRoundBadge()
@@ -476,6 +524,7 @@ public class GameController : MonoBehaviour
         public string scene_text;
         public string image_path;
         public string question;
+        public string audio_path;
         public SessionStateData state;
     }
 
@@ -485,6 +534,7 @@ public class GameController : MonoBehaviour
         public string action;
         public string scene_text;
         public string question;
+        public string audio_path;
         public int next_round;
         public SessionStateData state;
     }

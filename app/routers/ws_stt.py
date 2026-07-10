@@ -3,7 +3,9 @@ import io
 import json
 import wave
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+
+from auth import get_therapist_id_from_ws_token
 
 router = APIRouter()
 
@@ -20,9 +22,11 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -
 
 
 @router.websocket("/ws/stt")
-async def ws_stt(websocket: WebSocket):
+async def ws_stt(websocket: WebSocket, token: str = ""):
     """
     接收 Unity 送來的 PCM int16 mono 16kHz 音訊 chunks。
+
+    連線網址需帶登入時拿到的 JWT：ws://host/ws/stt?token=<JWT>
 
     控制訊息 (text frame):
       {"type": "start"} — 清空緩衝區，開始新一段錄音
@@ -34,6 +38,12 @@ async def ws_stt(websocket: WebSocket):
     回傳 (text frame):
       {"type": "transcript", "text": "...", "isFinal": true|false}
     """
+    try:
+        await get_therapist_id_from_ws_token(websocket.app.state.redis, token)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
     stt_service = websocket.app.state.stt_service
 
     await websocket.accept()

@@ -4,7 +4,9 @@ from langchain_qdrant import QdrantVectorStore
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 class ElderlyAI:
-    def __init__(self, model_name="llama3:8b-instruct-q4_K_M"):
+    def __init__(self, model_name=None):
+        # 對齊全專案使用的 DPO 微調模型（app/config.py 的 ollama_model）
+        model_name = model_name or os.getenv("RAG_LLM_MODEL", "rememo-llama3")
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
         
@@ -26,6 +28,13 @@ class ElderlyAI:
             )
             print("✅ Qdrant collection 'safe_reminiscence' 建立成功")
 
+        # elder_id 過濾用的 payload index（重複呼叫是冪等的，對既有資料也會回溯建立）
+        self.client.create_payload_index(
+            collection_name="safe_reminiscence",
+            field_name="metadata.elder_id",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+
         self.db = QdrantVectorStore(
             client=self.client,
             collection_name="safe_reminiscence",
@@ -39,32 +48,42 @@ class ElderlyAI:
             response = self.llm.invoke(prompt).content
             queries = [q.strip() for q in response.split('\n') if q.strip()]
             return queries[:3] if queries else [original_query]
-        except:
+        except Exception:
             return [original_query]
 
     def _rrf_score(self, results_list, k=60, limit=3):
         """RRF 排名融合演算法：計算融合得分"""
         fused_scores = {}
+        doc_metadata = {}
         for docs in results_list:
             for rank, doc in enumerate(docs):
                 content = doc.page_content
                 fused_scores[content] = fused_scores.get(content, 0.0) + 1 / (k + rank)
-        
-        # 排序並將分數正規化，取出前 limit 名
+                if content not in doc_metadata:
+                    doc_metadata[content] = doc.metadata or {}
+
+        # 排序後取前 limit 名，分數正規化到 0-1（除以理論最大值：每一路都排第一 = len/k）
         sorted_res = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
-        
+        max_score = len(results_list) / k if results_list else 1.0
+
         output = []
         for text, score in sorted_res[:limit]:
+            meta = doc_metadata.get(text, {})
             output.append({
                 "text": text,
-                "score": round(score, 4) # 輸出 RRF 融合權重分
+                "score": round(score / max_score, 4),
+                "session_id": meta.get("session_id", ""),
+                "emotion": meta.get("emotion", ""),
+                "created_at": meta.get("created_at", ""),
             })
         return output
 
     def retrieve_memories(self, elder_id, query, limit=3):
         """純檢索端點核心邏輯：RAG-Fusion + RRF"""
-        # 1. 生成多路查詢
+        # 1. 生成多路查詢（原始查詢保留為其中一路，防止 LLM 改寫偏題）
         multi_queries = self._generate_multi_queries(query)
+        if query not in multi_queries:
+            multi_queries.append(query)
         
         # 2. 多路並行檢索 (僅依據 elder_id 過濾)
         all_results = []

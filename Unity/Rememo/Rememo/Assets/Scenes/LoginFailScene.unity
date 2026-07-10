@@ -762,12 +762,14 @@ MonoBehaviour:
   m_GameObject: {fileID: 593030771}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 2b22c270229e94c91a2a7f6599347345, type: 3}
+  m_Script: {fileID: 11500000, guid: 6416029a2ebbf4d24a38c19447a2e5bc, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::LoginScreenController
+  m_EditorClassIdentifier: Assembly-CSharp::LoginFailController
+  backendUrl: http://localhost:8000
   emailInput: {fileID: 1703457565}
   passwordInput: {fileID: 990209079}
   loginButton: {fileID: 1267586136}
+  errorText: {fileID: 1395930994}
 --- !u!114 &593030773
 MonoBehaviour:
   m_ObjectHideFlags: 0

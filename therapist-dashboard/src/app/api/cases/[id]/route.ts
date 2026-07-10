@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { logAccess } from "@/lib/audit";
 
 const AVATAR_COLORS = ["#d4e4f7", "#f7e4d4", "#e4f7d4", "#f7d4e4", "#e4d4f7", "#f7f0d4"];
 
@@ -28,7 +29,7 @@ function mapPatient(p: Record<string, unknown>) {
   };
 }
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
@@ -44,6 +45,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   `;
 
   if (!p) return NextResponse.json({ error: "找不到個案" }, { status: 404 });
+
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: p.id,
+    action: "view_patient",
+    resource: `patients:${id}`,
+    req,
+  });
 
   return NextResponse.json(mapPatient(p));
 }
@@ -78,14 +87,34 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     FROM patients p WHERE p.id = ${parseInt(id)}
   `;
 
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: parseInt(id),
+    action: "update_patient",
+    resource: `patients:${id}`,
+    req,
+  });
+
   return NextResponse.json(mapPatient(p));
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
   const { id } = await params;
+
+  // 先寫稽核紀錄再刪除：patients 被刪除後，audit_logs.patient_id 這個外鍵欄位會被
+  // ON DELETE SET NULL 清空，但 resource（例如 "patients:7"）是純文字欄位，
+  // 不受外鍵約束影響，之後仍看得出這筆紀錄原本是哪個病患。
+  await logAccess({
+    therapistId: session.therapistId,
+    patientId: parseInt(id),
+    action: "delete_patient",
+    resource: `patients:${id}`,
+    req,
+  });
+
   await sql`DELETE FROM patients WHERE id = ${parseInt(id)} AND organization_id = ${session.organizationId}`;
 
   return NextResponse.json({ ok: true });

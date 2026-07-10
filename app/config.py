@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     redis_password: str = ""
     redis_url: str = ""  # 若為空，由 build_urls 自動組裝
 
+    # === JWT (Unity 治療師登入) ===
+    jwt_secret: str = ""
+    jwt_expire_minutes: int = 60 * 12  # 12 小時
+
+    # === 治療師後台的瀏覽器 session cookie（Next.js 簽的另一組 HS256 JWT）===
+    # /session、/sensor 有些端點同時被 Unity（帶 Authorization: Bearer）跟
+    # 治療師後台瀏覽器（帶 rememo_session cookie）呼叫，這裡驗證後者用。
+    session_secret: str = ""
+
     # === PostgreSQL ===
     postgres_host: str = "db"
     postgres_port: int = 5432
@@ -39,6 +48,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def build_urls(self) -> "Settings":
+        if not self.jwt_secret:
+            raise ValueError(
+                "JWT_SECRET 未設定：這會讓任何人都能偽造合法的治療師登入 token，"
+                "請在 .env 設定 JWT_SECRET 後再啟動服務。"
+            )
+        if not self.session_secret:
+            raise ValueError(
+                "SESSION_SECRET 未設定：/session、/sensor 端點會驗證治療師後台的"
+                "登入 cookie，請在 .env 設定跟 Next.js 前端相同的 SESSION_SECRET。"
+            )
         if not self.redis_url:
             if self.redis_password:
                 self.redis_url = f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}"

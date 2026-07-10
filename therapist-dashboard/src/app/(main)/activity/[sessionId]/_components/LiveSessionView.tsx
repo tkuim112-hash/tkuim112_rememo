@@ -76,7 +76,9 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
  useEffect(() => {
    const poll = async () => {
      try {
-       const res = await fetch(`${API_BASE}/session/${sessionId}/metrics`);
+       const res = await fetch(`${API_BASE}/session/${sessionId}/metrics`, {
+         credentials: "include",
+       });
        if (!res.ok) return;
        const data = await res.json();
        setSession((s) => ({
@@ -105,6 +107,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
    fetch(`${API_BASE}/session/${sessionId}/control`, {
      method: "POST",
      headers: { "Content-Type": "application/json" },
+     credentials: "include",
      body: JSON.stringify({ action }),
    }).catch(() => {});
 
