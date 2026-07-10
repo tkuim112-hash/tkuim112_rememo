@@ -50,6 +50,7 @@ public class LoginScreenController : MonoBehaviour
         AuthSession.TherapistId = resp.therapist_id;
         AuthSession.TherapistName = resp.name;
         AuthSession.OrganizationId = resp.organization_id;
+        AuthSession.OrganizationName = resp.organization_name;
 
         Debug.Log($"登入成功：{resp.name}");
         PlayerPrefs.SetString("NextScene", "UserSelectScene");

@@ -78,6 +78,9 @@ public class GameController : MonoBehaviour
 
     void Start()
     {
+        string selectedPatientId = PlayerPrefs.GetString("SelectedPatientId", "");
+        if (!string.IsNullOrEmpty(selectedPatientId)) userId = selectedPatientId;
+
         submitButton.onClick.AddListener(OnSubmit);
         if (micButton != null) micButton.onClick.AddListener(OnMicToggle);
         if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);

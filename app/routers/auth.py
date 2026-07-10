@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import create_access_token, get_current_therapist_id, revoke_therapist_tokens
 from db.deps import get_db
-from db.models import Therapist
+from db.models import Organization, Therapist
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -26,6 +26,7 @@ class LoginResponse(BaseModel):
     name: str
     # 0 代表沒有掛任何機構；organizations.id 是 SERIAL（從 1 開始），不會撞號。
     organization_id: int = 0
+    organization_name: str | None = None
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
@@ -48,8 +49,13 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
             detail=f"登入失敗次數過多，請 {LOGIN_LOCKOUT_SECONDS // 60} 分鐘後再試",
         )
 
-    result = await db.execute(select(Therapist).where(Therapist.email == body.email))
-    therapist = result.scalar_one_or_none()
+    result = await db.execute(
+        select(Therapist, Organization.name)
+        .outerjoin(Organization, Therapist.organization_id == Organization.id)
+        .where(Therapist.email == body.email)
+    )
+    row = result.first()
+    therapist, organization_name = row if row is not None else (None, None)
 
     # bcrypt 比對是 CPU-bound 同步呼叫，丟到 thread pool 執行，避免卡住整個事件迴圈
     # （同一個 process 裡還有 WebSocket STT 等即時流量在跑）。
@@ -72,6 +78,7 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
         therapist_id=therapist.id,
         name=therapist.name,
         organization_id=therapist.organization_id or 0,
+        organization_name=organization_name,
     )
 
 

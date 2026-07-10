@@ -2,10 +2,12 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.SceneManagement;
 using TMPro;
-using System.Collections.Generic;
 
 public class UserSelectController : MonoBehaviour
 {
+    [Header("後端設定")]
+    public string backendUrl = "http://localhost:8000";
+
     [Header("UI 元件")]
     public GameObject userCardPrefab;
     public Transform userGrid;
@@ -15,26 +17,33 @@ public class UserSelectController : MonoBehaviour
     void Start()
     {
         logoutButton.onClick.AddListener(OnLogout);
-        LoadTestData();
+        UpdateTopBar();
+        StartCoroutine(PatientService.FetchPatients(backendUrl, OnPatientsLoaded, OnPatientsFail));
     }
 
-    void LoadTestData()
+    void UpdateTopBar()
     {
-        List<string[]> testUsers = new List<string[]>
-        {
-            new string[] { "張美麗", "60" },
-            new string[] { "蘇有才", "60" },
-            new string[] { "郭坤宏", "59" },
-            new string[] { "郭坤宏", "59" },
-        };
+        if (topBarText == null) return;
 
-        foreach (var user in testUsers)
+        string orgName = string.IsNullOrEmpty(AuthSession.OrganizationName) ? "未指定機構" : AuthSession.OrganizationName;
+        string therapistName = string.IsNullOrEmpty(AuthSession.TherapistName) ? "" : AuthSession.TherapistName;
+        topBarText.text = $"{orgName} {therapistName}治療師";
+    }
+
+    void OnPatientsLoaded(PatientService.PatientSummary[] patients)
+    {
+        foreach (var patient in patients)
         {
-            CreateUserCard(user[0], int.Parse(user[1]));
+            CreateUserCard(patient.id, patient.name, patient.age);
         }
     }
 
-    void CreateUserCard(string name, int age)
+    void OnPatientsFail(string message)
+    {
+        Debug.LogWarning(message);
+    }
+
+    void CreateUserCard(int id, string name, int age)
     {
         GameObject card = Instantiate(userCardPrefab, userGrid);
 
@@ -47,14 +56,14 @@ public class UserSelectController : MonoBehaviour
         Button cardButton = card.GetComponent<Button>();
         if (cardButton != null)
         {
-            string userName = name;
-            cardButton.onClick.AddListener(() => OnUserSelected(userName));
+            cardButton.onClick.AddListener(() => OnUserSelected(id, name));
         }
     }
 
-    void OnUserSelected(string userName)
+    void OnUserSelected(int id, string userName)
     {
-        Debug.Log($"選擇使用者：{userName}");
+        Debug.Log($"選擇使用者：{userName}（id={id}）");
+        PlayerPrefs.SetString("SelectedPatientId", id.ToString());
         // 選擇使用者後跳到 LoadingScene 再去 WarmupScene
         PlayerPrefs.SetString("NextScene", "WarmupScene");
         SceneManager.LoadScene("LoadingScene");

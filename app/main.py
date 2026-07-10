@@ -16,7 +16,7 @@ from services.image import StabilityImageService
 from services.rag_client import RealRAGClient   
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator
-from routers import ws_stt, ws_calibration, session, sensor, auth
+from routers import ws_stt, ws_calibration, session, sensor, auth, patient
 
 
 @asynccontextmanager
@@ -91,6 +91,7 @@ app.include_router(ws_calibration.router)
 app.include_router(session.router)
 app.include_router(sensor.router)
 app.include_router(auth.router)
+app.include_router(patient.router)
 
 _media_dir = Path("/media/images")
 _media_dir.mkdir(parents=True, exist_ok=True)

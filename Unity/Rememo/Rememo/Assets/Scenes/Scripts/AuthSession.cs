@@ -7,6 +7,7 @@ public static class AuthSession
     public static int TherapistId;
     public static string TherapistName;
     public static int OrganizationId;
+    public static string OrganizationName;
 
     public static bool IsLoggedIn => !string.IsNullOrEmpty(Token);
 
@@ -16,5 +17,6 @@ public static class AuthSession
         TherapistId = 0;
         TherapistName = null;
         OrganizationId = 0;
+        OrganizationName = null;
     }
 }

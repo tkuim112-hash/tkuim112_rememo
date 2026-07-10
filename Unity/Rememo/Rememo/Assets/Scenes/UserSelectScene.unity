@@ -372,6 +372,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0f128a356191e464fad1d928424889a3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::UserSelectController
+  backendUrl: http://localhost:8000
   userCardPrefab: {fileID: 6404677098431624110, guid: e16f6548d547d492fa37b7bd74ae41d3, type: 3}
   userGrid: {fileID: 62300732}
   logoutButton: {fileID: 82847204}
