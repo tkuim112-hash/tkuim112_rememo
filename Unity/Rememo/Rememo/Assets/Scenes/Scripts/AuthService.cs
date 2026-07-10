@@ -57,6 +57,24 @@ public static class AuthService
         return $"{wsUrl}{separator}token={AuthSession.Token}";
     }
 
+    /// <summary>
+    /// 呼叫後端 /auth/revoke 讓目前治療師已簽發的 token 立即失效。
+    /// 撤銷失敗（例如網路斷線）只印警告、不擋登出流程——本機登出不該被後端呼叫卡住。
+    /// </summary>
+    public static IEnumerator Revoke(string backendUrl)
+    {
+        using var req = new UnityWebRequest($"{backendUrl}/auth/revoke", "POST");
+        req.downloadHandler = new DownloadHandlerBuffer();
+        AttachAuthHeader(req);
+
+        yield return req.SendWebRequest();
+
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            Debug.LogWarning($"登出時撤銷 token 失敗（不影響本機登出）：{req.error}");
+        }
+    }
+
     public static IEnumerator Login(
         string backendUrl,
         string email,

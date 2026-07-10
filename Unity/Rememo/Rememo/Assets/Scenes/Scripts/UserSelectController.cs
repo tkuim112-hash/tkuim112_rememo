@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.SceneManagement;
 using TMPro;
+using System.Collections;
 
 public class UserSelectController : MonoBehaviour
 {
@@ -71,6 +72,14 @@ public class UserSelectController : MonoBehaviour
 
     void OnLogout()
     {
+        logoutButton.interactable = false;
+        StartCoroutine(DoLogout());
+    }
+
+    IEnumerator DoLogout()
+    {
+        yield return StartCoroutine(AuthService.Revoke(backendUrl));
+        AuthSession.Clear();
         SceneManager.LoadScene("LoginScene");
     }
 }
