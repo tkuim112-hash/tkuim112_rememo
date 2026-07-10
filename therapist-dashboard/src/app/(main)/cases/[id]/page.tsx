@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useState, useEffect } from "react";
+import { use, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { Case, Session } from "@/lib/types";
 
@@ -32,6 +32,8 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
   const [tab, setTab] = useState<"info" | "history">("info");
   const [isEditing, setIsEditing] = useState(false);
 
+  const [editAvatar, setEditAvatar] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [editBirthYear, setEditBirthYear] = useState("");
   const [editBirthPlace, setEditBirthPlace] = useState("");
   const [editCareer, setEditCareer] = useState("");
@@ -59,6 +61,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
     setEditFamily(caseData.family ?? "");
     setEditHobbies(caseData.hobbies ?? "");
     setEditTaboo(caseData.tabooTopics.join("、"));
+    setEditAvatar(caseData.avatar ?? null);
     setIsEditing(true);
   }
 
@@ -80,6 +83,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
         family: editFamily,
         hobbies: editHobbies,
         tabooTopics: editTaboo,
+        avatar: editAvatar,
       }),
     });
     if (res.ok) {
@@ -113,11 +117,38 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
 
         {/* 個案標頭 */}
         <div className="flex items-center gap-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => setEditAvatar(reader.result as string);
+              reader.readAsDataURL(file);
+            }}
+          />
           <div
-            className="w-14 h-14 rounded-full flex items-center justify-center text-[22px] font-medium text-[#666] shrink-0"
-            style={{ backgroundColor: caseData.avatarColor }}
+            className={`relative shrink-0 ${isEditing ? "cursor-pointer" : ""}`}
+            onClick={() => isEditing && fileInputRef.current?.click()}
           >
-            {caseData.surname}
+            {(isEditing ? editAvatar : caseData.avatar) ? (
+              <img src={(isEditing ? editAvatar : caseData.avatar)!} alt={caseData.name} className="w-14 h-14 rounded-full object-cover" />
+            ) : (
+              <div
+                className="w-14 h-14 rounded-full flex items-center justify-center text-[22px] font-medium text-[#666]"
+                style={{ backgroundColor: caseData.avatarColor }}
+              >
+                {caseData.surname}
+              </div>
+            )}
+            {isEditing && (
+              <div className="absolute inset-0 rounded-full bg-black/30 flex items-center justify-center">
+                <span className="text-white text-[11px] font-medium">更換</span>
+              </div>
+            )}
           </div>
           <div className="flex flex-col gap-0.5">
             <h1 className="text-[26px] font-bold text-[#1a1a1a]">{caseData.name}</h1>
@@ -284,7 +315,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
               <div className="bg-white rounded-xl px-6 py-10 text-center text-[#888] text-[15px]">尚無療程記錄</div>
             ) : (
               sessions.map((s, idx) => {
-                const pct = s.score != null ? s.score : 0;
+                const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
                 const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
                 return (
                   <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">

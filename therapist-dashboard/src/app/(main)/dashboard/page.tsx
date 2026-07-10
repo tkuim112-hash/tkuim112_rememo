@@ -117,12 +117,16 @@ export default function DashboardPage() {
                   className="bg-white rounded-xl shadow-sm px-6 py-5 flex items-center justify-between"
                 >
                   <div className="flex items-center gap-4">
-                    <div
-                      className="w-14 h-14 rounded-full flex items-center justify-center text-[18px] font-medium text-[#666] shrink-0"
-                      style={{ backgroundColor: c.avatarColor }}
-                    >
-                      {c.surname}
-                    </div>
+                    {c.avatar ? (
+                      <img src={c.avatar} alt={c.name as string} className="w-14 h-14 rounded-full object-cover shrink-0" />
+                    ) : (
+                      <div
+                        className="w-14 h-14 rounded-full flex items-center justify-center text-[18px] font-medium text-[#666] shrink-0"
+                        style={{ backgroundColor: c.avatarColor }}
+                      >
+                        {c.surname}
+                      </div>
+                    )}
                     <div>
                       <p className="text-[19px] font-medium text-[#1a1a1a] leading-tight">{c.name}</p>
                       <p className="text-[14px] text-[#888] mt-0.5">最近療程：{c.lastSession}</p>

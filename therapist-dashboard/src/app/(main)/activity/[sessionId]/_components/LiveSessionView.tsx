@@ -3,7 +3,7 @@
 
 import { useState, Fragment, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { mockActiveSession } from "@/lib/mock-data";
+import type { ActiveSession } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -16,16 +16,25 @@ const EMOTION_COLORS: Record<string, string> = {
 };
 
 
-const MOCK_ELDER_RESPONSE =
- "我都去找我那個同事阿明，他很會唱歌，我們去廟口那邊坐......";
-
-
 type View = "scene" | "response";
 
 
-export function LiveSessionView({ sessionId }: { sessionId: string }) {
- const [session, setSession] = useState(mockActiveSession);
- const [currentRound, setCurrentRound] = useState(session.currentRound);
+export function LiveSessionView({ sessionId, caseId }: { sessionId: string; caseId?: string }) {
+ const [session, setSession] = useState<ActiveSession>({
+   sessionId,
+   caseId: "",
+   caseName: "",
+   currentRound: 1,
+   totalRounds: 3,
+   status: "running",
+   currentScene: "",
+   elderResponse: "",
+   emotionState: "適當",
+   responseTime: "—",
+   aiSuggestions: [],
+   tabooTopics: [],
+ });
+ const [currentRound, setCurrentRound] = useState(1);
  const [view, setView] = useState<View>("scene");
 
 
@@ -40,7 +49,30 @@ export function LiveSessionView({ sessionId }: { sessionId: string }) {
    }
  }, []);
 
- // 每 2 秒從後端 polling 情緒與反應時間
+ // 從 API 取得個案資料（caseName、tabooTopics）
+ useEffect(() => {
+   const fetchCase = async (id: string) => {
+     const c = await fetch(`/api/cases/${id}`).then((r) => r.ok ? r.json() : null);
+     if (!c) return;
+     setSession((prev) => ({
+       ...prev,
+       caseId: id,
+       caseName: c.name ?? "",
+       tabooTopics: c.tabooTopics ?? [],
+     }));
+   };
+
+   if (caseId) {
+     fetchCase(caseId).catch(() => {});
+   } else {
+     fetch(`/api/sessions/${sessionId}`)
+       .then((r) => r.ok ? r.json() : null)
+       .then((s) => { if (s?.caseId) fetchCase(s.caseId); })
+       .catch(() => {});
+   }
+ }, [sessionId, caseId]);
+
+ // 每 2 秒從後端 polling 情緒、反應時間與場景資訊
  useEffect(() => {
    const poll = async () => {
      try {
@@ -51,7 +83,13 @@ export function LiveSessionView({ sessionId }: { sessionId: string }) {
          ...s,
          emotionState: data.emotion ?? s.emotionState,
          responseTime: data.response_time ?? s.responseTime,
+         currentScene: data.current_scene ?? s.currentScene,
+         elderResponse: data.elder_response ?? s.elderResponse,
+         aiSuggestions: data.ai_suggestions ?? s.aiSuggestions,
+         currentRound: data.current_round ?? s.currentRound,
+         totalRounds: data.total_rounds ?? s.totalRounds,
        }));
+       if (data.current_round) setCurrentRound(data.current_round);
      } catch {
        // 網路暫時中斷時保留上次數值，不中斷顯示
      }
@@ -63,8 +101,27 @@ export function LiveSessionView({ sessionId }: { sessionId: string }) {
  }, [sessionId]);
 
 
- const handlePause = () => setSession((s) => ({ ...s, status: "paused" }));
- const handleResume = () => setSession((s) => ({ ...s, status: "running" }));
+ const sendControl = (action: string) =>
+   fetch(`${API_BASE}/session/${sessionId}/control`, {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+     body: JSON.stringify({ action }),
+   }).catch(() => {});
+
+ const handleReplay = () => sendControl("replay_audio");
+ const handleSkip = () => sendControl("skip_scene");
+ const handlePause = () => {
+   setSession((s) => ({ ...s, status: "paused" }));
+   sendControl("pause");
+ };
+ const handleResume = () => {
+   setSession((s) => ({ ...s, status: "running" }));
+   sendControl("resume");
+ };
+ const handleEnd = async () => {
+   await sendControl("end");
+   router.push(`/activity/${sessionId}/end?from=live`);
+ };
 
 
  return (
@@ -138,7 +195,7 @@ export function LiveSessionView({ sessionId }: { sessionId: string }) {
            </div>
            <div className="bg-white rounded-xl p-3 md:p-3 lg:p-5 xl:p-6 h-[90px] md:h-[100px] lg:h-[160px] xl:h-[200px] overflow-y-auto">
              <p className="text-[14px] md:text-[16px] lg:text-[20px] text-black leading-relaxed">
-               {view === "scene" ? session.currentScene : MOCK_ELDER_RESPONSE}
+               {view === "scene" ? session.currentScene : session.elderResponse}
              </p>
            </div>
          </div>
@@ -205,12 +262,14 @@ export function LiveSessionView({ sessionId }: { sessionId: string }) {
            <div className="grid grid-cols-2 gap-2 lg:gap-3 xl:gap-4">
              <button
                type="button"
+               onClick={handleReplay}
                className="bg-white border border-[#d1d5dc] rounded-xl py-2.5 lg:py-4 xl:py-5 text-[12px] md:text-[14px] lg:text-[18px] font-medium text-[#0a0a0a] hover:bg-[#f5f5f5] transition-colors"
              >
                重播語音
              </button>
              <button
                type="button"
+               onClick={handleSkip}
                className="bg-white border border-[#d1d5dc] rounded-xl py-2.5 lg:py-4 xl:py-5 text-[12px] md:text-[14px] lg:text-[18px] font-medium text-[#0a0a0a] hover:bg-[#f5f5f5] transition-colors"
              >
                跳過此場景
@@ -262,7 +321,7 @@ export function LiveSessionView({ sessionId }: { sessionId: string }) {
              </button>
              <button
                type="button"
-               onClick={() => router.push(`/activity/${session.sessionId}/end`)}
+               onClick={handleEnd}
                className="flex-1 bg-[#fb2c36] text-white rounded-xl py-3 xl:py-4 text-[14px] md:text-[16px] font-medium hover:bg-[#e0252e] transition-colors"
              >
                結束療程

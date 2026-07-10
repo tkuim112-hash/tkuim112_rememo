@@ -12,6 +12,7 @@ export interface Case {
   age: number;
   gender: "male" | "female";
   avatarColor: string;
+  avatar?: string | null;
   lastSession: string;
   totalSessions: number;
   tabooTopics: string[];

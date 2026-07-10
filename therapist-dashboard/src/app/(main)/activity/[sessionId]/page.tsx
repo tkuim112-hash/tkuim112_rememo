@@ -1,12 +1,16 @@
 "use client";
 
 import { use, useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { LiveSessionView } from "./_components/LiveSessionView";
 import { HistorySessionView } from "./_components/HistorySessionView";
 import type { Session, SessionRound, Case } from "@/lib/types";
 
 export default function ActivityPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
+  const searchParams = useSearchParams();
+  const caseIdFromUrl = searchParams.get("caseId") ?? undefined;
+
   const [session, setSession] = useState<Session | null>(null);
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [rounds, setRounds] = useState<SessionRound[]>([]);
@@ -37,5 +41,5 @@ export default function ActivityPage({ params }: { params: Promise<{ sessionId: 
     return <HistorySessionView session={session} caseData={caseData} rounds={rounds} />;
   }
 
-  return <LiveSessionView sessionId={sessionId} />;
+  return <LiveSessionView sessionId={sessionId} caseId={caseIdFromUrl} />;
 }

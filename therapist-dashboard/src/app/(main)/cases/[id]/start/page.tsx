@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { mockCases } from "@/lib/mock-data";
 import type { Case } from "@/lib/types";
 
 type DeviceStatus = "connected" | "unstable" | "disconnected";
@@ -58,19 +57,15 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const router = useRouter();
   const [scene, setScene] = useState("");
   const [status, setStatus] = useState<DeviceStatus>("unstable");
-  const [localCase, setLocalCase] = useState<Case | null>(null);
-
-  const mockCase = mockCases.find((c) => c.id === caseId) ?? null;
+  const [caseData, setCaseData] = useState<Case | null>(null);
 
   useEffect(() => {
-    if (!mockCase) {
-      const stored: Case[] = JSON.parse(localStorage.getItem("rememo_cases") ?? "[]");
-      const found = stored.find((c) => c.id === caseId);
-      if (found) setLocalCase(found);
-    }
-  }, [caseId, mockCase]);
+    fetch(`/api/cases/${caseId}`)
+      .then((r) => r.json())
+      .then((data) => setCaseData(data))
+      .catch(() => {});
+  }, [caseId]);
 
-  const caseData = mockCase ?? localCase;
   if (!caseData) return null;
 
   const nextSession = caseData.totalSessions + 1;
@@ -100,12 +95,16 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
         <div className="flex flex-col gap-2">
           <h2 className="text-[15px] font-semibold text-[#1a1a1a]">長者</h2>
           <div className="bg-white rounded-2xl px-5 py-4 flex items-center gap-4">
-            <div
-              className="w-12 h-12 rounded-full flex items-center justify-center text-[18px] font-medium text-[#666] shrink-0"
-              style={{ backgroundColor: caseData.avatarColor }}
-            >
-              {caseData.surname}
-            </div>
+            {caseData.avatar ? (
+              <img src={caseData.avatar} alt={caseData.name} className="w-12 h-12 rounded-full object-cover shrink-0" />
+            ) : (
+              <div
+                className="w-12 h-12 rounded-full flex items-center justify-center text-[18px] font-medium text-[#666] shrink-0"
+                style={{ backgroundColor: caseData.avatarColor }}
+              >
+                {caseData.surname}
+              </div>
+            )}
             <div>
               <p className="text-[17px] font-medium text-[#1a1a1a]">{caseData.name}</p>
               <p className="text-[13px] text-[#888]">第 {nextSession} 次療程</p>
@@ -229,7 +228,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
           {status === "connected" && (
             <button
               type="button"
-              onClick={() => router.push("/activity/s-live-1")}
+              onClick={() => router.push(`/activity/s-live-1?caseId=${caseId}`)}
               className="flex-1 bg-[#5b8ac5] text-white text-[17px] font-semibold rounded-2xl py-4"
             >
               啟動療程

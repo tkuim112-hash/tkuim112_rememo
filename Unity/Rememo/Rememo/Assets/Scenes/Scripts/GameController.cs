@@ -58,6 +58,7 @@ public class GameController : MonoBehaviour
     private bool isRecording = false;
     private bool isWaitingForStt = false;
     private bool isSubmitting = false;
+    private bool isPaused = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
     private readonly Queue<string> incomingMessages = new Queue<string>();
@@ -71,7 +72,7 @@ public class GameController : MonoBehaviour
     private class ControlPayload { public string type; }
 
     [System.Serializable]
-    private class STTMessage { public string type; public string text; public bool isFinal; }
+    private class STTMessage { public string type; public string text; public bool isFinal; public string action; }
 
     void Start()
     {
@@ -237,7 +238,40 @@ public class GameController : MonoBehaviour
         STTMessage msg;
         try { msg = JsonUtility.FromJson<STTMessage>(json); }
         catch { return; }
-        if (msg == null || msg.type != "transcript") return;
+        if (msg == null) return;
+
+        if (msg.type == "control")
+        {
+            switch (msg.action)
+            {
+                case "replay_audio":
+                    if (typingCoroutine != null) StopCoroutine(typingCoroutine);
+                    typingCoroutine = StartCoroutine(TypeCharByChar(aiText.text));
+                    break;
+                case "skip_scene":
+                    if (currentRound >= totalRounds)
+                        SceneManager.LoadScene("ShareScene");
+                    else
+                        StartCoroutine(StartRound(currentRound + 1));
+                    break;
+                case "pause":
+                    isPaused = true;
+                    micButton.interactable = false;
+                    submitButton.interactable = false;
+                    break;
+                case "resume":
+                    isPaused = false;
+                    RefreshSubmitButton();
+                    micButton.interactable = true;
+                    break;
+                case "end":
+                    Application.Quit();
+                    break;
+            }
+            return;
+        }
+
+        if (msg.type != "transcript") return;
         if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
         if (msg.isFinal)

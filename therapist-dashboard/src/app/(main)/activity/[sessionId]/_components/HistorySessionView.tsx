@@ -25,7 +25,8 @@ export function HistorySessionView({
  caseData: Case;
  rounds: SessionRound[];
 }) {
- const [showModal, setShowModal] = useState(false); // 控制心得彈窗是否開啟
+ const [showModal, setShowModal] = useState(false);
+ const heartRound = rounds.find((r) => r.type === "心得");
 
 
  return (
@@ -58,7 +59,7 @@ export function HistorySessionView({
        <div className="bg-white rounded-xl px-2 py-3 flex flex-col items-center gap-1">
          <span className="text-[34px] font-bold text-[#1a1a1a] leading-none mt-5">{session.score}</span> {/* 得分數字 */}
          <span className="text-[17px] text-[#888] mt-1">/{session.totalScore} 總分</span> {/* 滿分說明 */}
-         <Link href={`/activity/${session.id}/end`} className="text-[15px] text-[#5b8ac5] mt-1 hover:text-[#3a6aa0]">詳情</Link>
+         <Link href={`/activity/${session.id}/end?from=history`} className="text-[15px] text-[#5b8ac5] mt-1 hover:text-[#3a6aa0]">詳情</Link>
        </div>
 
 
@@ -102,7 +103,7 @@ export function HistorySessionView({
 
 
        {/* 逐筆渲染每個回合卡片 */}
-       {rounds.map((round, idx) => {
+       {rounds.map((round) => {
          const dotColor = EMOTION_DOT[round.emotion] ?? "#888";
          return (
            // 白色圓角卡片，左右對齊內容
@@ -141,14 +142,20 @@ export function HistorySessionView({
                </span>
 
 
-               {/* 只有第一筆（心得欄）顯示查看按鈕，點擊開啟心得彈窗 */}
-               {idx === 0 && (
+               {round.type === "心得" ? (
                  <button
                    onClick={() => setShowModal(true)}
                    className="text-[14px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors"
                  >
                    查看 ›
                  </button>
+               ) : (
+                 <Link
+                   href={`/activity/${session.id}/round/${round.roundNumber}`}
+                   className="text-[14px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors"
+                 >
+                   查看 ›
+                 </Link>
                )}
              </div>
            </div>
@@ -197,7 +204,7 @@ export function HistorySessionView({
 
            {/* 長者心得內容（唯讀顯示） */}
            <div className="w-full min-h-[220px] bg-[#f9f9f9] border border-[#e0e0e0] rounded-xl px-5 py-4 text-[15px] text-[#1a1a1a] leading-relaxed">
-             今天看到廟口的場景，我一下子就想起阿明了，我們那時候常常在廟埕旁邊坐著聊天。歌仔戲的聲音很好聽，跟以前聽的一樣，感覺心情很好，很久沒有這樣輕鬆了。
+             {heartRound?.content ?? "—"}
            </div>
          </div>
        </div>

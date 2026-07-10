@@ -14,7 +14,17 @@ export default function NewCasePage() {
   const [hobbies, setHobbies] = useState("");
   const [tabooTopics, setTabooTopics] = useState("");
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [avatar, setAvatar] = useState("");
+  const [previewAvatar, setPreviewAvatar] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setPreviewAvatar(reader.result as string);
+    reader.readAsDataURL(file);
+  };
 
   const inputClass =
     "w-full bg-[#f5f5f5] rounded-xl px-4 py-2 text-[15px] text-[#1a1a1a] placeholder:text-[#1a1a1a]/30 outline-none focus:bg-[#efefef] transition-colors";
@@ -44,12 +54,16 @@ export default function NewCasePage() {
         <div className="flex items-end gap-6">
           <div className="flex flex-col gap-2">
             <label className="text-[14px] font-medium text-[#1a1a1a]">頭貼</label>
-            <div onClick={() => setShowUploadModal(true)} className="w-[68px] h-[68px] border-2 border-dashed border-[#d0d0d0] rounded-xl flex items-center justify-center cursor-pointer hover:border-[#aaa] transition-colors bg-[#fafafa]">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="#bbb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <polyline points="17 8 12 3 7 8" stroke="#bbb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="12" y1="3" x2="12" y2="15" stroke="#bbb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+            <div onClick={() => setShowUploadModal(true)} className="w-[68px] h-[68px] border-2 border-dashed border-[#d0d0d0] rounded-xl flex items-center justify-center cursor-pointer hover:border-[#aaa] transition-colors bg-[#fafafa] overflow-hidden">
+              {avatar ? (
+                <img src={avatar} alt="頭貼" className="w-full h-full object-cover" />
+              ) : (
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="#bbb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <polyline points="17 8 12 3 7 8" stroke="#bbb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <line x1="12" y1="3" x2="12" y2="15" stroke="#bbb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
             </div>
           </div>
           <div className="flex flex-col gap-2 flex-1">
@@ -137,7 +151,7 @@ export default function NewCasePage() {
               const res = await fetch("/api/cases", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name, birthYear, birthPlace, career, family, hobbies, tabooTopics }),
+                body: JSON.stringify({ name, birthYear, birthPlace, career, family, hobbies, tabooTopics, avatar }),
               });
               if (res.ok) router.push("/dashboard");
             }}
@@ -159,12 +173,16 @@ export default function NewCasePage() {
           <div className="bg-white rounded-2xl p-10 w-[420px] flex flex-col items-center gap-6">
 
             {/* 圓形虛線上傳區 */}
-            <div className="w-44 h-44 rounded-full border-2 border-dashed border-[#ccc] bg-[#f5f5f5] flex items-center justify-center">
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="#aaa" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <polyline points="17 8 12 3 7 8" stroke="#aaa" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="12" y1="3" x2="12" y2="15" stroke="#aaa" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+            <div className="w-44 h-44 rounded-full border-2 border-dashed border-[#ccc] bg-[#f5f5f5] flex items-center justify-center overflow-hidden">
+              {previewAvatar ? (
+                <img src={previewAvatar} alt="預覽" className="w-full h-full object-cover" />
+              ) : (
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="#aaa" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <polyline points="17 8 12 3 7 8" stroke="#aaa" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <line x1="12" y1="3" x2="12" y2="15" stroke="#aaa" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
             </div>
 
             {/* 提示文字 */}
@@ -176,6 +194,7 @@ export default function NewCasePage() {
               type="file"
               accept="image/*"
               className="hidden"
+              onChange={handleFileChange}
             />
 
             {/* 選擇圖片按鈕 */}
@@ -187,13 +206,13 @@ export default function NewCasePage() {
               選擇圖片
             </button>
 
-            {/* 取消按鈕 */}
+            {/* 完成按鈕 */}
             <button
               type="button"
-              onClick={() => setShowUploadModal(false)}
+              onClick={() => { if (previewAvatar) setAvatar(previewAvatar); setShowUploadModal(false); }}
               className="w-full border border-[#d0d0d0] text-[#1a1a1a] rounded-xl py-3.5 text-[15px] font-medium hover:bg-[#f5f5f5] transition-colors"
             >
-              取消
+              完成
             </button>
           </div>
         </div>

@@ -1,9 +1,8 @@
 "use client";
 
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { mockActiveSession } from "@/lib/mock-data";
+import { use, useState, useEffect, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 
 const CRITERIA = [
@@ -18,13 +17,58 @@ const CRITERIA = [
 const DEFAULT_SCORES = [2, 3, 2, 3, 3];
 
 
-export default function SessionEndPage() {
+export default function SessionEndPage({ params }: { params: Promise<{ sessionId: string }> }) {
+ const { sessionId } = use(params);
  const router = useRouter();
- const session = mockActiveSession;
+ const searchParams = useSearchParams();
+ const from = searchParams.get("from");
+ const backUrl = from === "history" ? `/activity/${sessionId}` : "/cases";
 
+ const [caseName, setCaseName] = useState("—");
+ const [sessionNumber, setSessionNumber] = useState<number | null>(null);
+ const [sessionDate, setSessionDate] = useState("—");
  const [scores, setScores] = useState<number[]>(DEFAULT_SCORES);
  const [notes, setNotes] = useState("");
  const [isEditing, setIsEditing] = useState(false);
+ const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+ useEffect(() => {
+   fetch(`/api/sessions/${sessionId}`)
+     .then((r) => r.json())
+     .then(async (s) => {
+       setSessionNumber(s.sessionNumber ?? null);
+       setSessionDate(s.date ?? "—");
+       if (s.therapistNote) setNotes(s.therapistNote);
+       if (
+         s.scoreParticipation != null && s.scoreAttention != null &&
+         s.scoreEndurance != null && s.scoreEmotion != null && s.scoreInteraction != null
+       ) {
+         setScores([
+           s.scoreParticipation - 1,
+           s.scoreAttention - 1,
+           s.scoreEndurance - 1,
+           s.scoreEmotion - 1,
+           s.scoreInteraction - 1,
+         ]);
+       }
+       if (s.caseId) {
+         const c = await fetch(`/api/cases/${s.caseId}`).then((r) => r.json());
+         setCaseName(c.name ?? "—");
+       }
+     })
+     .catch(() => {});
+ }, [sessionId]);
+
+ useEffect(() => {
+   if (notesTimerRef.current) clearTimeout(notesTimerRef.current);
+   notesTimerRef.current = setTimeout(() => {
+     fetch(`/api/sessions/${sessionId}`, {
+       method: "PUT",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify({ notes }),
+     }).catch(() => {});
+   }, 1000);
+ }, [notes, sessionId]);
 
  const total = scores.reduce((sum, s) => sum + (s + 1), 0);
  const maxScore = CRITERIA.length * 4;
@@ -32,6 +76,33 @@ export default function SessionEndPage() {
  function handleSelect(rowIdx: number, colIdx: number) {
    if (!isEditing) return;
    setScores((prev) => prev.map((s, i) => (i === rowIdx ? colIdx : s)));
+ }
+
+ async function saveToDb() {
+   await fetch(`/api/sessions/${sessionId}`, {
+     method: "PUT",
+     headers: { "Content-Type": "application/json" },
+     body: JSON.stringify({
+       totalScore: total,
+       emotionalStatus: CRITERIA[3].options[scores[3]],
+       notes,
+       scoreParticipation: scores[0] + 1,
+       scoreAttention:     scores[1] + 1,
+       scoreEndurance:     scores[2] + 1,
+       scoreEmotion:       scores[3] + 1,
+       scoreInteraction:   scores[4] + 1,
+     }),
+   }).catch(() => {});
+ }
+
+ async function handleSave() {
+   await saveToDb();
+   router.push(backUrl);
+ }
+
+ async function handleLater() {
+   await saveToDb();
+   router.push(backUrl);
  }
 
  return (
@@ -42,7 +113,7 @@ export default function SessionEndPage() {
        <div className="flex flex-col gap-0.5 md:gap-1">
          <h1 className="text-[20px] md:text-[26px] lg:text-[28px] xl:text-[32px] 2xl:text-[38px] font-bold text-[#1a1a1a] ml-1 md:ml-2">療程結束 填寫觀察量表</h1>
          <p className="text-[12px] md:text-[13px] lg:text-[15px] 2xl:text-[17px] text-[#888] ml-1 md:ml-2">
-           {session.caseName} 第 {6} 次療程 2024.12.17
+           {caseName}{sessionNumber != null ? ` 第 ${sessionNumber} 次療程` : ""} {sessionDate}
          </p>
        </div>
        <button
@@ -120,14 +191,14 @@ export default function SessionEndPage() {
      <div className="flex gap-2 md:gap-3 mt-2">
        <button
          type="button"
-         onClick={() => router.push("/dashboard")}
+         onClick={handleSave}
          className="bg-[#2b7fff] text-white rounded-xl px-4 py-2 md:px-5 md:py-2.5 lg:px-6 lg:py-3 xl:px-7 xl:py-[14px] 2xl:px-8 2xl:py-4 text-[12px] md:text-[13px] lg:text-[14px] xl:text-[14.5px] 2xl:text-[16px] font-medium hover:bg-[#1a6eee] transition-colors"
        >
          儲存並完成
        </button>
        <button
          type="button"
-         onClick={() => router.push("/dashboard")}
+         onClick={handleLater}
          className="bg-white border border-[#d0d0d0] text-[#1a1a1a] rounded-xl px-4 py-2 md:px-5 md:py-2.5 lg:px-6 lg:py-3 xl:px-7 xl:py-[14px] 2xl:px-8 2xl:py-4 text-[12px] md:text-[13px] lg:text-[14px] xl:text-[14.5px] 2xl:text-[16px] font-medium hover:bg-[#f5f5f5] transition-colors"
        >
          稍後填寫
