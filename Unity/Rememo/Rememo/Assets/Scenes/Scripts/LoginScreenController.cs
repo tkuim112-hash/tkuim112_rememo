@@ -14,6 +14,12 @@ public class LoginScreenController : MonoBehaviour
     public Button loginButton;
     public TMP_Text errorText;
 
+    [Header("密碼顯示/隱藏（文字按鈕，可留空不用）")]
+    public Button togglePasswordButton;
+    public TMP_Text togglePasswordLabel;
+
+    bool passwordVisible = false;
+
     void Start()
     {
         loginButton.onClick.AddListener(OnLoginClicked);
@@ -21,6 +27,31 @@ public class LoginScreenController : MonoBehaviour
         passwordInput.onSubmit.AddListener(_ => OnLoginClicked());
         passwordInput.contentType = TMP_InputField.ContentType.Password;
         passwordInput.ForceLabelUpdate();
+
+        if (togglePasswordButton != null)
+        {
+            togglePasswordButton.onClick.AddListener(TogglePasswordVisibility);
+        }
+        UpdateTogglePasswordLabel();
+    }
+
+    void TogglePasswordVisibility()
+    {
+        passwordVisible = !passwordVisible;
+        passwordInput.contentType = passwordVisible
+            ? TMP_InputField.ContentType.Standard
+            : TMP_InputField.ContentType.Password;
+        // 切換 contentType 後要強制重繪，不然輸入框顯示的文字不會立即更新
+        passwordInput.ForceLabelUpdate();
+        UpdateTogglePasswordLabel();
+    }
+
+    void UpdateTogglePasswordLabel()
+    {
+        if (togglePasswordLabel != null)
+        {
+            togglePasswordLabel.text = passwordVisible ? "隱藏" : "顯示";
+        }
     }
 
     void OnLoginClicked()
