@@ -14,6 +14,12 @@ public class LoginFailController : MonoBehaviour
     public Button loginButton;
     public TMP_Text errorText;
 
+    [Header("密碼顯示/隱藏（文字按鈕，可留空不用）")]
+    public Button togglePasswordButton;
+    public TMP_Text togglePasswordLabel;
+
+    bool passwordVisible = false;
+
     void Start()
     {
         loginButton.onClick.AddListener(OnLoginClicked);
@@ -24,11 +30,35 @@ public class LoginFailController : MonoBehaviour
         passwordInput.contentType = TMP_InputField.ContentType.Password;
         passwordInput.ForceLabelUpdate();
 
+        if (togglePasswordButton != null)
+        {
+            togglePasswordButton.onClick.AddListener(TogglePasswordVisibility);
+        }
+        UpdateTogglePasswordLabel();
+
         // 顯示上一次登入失敗的實際原因（帳密錯誤 / 連線失敗等），顯示完即清除避免殘留給下次進場景用
         if (PlayerPrefs.HasKey("LoginErrorMessage"))
         {
             AuthService.ShowError(errorText, PlayerPrefs.GetString("LoginErrorMessage"));
             PlayerPrefs.DeleteKey("LoginErrorMessage");
+        }
+    }
+
+    void TogglePasswordVisibility()
+    {
+        passwordVisible = !passwordVisible;
+        passwordInput.contentType = passwordVisible
+            ? TMP_InputField.ContentType.Standard
+            : TMP_InputField.ContentType.Password;
+        passwordInput.ForceLabelUpdate();
+        UpdateTogglePasswordLabel();
+    }
+
+    void UpdateTogglePasswordLabel()
+    {
+        if (togglePasswordLabel != null)
+        {
+            togglePasswordLabel.text = passwordVisible ? "隱藏" : "顯示";
         }
     }
 
