@@ -71,23 +71,6 @@ services:
       - ./qdrant_storage:/qdrant/storage
     restart: always   
 
-  # M3: 本地語音合成 
-  #tts:
-  #   image: neosun/cosyvoice:latest
-#     container_name: tku-care-tts-1
-#    # 1. 刪除 runtime: nvidia，不讓 Docker 強制調用顯卡驅動
-#     ports:
-#      - "9233:8188"  # Windows 對應 9233，容器內部跑 8188
-#     environment:
-#      - PYTHONPATH=/opt/CosyVoice
-#      # 2. 關鍵：設定為 -1，讓 PyTorch 完全看不到顯卡，直接進入 CPU 推理模式
-#      - CUDA_VISIBLE_DEVICES=-1 
-#     volumes:
-#      - ./models/cosyvoice:/app/pretrained_models/CosyVoice-300M
-#      - ./test:/app/test
-#    # 3. 刪除 deploy 中的 GPU 預留資源 (reservations) 區塊
-#     restart: always
-
   # M3: 本地語音合成 (BreezyVoice, RTX 50 系列/Blackwell 專用建置)
   tts:
     build:

@@ -34,6 +34,7 @@
 違規時重新生成或退回安全保底語句。詳見 app/safety/taboo_checker.py。
 """
 import json
+import re
 from services.llm import LLMService
 from services.image import StabilityImageService
 from services.rag_client import RealRAGClient
@@ -756,6 +757,13 @@ class TherapyOrchestrator:
                 ]
         if not result["question"]:
             result["question"] = raw.strip()
+        # 清洗：移除 LLM 偶發輸出的格式提示和 W 標籤
+        for key in ("scene_text", "question"):
+            val = result[key]
+            val = re.sub(r"（W:\s*\[.*?\]）", "", val)  
+            val = re.sub(r"（\d+字以內）", "", val)       
+            val = re.sub(r"（[A-Z]+\d+[^）]*）", "", val) 
+            result[key] = val.strip()
         return result
 
     def _parse_track_c_response(self, raw: str) -> dict:

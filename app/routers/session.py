@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
-from db.models import TherapySession
+from db.models import TherapySession, TherapyRound
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -34,6 +34,70 @@ async def _init_session_meta(r, session_id: str, patient_id: str, therapist_id: 
             "status":       "active",
         }
         await r.set(key, json.dumps(meta))
+
+
+async def _save_round_image(
+    db: AsyncSession,
+    session_id: str,
+    round_number: int,
+    image_path: str,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """確保 sessions row 存在，然後把圖片路徑寫入 rounds.scene_image。"""
+    from sqlalchemy import select
+
+    try:
+        # 1. upsert sessions（有就略過，沒有就建佔位記錄等 assessment 填分數）
+        stmt = (
+            pg_insert(TherapySession)
+            .values(
+                session_uuid=session_id,
+                patient_id=patient_id,
+                therapist_id=therapist_id,
+                date=date.today(),
+                mode="interactive",
+            )
+            .on_conflict_do_nothing(index_elements=["session_uuid"])
+        )
+        await db.execute(stmt)
+        await db.flush()
+
+        # 2. 查 sessions.id
+        session_row = (
+            await db.execute(
+                select(TherapySession).where(TherapySession.session_uuid == session_id)
+            )
+        ).scalar_one_or_none()
+
+        if session_row is None:
+            return
+
+        # 3. 查有沒有這個 round，有就 UPDATE，沒有就 INSERT
+        round_row = (
+            await db.execute(
+                select(TherapyRound).where(
+                    TherapyRound.session_id == session_row.id,
+                    TherapyRound.round_number == round_number,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if round_row:
+            round_row.scene_image = image_path
+        else:
+            db.add(TherapyRound(
+                session_id=session_row.id,
+                round_number=round_number,
+                scene_image=image_path,
+            ))
+
+        await db.commit()
+        print(f"[DB] rounds.scene_image 寫入成功: round={round_number} path={image_path}")
+
+    except Exception as e:
+        print(f"[DB] rounds.scene_image 寫入失敗（不影響主流程）: {e}")
+        await db.rollback()
 
 
 # ════════════ 評估分數計算輔助 ════════════════════════════════════════
@@ -120,6 +184,7 @@ async def session_start(
     user_id: str,
     session_id: str,
     therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     啟動療程第一回合（backward-compat，等同 /session/round?round_number=1）。
@@ -148,6 +213,10 @@ async def session_start(
             action="start_session",
             resource=f"session:{session_id}",
         )
+        await _save_round_image(
+            db, session_id, 1, result.get("image_path", ""),
+            patient_id=_to_int(user_id), therapist_id=therapist_id,
+        )
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -164,6 +233,7 @@ async def session_round(
     session_id: str,
     round_number: int = 1,
     therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     開始指定回合（n=1,2,3）。
@@ -188,6 +258,10 @@ async def session_round(
             )
             result["audio_path"] = audio_path
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
+        await _save_round_image(
+            db, session_id, round_number, result.get("image_path", ""),
+            patient_id=_to_int(user_id), therapist_id=therapist_id,
+        )
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
