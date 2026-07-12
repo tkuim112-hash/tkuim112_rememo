@@ -377,6 +377,18 @@ MonoBehaviour:
   userGrid: {fileID: 62300732}
   logoutButton: {fileID: 82847204}
   topBarText: {fileID: 2108826472}
+  defaultAvatars:
+  - {fileID: 21300000, guid: cdc813bf86c3748e58a15317cfa0ce3d, type: 3}
+  - {fileID: 21300000, guid: cfef6500a70614556bce288772b8279e, type: 3}
+  - {fileID: 21300000, guid: 53c126733e40e4afeb976d60e45947ed, type: 3}
+  - {fileID: 21300000, guid: 39791fe834c9d4ab1bdaa1c205ade98f, type: 3}
+  - {fileID: 21300000, guid: 85dc7ddbfa1eb476c8f50cbe71a3d593, type: 3}
+  - {fileID: 21300000, guid: 9a43a0b3bd50b468db7ba90942c9a37d, type: 3}
+  - {fileID: 21300000, guid: 51a91d3dd47fc4aa18795d95ba6bd8ac, type: 3}
+  - {fileID: 21300000, guid: ef9febb70ddc7455e99344f1bd911825, type: 3}
+  - {fileID: 21300000, guid: 48fbc5f48ff574922a343b5b39a82516, type: 3}
+  - {fileID: 21300000, guid: 85e1fee885a844508949381e3b50b20a, type: 3}
+  - {fileID: 21300000, guid: fa25dd4a7dd6547bc8ee1e5a6e2108fd, type: 3}
 --- !u!114 &618894778
 MonoBehaviour:
   m_ObjectHideFlags: 0
