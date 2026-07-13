@@ -107,10 +107,11 @@ async def _save_round_image(
     session_id: str,
     round_number: int,
     image_path: str,
+    scene_text: str = "",
     patient_id: int | None = None,
     therapist_id: int | None = None,
 ) -> None:
-    """把圖片路徑寫入 rounds.scene_image。"""
+    """把回合開場的圖片路徑與場景文字寫入 rounds.scene_image / generated_scene。"""
     try:
         round_row = await _get_or_create_round(
             db, session_id, round_number, patient_id, therapist_id
@@ -118,8 +119,10 @@ async def _save_round_image(
         if round_row is None:
             return
         round_row.scene_image = image_path
+        if scene_text:
+            round_row.generated_scene = scene_text
         await db.commit()
-        print(f"[DB] rounds.scene_image 寫入成功: round={round_number} path={image_path}")
+        print(f"[DB] rounds.scene_image/generated_scene 寫入成功: round={round_number} path={image_path}")
 
     except Exception as e:
         print(f"[DB] rounds.scene_image 寫入失敗（不影響主流程）: {e}")
@@ -282,6 +285,7 @@ async def session_start(
         )
         await _save_round_image(
             db, session_id, 1, result.get("image_path", ""),
+            scene_text=result.get("scene_text", ""),
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
         return result
@@ -335,6 +339,7 @@ async def session_round(
         )
         await _save_round_image(
             db, session_id, round_number, result.get("image_path", ""),
+            scene_text=result.get("scene_text", ""),
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
         return result
