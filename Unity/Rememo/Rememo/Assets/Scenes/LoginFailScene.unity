@@ -683,17 +683,17 @@ RectTransform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 476966809}
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1586709581}
-  m_Father: {fileID: 990209076}
+  m_Father: {fileID: 1293888335}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 1, y: 0.5}
   m_AnchorMax: {x: 1, y: 0.5}
-  m_AnchoredPosition: {x: -80, y: 0}
+  m_AnchoredPosition: {x: -69.94283, y: -115.00003}
   m_SizeDelta: {x: 160, y: 30}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &476966811
@@ -718,9 +718,9 @@ MonoBehaviour:
   m_Transition: 1
   m_Colors:
     m_NormalColor: {r: 0.9607843, g: 0.9411765, b: 0.91764706, a: 0}
-    m_HighlightedColor: {r: 0.9607843, g: 0.9607843, b: 0.9607843, a: 1}
-    m_PressedColor: {r: 0.78431374, g: 0.78431374, b: 0.78431374, a: 1}
-    m_SelectedColor: {r: 0.9607843, g: 0.9607843, b: 0.9607843, a: 1}
+    m_HighlightedColor: {r: 0.9607843, g: 0.9607843, b: 0.9607843, a: 0}
+    m_PressedColor: {r: 0.78431374, g: 0.78431374, b: 0.78431374, a: 0}
+    m_SelectedColor: {r: 0.9607843, g: 0.9607843, b: 0.9607843, a: 0}
     m_DisabledColor: {r: 0.78431374, g: 0.78431374, b: 0.78431374, a: 0.5019608}
     m_ColorMultiplier: 1
     m_FadeDuration: 0.1
@@ -891,6 +891,8 @@ MonoBehaviour:
   passwordInput: {fileID: 990209079}
   loginButton: {fileID: 1267586136}
   errorText: {fileID: 1395930994}
+  togglePasswordButton: {fileID: 476966811}
+  togglePasswordLabel: {fileID: 1586709582}
 --- !u!114 &593030773
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1217,7 +1219,6 @@ RectTransform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1481708289}
-  - {fileID: 476966810}
   m_Father: {fileID: 1293888335}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
@@ -1730,6 +1731,7 @@ RectTransform:
   m_Children:
   - {fileID: 1703457562}
   - {fileID: 990209076}
+  - {fileID: 476966810}
   - {fileID: 1267586139}
   m_Father: {fileID: 560487411}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
