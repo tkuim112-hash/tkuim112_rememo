@@ -36,6 +36,72 @@ async def _init_session_meta(r, session_id: str, patient_id: str, therapist_id: 
         await r.set(key, json.dumps(meta))
 
 
+async def _update_live_view(r, session_id: str, **fields) -> None:
+    """把場景/長者回應/AI建議寫進 metrics hash，供治療師 live 頁每 2 秒 polling。"""
+    try:
+        mapping = {}
+        for k, v in fields.items():
+            if v is None:
+                continue
+            mapping[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, list) else str(v)
+        if mapping:
+            await r.hset(f"session:{session_id}:metrics", mapping=mapping)
+    except Exception as e:
+        print(f"[LiveView] metrics 更新失敗（不影響主流程）: {e}")
+
+
+async def _get_or_create_round(
+    db: AsyncSession,
+    session_id: str,
+    round_number: int,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> TherapyRound | None:
+    """upsert sessions 佔位記錄（等 assessment 填分數），回傳對應的 rounds row（沒有就建）。"""
+    from sqlalchemy import select
+
+    stmt = (
+        pg_insert(TherapySession)
+        .values(
+            session_uuid=session_id,
+            patient_id=patient_id,
+            therapist_id=therapist_id,
+            date=date.today(),
+            mode="interactive",
+        )
+        .on_conflict_do_nothing(index_elements=["session_uuid"])
+    )
+    await db.execute(stmt)
+    await db.flush()
+
+    session_row = (
+        await db.execute(
+            select(TherapySession).where(TherapySession.session_uuid == session_id)
+        )
+    ).scalar_one_or_none()
+
+    if session_row is None:
+        return None
+
+    round_row = (
+        await db.execute(
+            select(TherapyRound).where(
+                TherapyRound.session_id == session_row.id,
+                TherapyRound.round_number == round_number,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if round_row is None:
+        round_row = TherapyRound(
+            session_id=session_row.id,
+            round_number=round_number,
+        )
+        db.add(round_row)
+
+    return round_row
+
+
 async def _save_round_image(
     db: AsyncSession,
     session_id: str,
@@ -44,59 +110,52 @@ async def _save_round_image(
     patient_id: int | None = None,
     therapist_id: int | None = None,
 ) -> None:
-    """確保 sessions row 存在，然後把圖片路徑寫入 rounds.scene_image。"""
-    from sqlalchemy import select
-
+    """把圖片路徑寫入 rounds.scene_image。"""
     try:
-        # 1. upsert sessions（有就略過，沒有就建佔位記錄等 assessment 填分數）
-        stmt = (
-            pg_insert(TherapySession)
-            .values(
-                session_uuid=session_id,
-                patient_id=patient_id,
-                therapist_id=therapist_id,
-                date=date.today(),
-                mode="interactive",
-            )
-            .on_conflict_do_nothing(index_elements=["session_uuid"])
+        round_row = await _get_or_create_round(
+            db, session_id, round_number, patient_id, therapist_id
         )
-        await db.execute(stmt)
-        await db.flush()
-
-        # 2. 查 sessions.id
-        session_row = (
-            await db.execute(
-                select(TherapySession).where(TherapySession.session_uuid == session_id)
-            )
-        ).scalar_one_or_none()
-
-        if session_row is None:
+        if round_row is None:
             return
-
-        # 3. 查有沒有這個 round，有就 UPDATE，沒有就 INSERT
-        round_row = (
-            await db.execute(
-                select(TherapyRound).where(
-                    TherapyRound.session_id == session_row.id,
-                    TherapyRound.round_number == round_number,
-                )
-            )
-        ).scalar_one_or_none()
-
-        if round_row:
-            round_row.scene_image = image_path
-        else:
-            db.add(TherapyRound(
-                session_id=session_row.id,
-                round_number=round_number,
-                scene_image=image_path,
-            ))
-
+        round_row.scene_image = image_path
         await db.commit()
         print(f"[DB] rounds.scene_image 寫入成功: round={round_number} path={image_path}")
 
     except Exception as e:
         print(f"[DB] rounds.scene_image 寫入失敗（不影響主流程）: {e}")
+        await db.rollback()
+
+
+async def _save_round_response(
+    db: AsyncSession,
+    session_id: str,
+    round_number: int,
+    text: str,
+    emotion: str = "",
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """
+    把長者原話累加到 rounds.patient_response（真相源，之後可重建向量庫），
+    同回合多次回應以換行分隔；emotion 記錄該回合最後一次偵測值。
+    """
+    try:
+        round_row = await _get_or_create_round(
+            db, session_id, round_number, patient_id, therapist_id
+        )
+        if round_row is None:
+            return
+        if round_row.patient_response:
+            round_row.patient_response += "\n" + text
+        else:
+            round_row.patient_response = text
+        if emotion:
+            round_row.emotion = emotion
+        await db.commit()
+        print(f"[DB] rounds.patient_response 寫入成功: round={round_number} len={len(text)}")
+
+    except Exception as e:
+        print(f"[DB] rounds.patient_response 寫入失敗（不影響主流程）: {e}")
         await db.rollback()
 
 
@@ -207,6 +266,14 @@ async def session_start(
         )
         result["audio_path"] = audio_path
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
+        await _update_live_view(
+            request.app.state.redis, session_id,
+            current_scene=result.get("scene_text", "") + result.get("question", ""),
+            elder_response="",
+            ai_suggestions=[result["question"]] if result.get("question") else [],
+            current_round=1,
+            total_rounds=3,
+        )
         await log_access(
             therapist_id=therapist_id,
             patient_id=_to_int(user_id),
@@ -258,6 +325,14 @@ async def session_round(
             )
             result["audio_path"] = audio_path
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
+        await _update_live_view(
+            request.app.state.redis, session_id,
+            current_scene=result.get("scene_text", "") + result.get("question", ""),
+            elder_response="",
+            ai_suggestions=[result["question"]] if result.get("question") else [],
+            current_round=round_number,
+            total_rounds=3,
+        )
         await _save_round_image(
             db, session_id, round_number, result.get("image_path", ""),
             patient_id=_to_int(user_id), therapist_id=therapist_id,
@@ -277,9 +352,18 @@ async def session_metrics(
 ):
     r = request.app.state.redis
     data: dict = await r.hgetall(f"session:{session_id}:metrics")
+    try:
+        suggestions = json.loads(data.get("ai_suggestions", "[]"))
+    except json.JSONDecodeError:
+        suggestions = []
     return {
         "emotion": data.get("emotion", "適當"),
         "response_time": data.get("response_time", "--"),
+        "current_scene": data.get("current_scene", ""),
+        "elder_response": data.get("elder_response", ""),
+        "ai_suggestions": suggestions,
+        "current_round": _to_int(data.get("current_round")) or 1,
+        "total_rounds": _to_int(data.get("total_rounds")) or 3,
     }
 
 
@@ -430,6 +514,7 @@ async def session_respond(
     request: Request,
     body: RespondRequest,
     therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     長者說完話後呼叫此端點，取得下一步動作。
@@ -447,12 +532,22 @@ async def session_respond(
         r = request.app.state.redis
         metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
         emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
+        # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話
+        await _save_round_response(
+            db, body.state.session_id, body.state.round,
+            text=body.elder_response, emotion=emotion,
+            patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+        )
+        await _update_live_view(
+            request.app.state.redis, body.state.session_id,
+            elder_response=body.elder_response,
+        )
         result = await orchestrator.process_response(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
             emotion=emotion,
         )
-        if result.get("question"):                     
+        if result.get("question"):
             tts = request.app.state.tts_service
             audio_path = await tts.synthesize(
                 text=result["scene_text"] + result["question"],
@@ -461,6 +556,11 @@ async def session_respond(
                 turn_number=None,
             )
             result["audio_path"] = audio_path
+            await _update_live_view(
+                request.app.state.redis, body.state.session_id,
+                current_scene=result.get("scene_text", "") + result["question"],
+                ai_suggestions=[result["question"]],
+            )
         return result                                 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
