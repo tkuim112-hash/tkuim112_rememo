@@ -250,6 +250,42 @@ async def _fill_round_exchange_answer(
         await db.rollback()
 
 
+async def _accumulate_round_response_time(r, session_id: str, round_number: int, elapsed_ms: int) -> None:
+    """長者這題花了多久回答，累加進本回合的 Redis 暫存，回合結束時取平均寫進 rounds.response_time。"""
+    key = f"session:{session_id}:round:{round_number}:timing"
+    pipe = r.pipeline(transaction=False)
+    pipe.hincrby(key, "sum_ms", elapsed_ms)
+    pipe.hincrby(key, "count", 1)
+    await pipe.execute()
+    await r.expire(key, 86400)
+
+
+async def _finalize_round_response_time(
+    db: AsyncSession,
+    r,
+    session_id: str,
+    round_number: int,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """回合結束（end_round / end_session）時，把這回合累積的平均反應時間（秒）寫進 rounds.response_time。"""
+    key = f"session:{session_id}:round:{round_number}:timing"
+    raw = await r.hgetall(key)
+    count = int(raw.get("count", 0))
+    if count > 0:
+        avg_seconds = int(raw.get("sum_ms", 0)) / count / 1000
+        try:
+            round_row = await _get_or_create_round(db, session_id, round_number, patient_id, therapist_id)
+            if round_row is not None:
+                round_row.response_time = round(avg_seconds, 1)
+                await db.commit()
+                print(f"[DB] rounds.response_time 寫入成功: round={round_number} avg={avg_seconds:.1f}s")
+        except Exception as e:
+            print(f"[DB] rounds.response_time 寫入失敗（不影響主流程）: {e}")
+            await db.rollback()
+    await r.delete(key)
+
+
 # ════════════ 評估分數計算輔助 ════════════════════════════════════════
 
 def _score_attention(looking_away_rate: float, eye_closed_rate: float) -> int:
@@ -322,6 +358,7 @@ class SessionState(BaseModel):
     last_question_type: str = "step1"
     last_w_asked: str = ""
     question_number: int = 1  # 本回合目前問到第幾題，供 round_exchanges 配對與 TTS 檔名編號
+    question_asked_at: int = 0  # 目前這一題送出的時間（epoch ms），供計算 rounds.response_time
 
 
 class RespondRequest(BaseModel):
@@ -354,6 +391,7 @@ async def session_start(
             topic_override=topic or None,
         )
         result["state"]["question_number"] = 1
+        result["state"]["question_asked_at"] = int(time.time() * 1000)
         tts = request.app.state.tts_service
         audio_path = await tts.synthesize(
             text=result["scene_text"] + result["question"],
@@ -421,6 +459,7 @@ async def session_round(
             topic_override=topic_override,
         )
         result["state"]["question_number"] = 1
+        result["state"]["question_asked_at"] = int(time.time() * 1000)
         if result.get("question"):
             tts = request.app.state.tts_service
             audio_path = await tts.synthesize(
@@ -713,6 +752,9 @@ async def session_closing(
         suggestions = []
     closing_question = suggestions[0] if suggestions else ""
 
+    # 心得問題出現的時間點（session_respond 觸發 end_session 時存的），用來算這回合的反應時間
+    closing_asked_at_raw = await r.get(f"session:{session_id}:closing_asked_at")
+
     if body.text.strip():
         try:
             round_row = await _get_or_create_round(
@@ -720,6 +762,9 @@ async def session_closing(
             )
             if round_row is not None:
                 round_row.patient_response = body.text
+                if closing_asked_at_raw:
+                    elapsed_ms = max(0, int(time.time() * 1000) - int(closing_asked_at_raw))
+                    round_row.response_time = round(elapsed_ms / 1000, 1)
                 await db.flush()
                 db.add(RoundExchange(
                     round_id=round_row.id,
@@ -732,6 +777,7 @@ async def session_closing(
         except Exception as e:
             print(f"[DB] 心得回合寫入失敗（不影響評估流程）: {e}")
             await db.rollback()
+    await r.delete(f"session:{session_id}:closing_asked_at")
 
     try:
         scores = await _compute_and_save_assessment(request, session_id, db, therapist_id)
@@ -776,6 +822,12 @@ async def session_respond(
             db, body.state.session_id, body.state.round,
             question_number=body.state.question_number, answer=body.elder_response,
         )
+        # 這一題長者花了多久回答，累加進本回合的反應時間統計
+        if body.state.question_asked_at:
+            elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
+            await _accumulate_round_response_time(
+                r, body.state.session_id, body.state.round, elapsed_ms
+            )
         await _update_live_view(
             request.app.state.redis, body.state.session_id,
             elder_response=body.elder_response,
@@ -785,6 +837,20 @@ async def session_respond(
             state=body.state.model_dump(),
             emotion=emotion,
         )
+
+        if result.get("state") is None:
+            # 回合結束（end_round / end_session），把這回合累積的平均反應時間寫進 rounds.response_time
+            await _finalize_round_response_time(
+                db, r, body.state.session_id, body.state.round,
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
+            if result.get("action") == "end_session":
+                # 心得問題出現的時間點，供 /session/{id}/closing 計算心得回合的反應時間
+                await r.set(
+                    f"session:{body.state.session_id}:closing_asked_at",
+                    str(int(time.time() * 1000)), ex=3600,
+                )
+
         if result.get("question"):
             # state 不是 None 代表回合還在繼續（open_followup / ask_supplement_w），
             # 這一題是本回合的新問題，question_number 往下一號並存進 round_exchanges；
@@ -806,6 +872,7 @@ async def session_respond(
             )
             if result.get("state") is not None:
                 result["state"]["question_number"] = next_qn
+                result["state"]["question_asked_at"] = int(time.time() * 1000)
                 await _save_round_exchange(
                     db, body.state.session_id, body.state.round,
                     question_number=next_qn, question=result["question"],
