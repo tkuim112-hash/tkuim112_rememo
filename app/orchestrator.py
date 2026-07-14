@@ -35,6 +35,7 @@
 """
 import json
 import re
+from pathlib import Path
 from services.llm import LLMService
 from services.image import StabilityImageService
 from services.rag_client import RealRAGClient
@@ -86,6 +87,14 @@ _EMOTION_GUIDANCE = {
 
 def _emotion_guidance(emotion: str) -> str:
     return _EMOTION_GUIDANCE.get(emotion, _EMOTION_GUIDANCE["happy"])
+
+
+def _load_prompt(filename: str) -> str:
+    """從 app/prompts/ 讀取 prompt 模板，找不到就回傳空字串。"""
+    path = Path(__file__).parent / "prompts" / filename
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
 
 
 class TherapyOrchestrator:
@@ -592,10 +601,12 @@ class TherapyOrchestrator:
         prompt 格式對齊 dpo/collect_data.py build_inference_prompt（Track A）。
         Returns: {"scene_text": str, "question": str, "covered_w": list[str]}
         """
-        system_content = (
+        system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "問題必須念起來自然、溫和、不超過15個字，且開頭要包含畫面中看得到的具體物件。"
+            "絕對不在輸出中加任何括號說明或格式標記。"
+            "絕對不用是非題。"
         )
 
         elements_str = "、".join(scene_elements)
@@ -741,6 +752,7 @@ class TherapyOrchestrator:
 
     def _parse_question_response(self, raw: str) -> dict:
         """解析 STEP1/2/3 的結構化輸出。"""
+        print(f"[DEBUG] LLM raw output:\n{raw}")  # 加這行
         result: dict = {"scene_text": "", "question": "", "covered_w": []}
         for line in raw.splitlines():
             line = line.strip()
