@@ -718,10 +718,12 @@ class TherapyOrchestrator:
         W 補問：明確針對尚未涵蓋的 W 維度切入（STEP3 格式）。
         Returns: {"scene_text": str, "question": str}
         """
-        system_content = (
+        system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "問題必須念起來自然、溫和、不超過15個字，且開頭要包含畫面中看得到的具體物件。"
+            "絕對不在輸出中加任何括號說明或格式標記。"
+            "絕對不用是非題。"
         )
 
         elements_str = "、".join(scene_elements)
@@ -761,7 +763,6 @@ class TherapyOrchestrator:
 
     def _parse_question_response(self, raw: str) -> dict:
         """解析 STEP1/2/3 的結構化輸出。"""
-        print(f"[DEBUG] LLM raw output:\n{raw}")  # 加這行
         result: dict = {"scene_text": "", "question": "", "covered_w": []}
         for line in raw.splitlines():
             line = line.strip()
