@@ -671,10 +671,12 @@ class TherapyOrchestrator:
         prompt 格式對齊 dpo/collect_data.py build_track_c_inference_prompt。
         Returns: {"scene_text": str, "question": str}
         """
-        system_content = (
+        system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "每次聽完長者說話，先用1-2句溫暖的話承接他的情緒，再自然問下一個問題。"
+            "絕對不在輸出中加任何括號說明或格式標記。"
+            "絕對不用是非題。"
         )
 
         elements_str = "、".join(scene_elements)
