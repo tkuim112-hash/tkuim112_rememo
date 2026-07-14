@@ -123,9 +123,16 @@ class TherapyOrchestrator:
         user_id: str,
         session_id: str,
         round_number: int = 1,
+        topic_override: str | None = None,
     ) -> dict:
         """
         開始回合 n（n=1,2,3）：生成場景圖 + STEP1 開場問題。
+
+        Args:
+            topic_override: 治療師啟動療程時手動輸入的今日主題，蓋過
+                Patient.scene_weights 推導出的預設主題。同一場療程的 round 2/3
+                應沿用同一個值，由呼叫端（app/routers/session.py）從 Redis
+                session meta 讀出後重新傳入。
 
         Returns dict 含：
           user_name, today_topic, scene_text, scene_elements,
@@ -137,6 +144,8 @@ class TherapyOrchestrator:
         user = await self.user_profile.get_user(user_id)
         if not user:
             raise ValueError(f"找不到使用者: {user_id}")
+        if topic_override:
+            user = {**user, "today_topic": topic_override, "topic_category": [topic_override]}
         print(f"  → {user['name']}，主題: {user['today_topic']}")
 
         image_plan = await self._plan_image(user)
