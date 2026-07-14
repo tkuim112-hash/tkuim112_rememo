@@ -8,13 +8,14 @@ class ElderlyAI:
         # 對齊全專案使用的 DPO 微調模型（app/config.py 的 ollama_model）
         model_name = model_name or os.getenv("RAG_LLM_MODEL", "rememo-llama3")
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
         ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        
+
         # 保留一個輕量 LLM 僅用於「RAG-Fusion 關鍵字改寫」
         self.llm = ChatOllama(model=model_name, temperature=0.3, base_url=ollama_host)
         self.embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
-        
-        self.client = QdrantClient(url=qdrant_url)
+
+        self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
         
         # 如果 collection 不存在就自動建立
         collections = [c.name for c in self.client.get_collections().collections]

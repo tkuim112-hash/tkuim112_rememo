@@ -129,8 +129,32 @@ public class ShareController : MonoBehaviour
     {
         if (isRecording) StopRecording();
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
+        StartCoroutine(SubmitClosing());
+    }
+
+    IEnumerator SubmitClosing()
+    {
+        // 心得回答存進 rounds/round_exchanges（第4回合，type='心得'）並觸發療程評估寫入，
+        // 跟前三回合的 PostTranscript（純統計用）不同，這裡是心得回合唯一的持久化寫入路徑。
+        string sessionId = PlayerPrefs.GetString("session_id", "");
+        if (!string.IsNullOrEmpty(sessionId) && !string.IsNullOrWhiteSpace(displayedText))
+            yield return PostClosingAnswer(sessionId, displayedText);
+
         PlayerPrefs.SetString("NextScene", "ThankYouScene");
         SceneManager.LoadScene("LoadingScene");
+    }
+
+    IEnumerator PostClosingAnswer(string sessionId, string text)
+    {
+        byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
+        using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/closing", "POST");
+        req.uploadHandler   = new UploadHandlerRaw(body);
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success)
+            Debug.LogWarning($"[Share Closing] POST 失敗: {req.error}");
     }
 
     void OnMicToggle()
