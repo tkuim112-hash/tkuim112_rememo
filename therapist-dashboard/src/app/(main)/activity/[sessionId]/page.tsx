@@ -10,6 +10,7 @@ export default function ActivityPage({ params }: { params: Promise<{ sessionId: 
   const { sessionId } = use(params);
   const searchParams = useSearchParams();
   const caseIdFromUrl = searchParams.get("caseId") ?? undefined;
+  const isLive = searchParams.get("live") === "1";
 
   const [session, setSession] = useState<Session | null>(null);
   const [caseData, setCaseData] = useState<Case | null>(null);
@@ -37,7 +38,7 @@ export default function ActivityPage({ params }: { params: Promise<{ sessionId: 
 
   if (loading) return null;
 
-  if (session && caseData) {
+  if (!isLive && session && caseData) {
     return <HistorySessionView session={session} caseData={caseData} rounds={rounds} />;
   }
 

@@ -7,7 +7,7 @@ import type { Case } from "@/lib/types";
 
 type DeviceStatus = "connected" | "unstable" | "disconnected";
 
-const AI_SUGGESTION = "AI 建議：台中紡織廠黃昏（上次反應最佳）";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function IconRefresh({ color }: { color: string }) {
   return (
@@ -58,17 +58,48 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const [scene, setScene] = useState("");
   const [status, setStatus] = useState<DeviceStatus>("unstable");
   const [caseData, setCaseData] = useState<Case | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [startError, setStartError] = useState("");
+  const [suggestedTopic, setSuggestedTopic] = useState<string | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(true);
 
   useEffect(() => {
     fetch(`/api/cases/${caseId}`)
       .then((r) => r.json())
       .then((data) => setCaseData(data))
       .catch(() => {});
+
+    fetch(`/api/cases/${caseId}/suggested-topic`)
+      .then((r) => r.ok ? r.json() : { topic: null })
+      .then((data) => setSuggestedTopic(data.topic ?? null))
+      .catch(() => setSuggestedTopic(null))
+      .finally(() => setSuggestionLoading(false));
   }, [caseId]);
 
   if (!caseData) return null;
 
   const nextSession = caseData.totalSessions + 1;
+
+  const handleStart = async () => {
+    setIsStarting(true);
+    setStartError("");
+    const newSessionId = crypto.randomUUID();
+    const topic = scene.trim() || suggestedTopic || "";
+    try {
+      const res = await fetch(
+        `${API_BASE}/session/start?user_id=${encodeURIComponent(caseId)}&session_id=${encodeURIComponent(newSessionId)}&topic=${encodeURIComponent(topic)}`,
+        { method: "POST", credentials: "include" }
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "啟動療程失敗，請確認長者端裝置與後端服務狀態");
+      }
+      router.push(`/activity/${newSessionId}?caseId=${caseId}&live=1`);
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : "啟動療程失敗，請稍後再試");
+      setIsStarting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#f5e6d3] px-12 pt-6 pb-36 flex flex-col">
@@ -116,7 +147,13 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
         <div className="flex flex-col gap-2">
           <h2 className="text-[15px] font-semibold text-[#1a1a1a]">起始場景</h2>
           <div className="bg-white rounded-2xl px-5 py-4">
-            <p className="text-[14px] text-[#888]">{AI_SUGGESTION}</p>
+            <p className="text-[14px] text-[#888]">
+              {suggestionLoading
+                ? "AI 建議：載入中…"
+                : suggestedTopic
+                ? `AI 建議：${suggestedTopic}（上次反應最佳）`
+                : "尚無歷史療程資料，暫無 AI 建議，可手動輸入場景描述"}
+            </p>
           </div>
           <p className="text-[13px] text-[#888] mt-0.5">或手動輸入場景描述</p>
           <textarea
@@ -224,14 +261,21 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
 
       {/* 固定底部按鈕 */}
       <div className="fixed bottom-0 left-0 right-0 px-5 pb-6 pt-3 bg-[#f5e6d3]">
-        <div className="max-w-[680px] w-full mx-auto flex gap-3">
+        <div className="max-w-[680px] w-full mx-auto flex flex-col gap-2">
+          {startError && (
+            <p className="text-[13px] text-[#e05c3a] bg-[#fff0f0] border border-[#ffb3b3] rounded-xl px-4 py-2.5">
+              {startError}
+            </p>
+          )}
+          <div className="flex gap-3">
           {status === "connected" && (
             <button
               type="button"
-              onClick={() => router.push(`/activity/s-live-1?caseId=${caseId}`)}
-              className="flex-1 bg-[#5b8ac5] text-white text-[17px] font-semibold rounded-2xl py-4"
+              onClick={handleStart}
+              disabled={isStarting}
+              className="flex-1 bg-[#5b8ac5] text-white text-[17px] font-semibold rounded-2xl py-4 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              啟動療程
+              {isStarting ? "啟動中…" : "啟動療程"}
             </button>
           )}
           {status === "unstable" && (
@@ -258,6 +302,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
           >
             取消
           </Link>
+          </div>
         </div>
       </div>
     </div>

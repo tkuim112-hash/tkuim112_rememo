@@ -4,7 +4,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -420,6 +420,12 @@ async def session_start(
             scene_text=result.get("scene_text", ""),
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
+        await db.execute(
+            update(TherapySession)
+            .where(TherapySession.session_uuid == session_id)
+            .values(topic=result.get("today_topic"))
+        )
+        await db.commit()
         if result.get("question"):
             await _save_round_exchange(
                 db, session_id, 1, question_number=1, question=result["question"],

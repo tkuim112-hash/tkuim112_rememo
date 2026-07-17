@@ -58,7 +58,8 @@ CREATE TABLE SESSIONS (
     therapist_note TEXT,
     story_summary TEXT,
     status TEXT NOT NULL DEFAULT 'in_progress'
-        CHECK (status IN ('scheduled', 'in_progress', 'completed'))
+        CHECK (status IN ('scheduled', 'in_progress', 'completed')),
+    topic TEXT
 );
 
 CREATE TABLE ROUNDS (
