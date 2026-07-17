@@ -508,7 +508,7 @@ async def session_metrics(
     except json.JSONDecodeError:
         suggestions = []
     return {
-        "emotion": data.get("emotion", "適當"),
+        "emotion": data.get("emotion", ""),
         "response_time": data.get("response_time", "--"),
         "current_scene": data.get("current_scene", ""),
         "elder_response": data.get("elder_response", ""),
