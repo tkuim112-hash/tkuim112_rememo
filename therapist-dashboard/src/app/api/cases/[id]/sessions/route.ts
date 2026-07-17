@@ -22,9 +22,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         WHERE s2.patient_id = s.patient_id AND s2.id <= s.id) AS session_number,
       (SELECT COUNT(*)::int FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS rounds_count,
       (SELECT ROUND(AVG(r.response_time)::numeric, 1)
-        FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS avg_response_time,
-      (SELECT r.emotion FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')
-        GROUP BY r.emotion ORDER BY COUNT(*) DESC LIMIT 1) AS overall_emotion
+        FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS avg_response_time
     FROM sessions s
     WHERE s.patient_id = ${parseInt(id)}
     ORDER BY s.id DESC
