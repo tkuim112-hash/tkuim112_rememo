@@ -149,11 +149,15 @@ class TherapyOrchestrator:
             image_plan["image_prompt"], taboos=user["taboos"]
         )
 
-        image_path = await self.image.generate(
-            prompt=safe_prompt,
-            session_id=session_id,
-            round_number=round_number,
-        )
+        try:
+            image_path = await self.image.generate(
+                prompt=safe_prompt,
+                session_id=session_id,
+                round_number=round_number,
+            )
+        except Exception as e:
+            print(f"  → 圖片生成失敗（不影響對話主流程，長者端這回合沒有配圖）: {e}")
+            image_path = ""
         print(f"  → 圖片: {image_path}")
 
         memories = await self.rag.retrieve_memories(
@@ -311,6 +315,39 @@ class TherapyOrchestrator:
             return await self._next_step_or_end(
                 user, scene_els, covered_w, skipped_w, elder_response, state, emotion
             )
+
+    async def suggest_next_questions(
+        self,
+        user_id: str,
+        covered_w: list[str],
+        skipped_w: list[str],
+        scene_elements: list[str],
+        emotion: str = "happy",
+        limit: int = 3,
+    ) -> list[str]:
+        """給治療師畫面「AI 建議追問語（參考用）」用：依序取接下來 limit 個
+        尚未涵蓋的 W 維度，各生成一題候選追問語。純參考展示，不影響系統
+        實際問長者的邏輯（那條路徑走 process_response，完全不受這裡影響）。"""
+        user = await self.user_profile.get_user(user_id)
+        if not user:
+            return []
+        done = set(covered_w) | set(skipped_w)
+        target_ws = [w for w in _W_ORDER if w not in done][:limit]
+        questions: list[str] = []
+        for target_w in target_ws:
+            try:
+                result = await guarded_generate(
+                    self._generate_supplement_question,
+                    taboo_words=user["taboos"],
+                    llm_service=self.llm,
+                    user=user, scene_elements=scene_elements, covered_w=covered_w,
+                    target_w=target_w, emotion=emotion,
+                )
+                if result.get("question"):
+                    questions.append(result["question"])
+            except Exception as e:
+                print(f"[Orchestrator] 建議追問語生成失敗（{target_w}，不影響主流程）: {e}")
+        return questions
 
     # ══════════════════════════════════════════════════════════════
     # 私有：狀態機輔助
