@@ -4,10 +4,9 @@ import Link from "next/link";
 import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { Case } from "@/lib/types";
+import { API_BASE } from "@/lib/api";
 
 type DeviceStatus = "connected" | "unstable" | "disconnected";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function IconRefresh({ color }: { color: string }) {
   return (
@@ -83,9 +82,9 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const handleStart = async () => {
     setIsStarting(true);
     setStartError("");
-    const newSessionId = crypto.randomUUID();
-    const topic = scene.trim() || suggestedTopic || "";
     try {
+      const newSessionId = crypto.randomUUID();
+      const topic = scene.trim() || suggestedTopic || "";
       const res = await fetch(
         `${API_BASE}/session/start?user_id=${encodeURIComponent(caseId)}&session_id=${encodeURIComponent(newSessionId)}&topic=${encodeURIComponent(topic)}`,
         { method: "POST", credentials: "include" }

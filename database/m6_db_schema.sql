@@ -92,3 +92,8 @@ CREATE TABLE AUDIT_LOGS (
     ip_address TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 治療師後台常用的 WHERE/JOIN 欄位，Postgres 不會自動幫一般外鍵建索引
+CREATE INDEX idx_sessions_patient_id ON SESSIONS(patient_id);
+CREATE INDEX idx_patients_organization_id ON PATIENTS(organization_id);
+CREATE INDEX idx_round_exchanges_round_id ON ROUND_EXCHANGES(round_id);

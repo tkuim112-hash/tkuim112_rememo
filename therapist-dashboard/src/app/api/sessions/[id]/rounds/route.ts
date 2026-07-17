@@ -16,8 +16,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       re.id AS exchange_id, re.question_number, re.question, re.answer
     FROM rounds r
     JOIN sessions s ON s.id = r.session_id
+    JOIN patients p ON p.id = s.patient_id
     LEFT JOIN round_exchanges re ON re.round_id = r.id
     WHERE r.session_id = ${parseInt(id)}
+      AND p.organization_id = ${session.organizationId}
     ORDER BY r.round_number ASC, re.question_number ASC
   `;
 

@@ -25,6 +25,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       score_emotion        = ${scoreEmotion ?? null},
       score_interaction    = ${scoreInteraction ?? null}
     WHERE id = ${parseInt(id)}
+      AND patient_id IN (SELECT id FROM patients WHERE organization_id = ${session.organizationId})
     RETURNING patient_id
   `;
 
@@ -67,7 +68,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       (SELECT ROUND(AVG(r.response_time)::numeric, 1)
         FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS avg_response_time
     FROM sessions s
+    JOIN patients p ON p.id = s.patient_id
     WHERE s.id = ${parseInt(id)}
+      AND p.organization_id = ${session.organizationId}
   `;
 
   if (!s) return NextResponse.json({ error: "找不到療程" }, { status: 404 });

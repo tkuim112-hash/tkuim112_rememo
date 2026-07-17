@@ -18,6 +18,8 @@ export default function ActivityPage({ params }: { params: Promise<{ sessionId: 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (isLive) { setLoading(false); return; }
+
     fetch(`/api/sessions/${sessionId}`)
       .then((r) => r.ok ? r.json() : null)
       .then(async (s) => {
@@ -34,7 +36,7 @@ export default function ActivityPage({ params }: { params: Promise<{ sessionId: 
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [sessionId]);
+  }, [sessionId, isLive]);
 
   if (loading) return null;
 

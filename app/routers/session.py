@@ -420,12 +420,16 @@ async def session_start(
             scene_text=result.get("scene_text", ""),
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
-        await db.execute(
-            update(TherapySession)
-            .where(TherapySession.session_uuid == session_id)
-            .values(topic=result.get("today_topic"))
-        )
-        await db.commit()
+        try:
+            await db.execute(
+                update(TherapySession)
+                .where(TherapySession.session_uuid == session_id)
+                .values(topic=result.get("today_topic"))
+            )
+            await db.commit()
+        except Exception as e:
+            print(f"[DB] sessions.topic 寫入失敗（不影響主流程）: {e}")
+            await db.rollback()
         if result.get("question"):
             await _save_round_exchange(
                 db, session_id, 1, question_number=1, question=result["question"],

@@ -4,8 +4,7 @@
 import { useState, Fragment, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ActiveSession } from "@/lib/types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_BASE } from "@/lib/api";
 
 
 const EMOTION_COLORS: Record<string, string> = {
