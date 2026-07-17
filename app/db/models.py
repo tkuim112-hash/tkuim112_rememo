@@ -78,6 +78,7 @@ class TherapySession(Base):
     emotional_status: Mapped[str | None] = mapped_column(Text)
     therapist_note: Mapped[str | None] = mapped_column(Text)
     story_summary: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="in_progress")
 
 
 class TherapyRound(Base):

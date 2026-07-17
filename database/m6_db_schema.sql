@@ -56,7 +56,9 @@ CREATE TABLE SESSIONS (
     total_score INTEGER,
     emotional_status TEXT,
     therapist_note TEXT,
-    story_summary TEXT
+    story_summary TEXT,
+    status TEXT NOT NULL DEFAULT 'in_progress'
+        CHECK (status IN ('scheduled', 'in_progress', 'completed'))
 );
 
 CREATE TABLE ROUNDS (

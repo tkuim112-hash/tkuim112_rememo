@@ -9,7 +9,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const { id } = await params;
   const {
-    totalScore, emotionalStatus, notes,
+    totalScore, emotionalStatus, notes, status,
     scoreParticipation, scoreAttention, scoreEndurance, scoreEmotion, scoreInteraction,
   } = await req.json();
 
@@ -18,6 +18,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       total_score          = ${totalScore ?? null},
       emotional_status     = ${emotionalStatus ?? null},
       therapist_note       = ${notes ?? null},
+      status                = COALESCE(${status ?? null}, status),
       score_participation  = ${scoreParticipation ?? null},
       score_attention      = ${scoreAttention ?? null},
       score_endurance      = ${scoreEndurance ?? null},
@@ -53,6 +54,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       s.total_score,
       s.story_summary,
       s.emotional_status,
+      s.status,
       s.score_participation,
       s.score_attention,
       s.score_endurance,
@@ -85,6 +87,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     caseId: s.patient_id?.toString() ?? "",
     date: s.date ? new Date(s.date).toLocaleDateString("zh-TW") : "",
     sessionNumber: s.session_number,
+    status: s.status,
     rounds: s.rounds_count,
     score: s.total_score,
     totalScore: 20,
