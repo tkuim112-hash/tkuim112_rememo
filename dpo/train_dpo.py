@@ -21,6 +21,7 @@ DPO 微調腳本（Unsloth 版）
 """
 
 import json
+import random
 from pathlib import Path
 
 from datasets import Dataset
@@ -40,6 +41,19 @@ NUM_EPOCHS = 3
 BATCH_SIZE = 1
 GRAD_ACCUM = 8
 
+# LoRA：r=8/僅attn 在 eval_rewards/accuracies 於 epoch2 就飽和在 98.66%，
+# epoch3 幾乎只把 margin 從 0.32 推到 0.37（已分開的 pair 被推更開，
+# 邊際價值低，有輕微過擬合風險）。這裡把容量調大、並納入 MLP 層——
+# 語氣/情緒暫存這類「軟性」判斷通常更依賴 MLP，而不只是注意力層。
+# 建議跟舊的 r=8 attn-only 版本用同一套 evaluate_model.py 對照比較，
+# 不要預設容量越大越好（訓練資料不到 3000 筆，也可能撐不住太大的 r）。
+LORA_R = 16
+LORA_ALPHA = 32
+LORA_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
+
 
 # ─── 資料載入 ────────────────────────────────────────────────────────────────
 
@@ -55,10 +69,42 @@ def load_dataset_from_jsonl(path: Path) -> Dataset:
                 "prompt": rec["prompt"],
                 "chosen": rec["chosen"],
                 "rejected": rec["rejected"],
+                # 只留 track 字串（不是整個 meta dict），給下面的分層切分用，
+                # 切分完後會移除，不會進到 DPOTrainer。
+                "track": rec["meta"]["track"],
             })
 
     print(f"載入 {len(records)} 筆訓練對")
     return Dataset.from_list(records)
+
+
+def stratified_split(dataset: Dataset, test_size: float, seed: int) -> tuple[Dataset, Dataset]:
+    """
+    依 track 分層切 train/eval。
+
+    原本用 dataset.train_test_split() 隨機切分，會直接複製訓練集本身的
+    Track 比例（A 佔約 80%），導致 eval_loss/reward accuracy 這類總指標
+    幾乎只反映 Track A（問題品質）的表現，看不出 Track B（情緒引導）、
+    C（承接+追問）、D（收尾）到底有沒有學到東西——而 B/D 恰好是對長者
+    最需要謹慎的兩個環節。這裡改成每個 track 各自抽 test_size 比例，
+    確保 eval 集合裡四條軌跡的比例跟訓練集一致，不會被 A 稀釋掉。
+    """
+    by_track: dict[str, list[int]] = {}
+    for i, track in enumerate(dataset["track"]):
+        by_track.setdefault(track, []).append(i)
+
+    rng = random.Random(seed)
+    train_idx: list[int] = []
+    test_idx: list[int] = []
+    for track, idxs in sorted(by_track.items()):
+        idxs = idxs[:]
+        rng.shuffle(idxs)
+        n_test = max(1, round(len(idxs) * test_size))
+        test_idx.extend(idxs[:n_test])
+        train_idx.extend(idxs[n_test:])
+        print(f"    track={track}: 共 {len(idxs)} 筆 → train {len(idxs) - n_test} / eval {n_test}")
+
+    return dataset.select(train_idx), dataset.select(test_idx)
 
 
 # ─── 模型載入（Unsloth 4-bit，比 bitsandbytes 更省 VRAM） ────────────────────
@@ -73,9 +119,9 @@ def load_model_and_tokenizer():
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r=8,
-        lora_alpha=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        r=LORA_R,
+        lora_alpha=LORA_ALPHA,
+        target_modules=LORA_TARGET_MODULES,
         lora_dropout=0.05,
         bias="none",
         use_gradient_checkpointing="unsloth",  # Unsloth 優化版 gradient checkpointing
@@ -108,9 +154,10 @@ def main() -> None:
     print("載入訓練資料...")
     dataset = load_dataset_from_jsonl(DATA_FILE)
 
-    split = dataset.train_test_split(test_size=0.1, seed=42)
-    train_dataset = split["train"]
-    eval_dataset = split["test"]
+    print("依 track 分層切分 train/eval...")
+    train_dataset, eval_dataset = stratified_split(dataset, test_size=0.1, seed=42)
+    train_dataset = train_dataset.remove_columns("track")
+    eval_dataset = eval_dataset.remove_columns("track")
     print(f"訓練集：{len(train_dataset)} 筆，驗證集：{len(eval_dataset)} 筆")
 
     print("載入基底模型（Unsloth 4-bit 量化）...")
@@ -131,7 +178,13 @@ def main() -> None:
         logging_steps=10,
         eval_strategy="epoch",
         save_strategy="epoch",
-        load_best_model_at_end=False,
+        # 之前固定用最後一個 epoch 的 checkpoint；但 reward accuracy 在 epoch2
+        # 就已經飽和(98.66%)，epoch3 只把 margin 拉大，不代表真的學到更多東西，
+        # 甚至可能開始輕微過擬合。改成自動挑 eval_loss 最低的 checkpoint。
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        save_total_limit=3,
         report_to="none",
         precompute_ref_log_probs=False,
         max_length=MAX_SEQ_LENGTH,

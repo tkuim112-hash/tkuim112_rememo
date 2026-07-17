@@ -29,9 +29,11 @@
   - STEP3 補問 → build_inference_prompt（Track A）
 
 ===  禁忌話題防護整合 ===
-生成完成後，透過 app/safety/crisis_detector.py 的 guarded_generate() 包裝，
+生成完成後，透過 app/safety/taboo_checker.py 的 guarded_generate() 包裝，
 檢查 AI 輸出是否觸及 Patient.taboo_words 相關話題（字面 + 語意兩層），
-違規時重新生成或退回安全保底語句。詳見 app/safety/taboo_checker.py。
+違規時重新生成或退回安全保底語句。這是最後一道事後攔截；每個生成函式
+的 prompt 本身也都會先把 taboo_words 帶給 LLM，讓模型從生成當下就
+主動避開，而不是完全依賴這道事後防護。
 """
 import json
 import re
@@ -41,6 +43,7 @@ from services.rag_client import RealRAGClient
 from services.user_profile_db import DBUserProfileClient
 from privacy.deidentifier import Deidentifier
 from safety.taboo_checker import guarded_generate
+from safety.element_filter import filter_scene_elements
 
 # 5W1H 優先順序（由易到難，對齊 問題設計規則.pdf；Why 條件式使用）
 _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
@@ -514,16 +517,19 @@ class TherapyOrchestrator:
         last_response_section = (
             f"\n【長者最後說的話】\n{elder_response}\n" if elder_response else ""
         )
+        taboo_str = "、".join(user["taboos"]) if user["taboos"] else "無"
         user_content = (
             f"【長者資料】\n"
             f"姓名：{user['name']}\n"
             f"今日主題：{user['today_topic']}\n"
             f"{last_response_section}"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
+            f"\n【禁忌話題（絕對不可提及或引導）】\n{taboo_str}\n"
             f"\n【任務】\n"
             f"三回合療程剛剛結束。請設計收尾引導，需包含：\n"
             f"1. 收尾語：1-2句，溫暖肯定長者今天的分享，語氣輕鬆自然，不誇張\n"
-            f"2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項：\n"
+            f"2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項，"
+            f"且不能引導向【禁忌話題】：\n"
             f"   - 現在的感受或心情（例：「現在心裡感覺怎麼樣呢？」）\n"
             f"   - 今天最讓長者開心的回憶（例：「今天哪個故事讓您最開心？」）\n"
             f"   - 想帶走的正向感受（例：「今天有什麼讓您覺得溫暖的事？」）\n"
@@ -570,7 +576,20 @@ class TherapyOrchestrator:
 規劃一張水彩風格的回憶場景圖，符合主題，要能引發長者的回憶。
 
 【嚴格規定】
-回傳一個 JSON 物件，**只回 JSON，不要任何說明文字或 markdown 標記**。
+1. 每個元素必須是「不需要湊近看細節、一眼就能辨認形狀」的大範圍實體物件或情境
+   （例如：建築物、交通工具、農具、地景、天色），問題會直接錨定在第一個元素上。
+2. 絕對不要用「需要讀出文字」的元素（黑板文字、招牌字樣、書頁內容、標語等）——
+   AI 生圖無法穩定畫出清楚可讀的文字，長者也答不出畫面上寫了什麼。
+3. 絕對不要用「需要辨識特定人物身份或表情」的元素（小人物、遠處人臉、某個人的
+   表情）——AI 生圖無法穩定畫出清楚的人臉細節，長者無從辨認畫裡的人是誰。
+4. 每個元素必須是「同年代、同職業背景的人普遍會有印象」的常見物件，不要選個人
+   化程度太高、地域限定太窄或太罕見的物件（例如特定花卉品種、特定小眾嗜好用
+   品）——長者答不出自己沒印象的東西，元素越通俗普遍，長者才越可能真的有共鳴。
+5. image_prompt 要指定暖色調、高對比配色，且明確避免藍、綠、紫三色互相鄰接
+   （例如寫 "warm high-contrast palette, avoid adjacent blue-green-purple
+   tones"）——年長者對藍/綠/紫及其鄰近色的辨識能力較弱，色差不夠大會導致
+   長者根本看不清楚畫面裡的錨點物件。
+6. 回傳一個 JSON 物件，**只回 JSON，不要任何說明文字或 markdown 標記**。
 格式：
 {{
   "elements": ["元素1", "元素2", "元素3", "元素4"],
@@ -584,7 +603,11 @@ class TherapyOrchestrator:
 }}
 """
         raw = await self.llm.ask(prompt)
-        return self._extract_json(raw)
+        plan = self._extract_json(raw)
+        # 就算 LLM 沒遵守上面的規則，這裡再用關鍵詞黑名單擋一次
+        # （比照 taboo_checker.py 的 Layer 1 粗篩，零額外 LLM 呼叫）。
+        plan["elements"] = filter_scene_elements(plan.get("elements", []))
+        return plan
 
     async def _generate_question(
         self,

@@ -116,6 +116,11 @@ def has_anchor(q: str, elements: list[str]) -> bool:
 def asks_why(q: str) -> bool:
     return "為什麼" in q or "為何" in q
 
+def content_touches_taboo(text: str, taboos: list[str]) -> bool:
+    """Layer 1 粗篩（比照 app/safety/taboo_checker.py 的 keyword_prescan）：
+    純字面比對，抓不到語意相關但沒用到禁忌詞字面的情況，僅供訓練前粗篩。"""
+    return any(t in text for t in taboos)
+
 # ── 主驗證邏輯 ────────────────────────────────────────────────────────────────
 
 class Validator:
@@ -139,11 +144,22 @@ class Validator:
         chosen = obj["chosen"][0]["content"]
         rejected = obj["rejected"][0]["content"]
         prompt = obj["prompt"]
+        taboos = meta.get("taboos", [])
         info_base = {"line": lineno, "sid": sid, "step": step, "rule": rule}
 
         # ── 全軌跡通用：chosen 與 rejected 不得相同 ─────────────────────
         if chosen == rejected:
             self._fail("chosen==rejected", info_base)
+
+        # ── 全軌跡通用：chosen 不得字面觸及這筆資料標記的禁忌話題 ─────────
+        if taboos and content_touches_taboo(chosen, taboos):
+            self._fail("chosen:touches_taboo", {**info_base, "taboos": taboos})
+
+        # ── touches_taboo/dwell_on_taboo 規則：確認 rejected 真的觸及禁忌 ──
+        if rule in ("touches_taboo", "dwell_on_taboo") and taboos:
+            if not content_touches_taboo(rejected, taboos):
+                self._fail("rejected:touches_taboo_not_violated",
+                           {**info_base, "taboos": taboos})
 
         # ── Track A：問題品質 ────────────────────────────────────────────
         if track == "A":
@@ -292,6 +308,7 @@ class Validator:
         print("【關鍵檢查】（任何失敗都應在訓練前修正）")
         critical = [
             ("chosen==rejected",           "Chosen 與 Rejected 完全相同"),
+            ("chosen:touches_taboo",       "Chosen 字面觸及該筆資料的禁忌話題"),
             ("chosen:missing_question_line","Track A Chosen 缺少「問題：」行"),
             ("chosen:too_long",            "Track A Chosen 問題 > 20 CJK 字"),
             ("chosen:is_yesno",            "Track A Chosen 問題是是非題"),
@@ -337,6 +354,7 @@ class Validator:
             ("rejected_d:abrupt_end_not_violated",    "abrupt_end — rejected 仍有收尾語"),
             ("rejected_d:skip_feeling_not_violated",  "skip_feeling— rejected 仍有問題"),
             ("rejected_d:over_long_not_violated",     "over_long  — rejected 收尾語未變長"),
+            ("rejected:touches_taboo_not_violated",   "touches_taboo/dwell_on_taboo — rejected 未字面觸及禁忌"),
         ]
         rule_fail = False
         for key, desc in rule_checks:

@@ -2,7 +2,8 @@
 """
 DPO 訓練資料過濾腳本
 
-移除 chosen 回應明顯違規的 pair（is_yesno、memory_test、double_question）。
+移除 chosen 回應明顯違規的 pair（is_yesno、memory_test、double_question、
+no_anchor、chosen_equals_rejected、chosen_touches_taboo）。
 這些 pair 的 chosen 本身就犯了 DPO 要教模型避免的行為，會讓訓練方向混亂。
 
 執行：
@@ -65,13 +66,35 @@ def has_anchor(q: str, elements: list[str]) -> bool:
     return False
 
 
+def chosen_touches_taboo(obj: dict) -> bool:
+    """
+    Layer 1 粗篩（比照 app/safety/taboo_checker.py 的 keyword_prescan）：
+    純字面比對，chosen 是否直接包含這筆資料標記的禁忌詞子字串。
+    抓不到「語意相關但沒用到禁忌詞字面」的情況，那類需要人工/LLM複查，
+    這裡只當作最後一道零成本防呆，不是完整的語意檢查。
+    """
+    taboos = obj.get("meta", {}).get("taboos", [])
+    if not taboos:
+        return False
+    chosen = obj["chosen"][0]["content"]
+    return any(t in chosen for t in taboos)
+
+
 def chosen_is_bad(obj: dict) -> tuple[bool, str]:
     """回傳 (應移除, 原因)。"""
+    chosen = obj["chosen"][0]["content"]
+    rejected = obj["rejected"][0]["content"]
+
+    if chosen.strip() == rejected.strip():
+        return True, "chosen_equals_rejected"
+
+    if chosen_touches_taboo(obj):
+        return True, "chosen_touches_taboo"
+
     track = obj["meta"]["track"]
     if track not in ("A", "C", "D"):
         return False, ""
 
-    chosen = obj["chosen"][0]["content"]
     q = extract_question(chosen)
     if q is None:
         return False, ""

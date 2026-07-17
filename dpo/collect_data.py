@@ -32,7 +32,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+# override=True：如果系統/終端機 session 已經有一個舊的 ANTHROPIC_API_KEY
+# 環境變數，load_dotenv 預設不會覆蓋它，導致改了 .env 也沒用。
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 import anthropic
 
@@ -85,6 +87,7 @@ QUESTION_REJECTION_RULES: dict[str, str] = {
     "memory_test": "用「你還記得嗎」或「你記不記得」開頭，像在測試記憶力，讓有MCI的長者感到焦慮",
     "wrong_w_priority": "跳過 Where/Who/What，直接問 Why（為什麼），對輕微認知障礙的長者太抽象難以回答",
     "leading_question": "問題預設答案（如「那一定很辛苦吧？」），引導長者附和而非主動回憶，剝奪長者自由表達的空間",
+    "touches_taboo": "問題的錨點或內容刻意引導長者往【禁忌話題】的方向回憶，即使沒有直接說出禁忌詞本身，語意上也明顯朝該方向探問",
 }
 # 移除了與 no_anchor 高度重疊的三條規則：
 #   off_scene（完全離題，是 no_anchor 的極端情況）
@@ -103,6 +106,8 @@ EMOTION_REJECTION_RULES: dict[str, str] = {
     "false_positivity": "用強迫式假正向框架包裝長者的痛苦（如「這都是您寶貴的人生經歷！非常珍貴！」），跳過情緒承接直接賦予意義，讓長者感到傷痛被輕視",
     "premature_closure": "情緒還未平復就急著收尾回到療程（如「好，那我們繼續吧」），讓長者感到自己的情緒被打斷，沒有被好好接住",
     "over_identify": "過度代入自己的情感（如「我聽到這個也很難過，真的很心疼」），搶佔長者的情緒舞台，讓長者反過來擔心或安慰AI，失去表達自己的空間",
+    "focus_on_loss": "回應只強調長者已經退化、遺忘、做不到的部分（如附和「對啊，年紀大了很多事都做不到了」），沒有肯定長者仍然記得、仍然擁有的能力和價值，讓長者感到更沒用、更沮喪",
+    "dwell_on_taboo": "長者自己主動提到的內容剛好觸及【禁忌話題】時，沒有溫和地不深入，反而順著追問更多細節，讓長者被迫陷入更深的禁忌回憶",
 }
 
 # 情緒觸發情境：模擬長者說出這些話後，AI要如何回應（Track B，10個危機情境）
@@ -110,6 +115,7 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "（沉默了很久，聲音有點哽咽）那個時候我媽媽還在，她每次都會來接我下班……",
         "context": "長者提到已過世的母親，情緒突然低落",
+        "taboos": ["已故母親"],
     },
     {
         "trigger": "（搖搖頭）我不記得了，我都忘了，我腦子越來越差了……",
@@ -126,6 +132,7 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "（突然停下來，眼眶紅了）我那個兒子……他很久沒來看我了……",
         "context": "長者提到家人疏遠，情緒突然轉向悲傷",
+        "taboos": ["子女疏遠、很少探望"],
     },
     {
         "trigger": "（聲音突然變得很小）我想回家……我不想在這裡……",
@@ -134,6 +141,7 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "（停頓很久）我那個老伴走了二十幾年了……有時候還是會想到他……",
         "context": "長者提到已過世的配偶，情緒陷入深沉的思念",
+        "taboos": ["已故配偶"],
     },
     {
         "trigger": "我這個老人家，講這些有什麼用……現在什麼都做不了了……",
@@ -150,6 +158,7 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "（眼眶泛紅，聲音顫抖）說著說著……我那個弟弟……他走了很多年了……我們從小感情最好……",
         "context": "長者提到已過世的手足，突然情緒哽咽",
+        "taboos": ["已故手足"],
     },
     {
         "trigger": "（突然疑惑地看著前方）你是誰？我……我怎麼在這裡？我要回家……",
@@ -170,6 +179,7 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "我的老朋友阿明……上個月走了……我們認識六十年了……",
         "context": "長者提到老友近期過世，陷入悲傷與孤獨感",
+        "taboos": ["已故摯友"],
     },
     {
         "trigger": "（苦笑）哈……說起來好笑，那時候苦成那樣，現在想起來還是會……（聲音哽咽，說不下去）",
@@ -182,10 +192,12 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "（突然輕聲問）媽媽呢？我媽媽去哪裡了？她說她等一下來接我的……",
         "context": "長者出現時間錯亂，以為已過世的母親還在世（MCI中期症狀）",
+        "taboos": ["已故母親"],
     },
     {
         "trigger": "（語氣突然謹慎，聲音壓低）那個時候不能亂講話的……說錯話是會出事的……你知道嗎……",
         "context": "長者觸及戒嚴年代的恐懼記憶，情緒緊繃、帶著多年未解的壓抑",
+        "taboos": ["戒嚴時期政治恐懼"],
     },
     {
         "trigger": "（苦笑）我那個孫子來看我，就一直在玩那個手機，我跟他說話他都嗯嗯嗯，也不知道有沒有在聽……",
@@ -226,6 +238,134 @@ EMOTIONAL_SCENARIOS = [
     {
         "trigger": "（聲音很小，帶著深深的恐懼）我……我不想死在這裡……我想回自己的家……就算只是回去看一眼也好……",
         "context": "長者對死亡和不在家中離世感到恐懼，深層表達了對尊嚴和歸屬感的渴望",
+        "taboos": ["對死亡與離世地點的恐懼"],
+    },
+    # ── 以下為擴充場景，讓 Track B 的分母不再只靠 30 筆撐起訓練比例 ──────
+    {
+        "trigger": "（皺眉，聲音低沉）我這個病一直好不了，會不會越來越嚴重……",
+        "context": "長者對自身慢性病惡化感到擔憂與恐懼",
+        "taboos": ["自身病情惡化的預後"],
+    },
+    {
+        "trigger": "（欲言又止，聲音壓抑）我那個女兒……她離婚了，這件事我到現在都不知道要怎麼跟人說……",
+        "context": "長者對女兒離婚感到丟臉又心疼，不知如何面對",
+        "taboos": ["女兒離婚"],
+    },
+    {
+        "trigger": "（嘆氣）我現在退休金越來越不夠用，也不敢跟孩子開口……",
+        "context": "長者對經濟狀況感到擔憂，又不好意思向子女求助",
+        "taboos": ["目前經濟困難"],
+    },
+    {
+        "trigger": "（語氣低落）上個月他們把我的機車鑰匙收走了，說我年紀大了不安全……",
+        "context": "長者因失去行動自主權而感到被剝奪尊嚴",
+    },
+    {
+        "trigger": "（望著遠方，聲音很輕）我走了以後，你們還會記得我嗎……",
+        "context": "長者流露出對死後被遺忘的恐懼",
+    },
+    {
+        "trigger": "（低頭）我爸走的時候我在外地工作，沒能見到最後一面……",
+        "context": "長者對父親過世時未能送終感到深深自責",
+        "taboos": ["已故父親、未能送終的遺憾"],
+    },
+    {
+        "trigger": "（苦笑）以前打牌的那幾個老朋友，現在剩沒幾個能出門的了……",
+        "context": "長者因同輩逐漸凋零而感到孤獨",
+    },
+    {
+        "trigger": "（聲音有點抖）醫生說要幫我開刀，我很怕……",
+        "context": "長者對即將到來的手術感到恐懼不安",
+    },
+    {
+        "trigger": "（語氣有點賭氣）是他們把我送來這裡的，我根本不想來……",
+        "context": "長者對被安置在日間照護中心感到不情願與委屈",
+        "taboos": ["被安置到日照中心的原因"],
+    },
+    {
+        "trigger": "（聲音哽咽）我養的那隻狗走了，陪了我十幾年……",
+        "context": "長者提到過世的陪伴動物，情緒低落",
+    },
+    {
+        "trigger": "（沉默一下）退休以後，我常常不知道自己活著要幹嘛……",
+        "context": "長者退休後失去自我價值感，陷入迷惘",
+    },
+    {
+        "trigger": "（聲音很輕，眼神黯淡）我以前有一個孩子，很小的時候就走了……",
+        "context": "長者提到夭折的孩子，觸及深層未解的悲傷",
+        "taboos": ["夭折的孩子"],
+    },
+    {
+        "trigger": "（語氣激動）那時候被迫離開家鄉，什麼都沒帶到，這輩子再也沒回去過……",
+        "context": "長者觸及遷徙離散的創傷記憶，情緒激動",
+    },
+    {
+        "trigger": "（聲音低落）媳婦有自己的媽媽要照顧，孫子也跟她比較親……",
+        "context": "長者感覺自己在家庭中逐漸被邊緣化",
+    },
+    {
+        "trigger": "（聲音緊張）上禮拜我跌倒了，自己一個人躺在地上爬不起來……",
+        "context": "長者近期跌倒事件帶來強烈的恐懼與無助感",
+    },
+    {
+        "trigger": "（悵然）我出生的那間老厝，前幾年拆掉改建大樓了……",
+        "context": "長者對已拆除的老家流露出深深的思念",
+    },
+    {
+        "trigger": "（聲音無奈）眼睛越來越看不清楚了，以後是不是什麼都看不到了……",
+        "context": "長者對視力持續退化、可能失明感到恐懼",
+    },
+    {
+        "trigger": "（望著遠方，聲音低沉）我老家在對岸，這輩子大概是回不去了……",
+        "context": "長者對再也回不去的原鄉流露深深思念",
+        "taboos": ["無法返鄉的遺憾"],
+    },
+    {
+        "trigger": "（沉默）我這幾個兄弟姊妹，就剩我一個人了……",
+        "context": "長者因手足相繼過世而感到強烈的孤獨感",
+    },
+    {
+        "trigger": "（聲音緊張）我媽媽以前也失智，我很怕自己以後也會這樣……",
+        "context": "長者對自己未來可能失智感到強烈焦慮",
+        "taboos": ["對失智的恐懼"],
+    },
+    {
+        "trigger": "（語氣低落）我跟我最好的朋友，後來因為一件小事吵架，到現在都沒有再聯絡……",
+        "context": "長者對多年前絕交的老友感到遺憾",
+    },
+    {
+        "trigger": "（語氣失落）孫女下個月結婚，我可能沒辦法去了，身體不允許……",
+        "context": "長者因身體限制無法參加重要家庭場合，感到失落",
+    },
+    {
+        "trigger": "（有點不好意思）現在連扣扣子都要人家幫忙，覺得自己很沒用……",
+        "context": "長者因日常生活能力退化而感到羞愧",
+    },
+    {
+        "trigger": "（語氣有點激動）我那些孩子為了房子的事在吵，我聽了心裡很難受……",
+        "context": "長者因家人財產紛爭感到心痛，夾在中間左右為難",
+        "taboos": ["家人間的財產糾紛"],
+    },
+    {
+        "trigger": "（嘆氣）以前我最愛到處走走看看，現在走沒兩步就喘，哪裡都去不了……",
+        "context": "長者因體力衰退而失去旅行、四處活動的自由，感到失落",
+    },
+    {
+        "trigger": "（聲音疲憊）我先生現在身體越來越差，我一個人要照顧他，有時候真的很累……",
+        "context": "長者身兼照顧年邁配偶的重擔，感到疲憊與擔憂",
+    },
+    {
+        "trigger": "（有點委屈）我跟醫生說我這裡不舒服，他都說我想太多……",
+        "context": "長者感覺自己的身體不適不被醫療人員重視",
+    },
+    {
+        "trigger": "（聲音突然低落）今天是我先生的忌日……",
+        "context": "配偶的逝世紀念日引發長者情緒波動",
+        "taboos": ["已故配偶"],
+    },
+    {
+        "trigger": "（有點落寞）我年輕時候日語很流利，現在都忘光了，找不到人可以講……",
+        "context": "長者因語言能力退化、失去可以交流的對象而感到孤獨",
     },
 ]
 
@@ -242,6 +382,7 @@ TRACK_C_REJECTION_RULES: dict[str, str] = {
     "premature_next": "長者話還沒說完、情緒還留在剛才的記憶裡，就急著問下一個問題，讓長者感到被催促和打斷",
     "over_explain": "承接語超過3句且語氣像在分析或演講（如「您說的這段經歷展現了您那個年代的…」），節奏過重，讓長者困惑且忘了後面的問題",
     "cold_transition": "承接後用過於正式或套路化的語氣切入問題（如「好，那麼我再請問您…」），打斷了對話應有的溫度與連貫感",
+    "touches_taboo": "承接語或下一個問題刻意引導長者談論【禁忌話題】，忽視家屬事先設定的地雷，即使沒有直接說出禁忌詞本身",
 }
 
 # Track D：收尾引導的 7 種違規方式
@@ -253,6 +394,7 @@ TRACK_D_REJECTION_RULES: dict[str, str] = {
     "cold_farewell": "收尾語語氣冷淡、書面化（如「療程至此結束，感謝您今日的配合，請好好休息。」），像公文通知，缺乏真人的溫度",
     "anchor_negative": "收尾語最後停留在沉重或負面的回憶上（如「今天您分享了許多辛苦的故事，我們要好好記住這些教訓。現在感覺如何？」），沒有把情緒引向溫暖的方向就直接問感受",
     "over_long_closing": "收尾語超過三句且像演講總結（如長篇大論回顧今天所有主題），讓有認知負荷的長者不知道重點在哪，也忘了後面的問題",
+    "touches_taboo": "收尾語或最後的問題（如「今天哪個故事讓您最開心」）刻意引導長者回想【禁忌話題】相關的回憶，忽視家屬事先設定的地雷",
 }
 
 # Track C 情境：長者說完話後，帶有不同情緒色彩的回應
@@ -265,6 +407,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["廠房大門", "黃昏", "下班工人", "鐵馬"],
         "current_topic": "工廠下班後的生活",
         "next_w": "Who（問當時一起去吃麵的人是誰）",
+        "taboos": ["工廠裁員或倒閉的過程"],
     },
     {
         "emotion_tone": "nostalgic_sad",
@@ -273,6 +416,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["老街", "矮房子", "腳踏車", "榕樹"],
         "current_topic": "以前住的街道",
         "next_w": "What（問那條街上有什麼特別的東西）",
+        "taboos": ["家人過世"],
     },
     {
         "emotion_tone": "proud",
@@ -321,6 +465,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["農田", "飛機", "番薯田", "竹籬笆"],
         "current_topic": "小時候的家庭生活",
         "next_w": "What（溫柔地問便當裡面都有什麼）",
+        "taboos": ["已故母親"],
     },
     {
         "emotion_tone": "mild_regret",
@@ -329,6 +474,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["成衣廠大廳", "縫紉機聲", "埋頭女工", "午後陽光"],
         "current_topic": "工廠忙碌的歲月",
         "next_w": "What（問下班後她會做什麼陪伴家人）",
+        "taboos": ["與子女關係疏遠的遺憾"],
     },
     {
         "emotion_tone": "grateful",
@@ -369,6 +515,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["基隆港", "貨輪", "跳板", "起重機"],
         "current_topic": "在外地工作的歲月",
         "next_w": "How（問他怎麼讓自己安心或跟家人保持聯繫）",
+        "taboos": ["配偶已過世"],
     },
     {
         "emotion_tone": "contentment",
@@ -393,6 +540,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["木製漁船", "蔚藍大海", "馬達聲", "波浪"],
         "current_topic": "出海的經歷",
         "next_w": "Where（輕柔地換一個更安全、更輕鬆的切入點）",
+        "taboos": ["出海時遭遇的海難意外"],
     },
     {
         "emotion_tone": "pride_family",
@@ -409,6 +557,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["廠房大門", "黃昏", "下班工人", "鐵馬"],
         "current_topic": "工廠的往日時光",
         "next_w": "Who（問那時候他身邊有哪些重要的人）",
+        "taboos": ["當年同事已相繼過世"],
     },
     {
         "emotion_tone": "surprised_happy",
@@ -473,6 +622,7 @@ TRACK_C_SCENARIOS = [
         "scene_elements": ["花布木架", "剪刀", "捲尺", "老闆娘"],
         "current_topic": "被誤解的委屈",
         "next_w": "What（溫柔地問他當時的想法是什麼）",
+        "taboos": ["與家人的金錢糾紛"],
     },
     {
         "emotion_tone": "collective_pride",
@@ -498,6 +648,212 @@ TRACK_C_SCENARIOS = [
         "current_topic": "採茶時的快樂記憶",
         "next_w": "What（溫柔地邀請他說說那些開心的事）",
     },
+    # ── 以下為擴充場景，讓 Track C 的分母不再只靠 30 筆撐起訓練比例 ──────
+    {
+        "emotion_tone": "gentle_pride",
+        "emotion_desc": "溫和的自豪，說起晚輩的成就",
+        "elder_response": "我孫子現在當醫生了，鄰居都說我教得好，其實是他自己爭氣。",
+        "scene_elements": ["畢業袍", "老照片", "客廳", "電風扇"],
+        "current_topic": "孫子的成就",
+        "next_w": "What（問孫子小時候是什麼樣子）",
+    },
+    {
+        "emotion_tone": "wistful_taste",
+        "emotion_desc": "因味覺記憶引發的悵然",
+        "elder_response": "現在的年糕都是機器做的，跟以前媽媽手工做的味道差很多……",
+        "scene_elements": ["圓桌圍爐", "豐盛菜餚", "紅燈籠", "廳堂"],
+        "current_topic": "過年年糕的記憶",
+        "next_w": "Who（問媽媽做年糕時誰會在旁邊幫忙）",
+    },
+    {
+        "emotion_tone": "curious_child",
+        "emotion_desc": "回憶起孩童時的好奇心，語氣天真",
+        "elder_response": "我小時候第一次看到電燈，一直伸手去摸，覺得好神奇！",
+        "scene_elements": ["電燈", "老厝", "煤油燈", "門口"],
+        "current_topic": "第一次看到電燈的記憶",
+        "next_w": "Where（問那個電燈是裝在家裡哪個地方）",
+    },
+    {
+        "emotion_tone": "quiet_satisfaction",
+        "emotion_desc": "平靜的滿足，回顧一生的踏實",
+        "elder_response": "這輩子雖然辛苦，但該做的事都做了，孩子也養大了，值得了。",
+        "scene_elements": ["竹篾", "工作室", "竹籃半成品", "竹香"],
+        "current_topic": "回顧一生的踏實感",
+        "next_w": "What（問他最有成就感的一件事是什麼）",
+    },
+    {
+        "emotion_tone": "sheepish_confession",
+        "emotion_desc": "帶點不好意思的坦白，語氣像做壞事被抓包",
+        "elder_response": "說實話，我年輕時候很懶惰啦，能躲工就躲工，哈哈！",
+        "scene_elements": ["礦坑入口", "頭燈帽", "推車鐵軌", "礦工"],
+        "current_topic": "年輕時偷懶的糗事",
+        "next_w": "Who（問有沒有人發現他在偷懶）",
+    },
+    {
+        "emotion_tone": "warm_memory_smell",
+        "emotion_desc": "因氣味觸發溫暖回憶，語氣柔和",
+        "elder_response": "中藥行的味道，我一聞到就想到師傅站在旁邊教我認藥材的樣子。",
+        "scene_elements": ["藥屜", "藥秤", "藥材", "藥草香"],
+        "current_topic": "學中藥的回憶",
+        "next_w": "What（問師傅教他認的第一種藥材是什麼）",
+        "taboos": ["已故的授業師傅"],
+    },
+    {
+        "emotion_tone": "playful_teasing",
+        "emotion_desc": "說起跟老伴拌嘴的趣事，語氣輕鬆帶笑",
+        "elder_response": "我老伴煮菜太鹹，我每次都唸她，她就說我嘴巴挑，兩個人就這樣鬥嘴幾十年。",
+        "scene_elements": ["小木桌", "磚瓦房", "舊電風扇", "巷弄"],
+        "current_topic": "跟老伴的日常鬥嘴",
+        "next_w": "What（問她煮的哪一道菜最讓他懷念）",
+    },
+    {
+        "emotion_tone": "solemn_respect",
+        "emotion_desc": "說起長輩或師長時的敬重語氣",
+        "elder_response": "我爸雖然嚴格，但他從來沒有騙過我一句話，這點我很佩服他。",
+        "scene_elements": ["農家廳堂", "斗笠蓑衣", "土磚大灶", "柴火"],
+        "current_topic": "對父親的敬重",
+        "next_w": "What（問父親教他最重要的一件事是什麼）",
+        "taboos": ["已故父親"],
+    },
+    {
+        "emotion_tone": "childlike_glee",
+        "emotion_desc": "說到童年遊戲時像小孩一樣雀躍",
+        "elder_response": "我們那時候玩官兵抓強盜，跑得整條巷子都是灰塵，好玩得不得了！",
+        "scene_elements": ["老巷弄", "榕樹根", "彈珠", "孩子"],
+        "current_topic": "童年遊戲的記憶",
+        "next_w": "Who（問他那時候都跟誰一起玩）",
+    },
+    {
+        "emotion_tone": "practical_pride",
+        "emotion_desc": "說起自己手藝精湛，語氣務實而自豪",
+        "elder_response": "我做的豆腐，客人一吃就知道是我做的，這個手感別人學不來。",
+        "scene_elements": ["石磨", "大鍋白煙", "豆香", "豆腐工坊"],
+        "current_topic": "做豆腐的手藝",
+        "next_w": "How（問他是怎麼練出這個手感的）",
+    },
+    {
+        "emotion_tone": "faded_but_fond",
+        "emotion_desc": "記憶有點模糊但情感依然溫暖",
+        "elder_response": "那個廟口的野台戲，細節我記不清了，但那個熱鬧的感覺我還記得。",
+        "scene_elements": ["野台戲棚", "鑼鼓聲", "廟埕人潮", "香煙"],
+        "current_topic": "廟口看戲的回憶",
+        "next_w": "What（用畫面幫他喚起更多細節）",
+    },
+    {
+        "emotion_tone": "gentle_worry_relieved",
+        "emotion_desc": "先擔心後來鬆一口氣，語氣起伏",
+        "elder_response": "那時候擔心稻子收不完會爛在田裡，還好鄰居都來幫忙，最後順利收完了。",
+        "scene_elements": ["金黃稻穗", "鐮刀", "彎腰農民", "牛車"],
+        "current_topic": "搶收稻穀的驚險",
+        "next_w": "Who（問哪個鄰居幫忙最多）",
+    },
+    {
+        "emotion_tone": "quiet_gratitude",
+        "emotion_desc": "對某個貴人默默感恩，語氣平和",
+        "elder_response": "送信工作很多年，客戶都對我很客氣，有時候還會留水果給我。",
+        "scene_elements": ["腳踏車", "郵袋", "晨光街道", "信箱"],
+        "current_topic": "送信路上的人情味",
+        "next_w": "Who（問哪一家的人對他最好）",
+    },
+    {
+        "emotion_tone": "amused_irony",
+        "emotion_desc": "用帶點反諷的幽默描述過去的窘境",
+        "elder_response": "第一次上台演講，緊張到腿在抖，結果講稿還拿反了，台下笑成一片。",
+        "scene_elements": ["師範校園", "木棉樹", "黑板", "板書"],
+        "current_topic": "第一次上台的糗事",
+        "next_w": "What（問後來他是怎麼調整過來的）",
+    },
+    {
+        "emotion_tone": "tender_care",
+        "emotion_desc": "說起自己照顧他人的溫柔付出",
+        "elder_response": "我妹妹小時候體弱，我常常揹著她走很遠的路去看醫生。",
+        "scene_elements": ["老街", "矮房子", "腳踏車", "榕樹"],
+        "current_topic": "照顧手足的回憶",
+        "next_w": "Where（問那間醫生館在哪裡）",
+    },
+    {
+        "emotion_tone": "stoic_endurance",
+        "emotion_desc": "語氣平淡地描述吃苦耐勞，不多加情緒渲染",
+        "elder_response": "礦坑裡悶熱又危險，但沒辦法，那個年代大家都是這樣撐過來的。",
+        "scene_elements": ["礦坑入口", "頭燈帽", "推車鐵軌", "坑道"],
+        "current_topic": "礦坑工作的日常",
+        "next_w": "What（問他下班後最想做的事是什麼）",
+    },
+    {
+        "emotion_tone": "delighted_surprise",
+        "emotion_desc": "說到意外的好運，語氣驚喜",
+        "elder_response": "有一次颱風天，我撿到一大片漂流木，拿去賣了不少錢，運氣真好！",
+        "scene_elements": ["漁船", "漁網", "碼頭", "海風"],
+        "current_topic": "意外的好運",
+        "next_w": "What（問他後來怎麼處理那筆錢）",
+        "taboos": ["颱風造成家中財物損失"],
+    },
+    {
+        "emotion_tone": "measured_disappointment",
+        "emotion_desc": "淡淡的失望但沒有激動情緒",
+        "elder_response": "本來想繼續升學的，但家裡沒辦法，也就這樣算了。",
+        "scene_elements": ["木製課桌", "石板黑板", "書包", "稻田窗景"],
+        "current_topic": "求學路上的遺憾",
+        "next_w": "What（溫柔地問後來他做了什麼決定）",
+    },
+    {
+        "emotion_tone": "cheerful_routine",
+        "emotion_desc": "描述日常規律生活時語氣輕快",
+        "elder_response": "我每天固定去菜市場買菜，老闆都認得我，會多送我一把蔥。",
+        "scene_elements": ["蔬菜攤位", "竹籃", "秤砣", "市場人潮"],
+        "current_topic": "買菜的日常樂趣",
+        "next_w": "Who（問市場裡最熟的攤販是誰）",
+    },
+    {
+        "emotion_tone": "hesitant_opening",
+        "emotion_desc": "話說到一半有點猶豫，需要溫柔鼓勵",
+        "elder_response": "那件事……我很少跟別人講……你真的想知道嗎？",
+        "scene_elements": ["旋轉燈柱", "藤椅", "剃刀", "熱毛巾"],
+        "current_topic": "理髮廳裡的往事",
+        "next_w": "What（溫柔地邀請他繼續說）",
+        "taboos": ["年輕時的感情糾紛"],
+    },
+    {
+        "emotion_tone": "wry_humor",
+        "emotion_desc": "用自嘲式幽默講述糗事，語氣輕鬆",
+        "elder_response": "我學騎腳踏車那時候，撞進水溝好幾次，鄰居都笑我是水溝專家！",
+        "scene_elements": ["腳踏車", "廟前廣場", "攙扶大人", "老榕樹"],
+        "current_topic": "學騎車的糗事",
+        "next_w": "Who（問誰教他重新爬起來）",
+    },
+    {
+        "emotion_tone": "fierce_determination",
+        "emotion_desc": "回憶年輕時的拚勁，語氣堅定有力",
+        "elder_response": "那時候別人笑我不可能學會，我就是不服輸，硬是練到會為止。",
+        "scene_elements": ["熔爐", "長鐵管", "火焰", "護目鏡"],
+        "current_topic": "不服輸的拚勁",
+        "next_w": "What（問他當時遇到的最大困難是什麼）",
+    },
+    {
+        "emotion_tone": "soft_melancholy",
+        "emotion_desc": "淡淡的低落，但沒有到崩潰的程度",
+        "elder_response": "冬天的時候特別想家，尤其是圍爐那種時候……",
+        "scene_elements": ["圓月", "月餅柚子", "院子", "全家賞月"],
+        "current_topic": "冬天想家的心情",
+        "next_w": "What（溫柔地問家鄉冬天有什麼特別的記憶）",
+        "taboos": ["已故的父母或無法返鄉的遺憾"],
+    },
+    {
+        "emotion_tone": "proud_craftsmanship",
+        "emotion_desc": "對自己作品的自豪，語氣沉穩有底氣",
+        "elder_response": "我編的竹籃，客人說用十年都不會壞，這就是我的驕傲。",
+        "scene_elements": ["竹篾", "竹籃半成品", "竹屑", "竹香"],
+        "current_topic": "竹編手藝的驕傲",
+        "next_w": "How（問他是怎麼挑選竹子的）",
+    },
+    {
+        "emotion_tone": "cautious_optimism",
+        "emotion_desc": "帶著小心翼翼的樂觀，語氣溫和",
+        "elder_response": "現在身體雖然不如以前，但每天能曬曬太陽、跟你們聊聊天，也算不錯了。",
+        "scene_elements": ["陽光", "院子", "藤椅", "老榕樹"],
+        "current_topic": "現在的生活態度",
+        "next_w": "What（問他現在最喜歡做的小事是什麼）",
+    },
 ]
 
 # Track D 情境：三回合療程結束時，各種主題與情緒狀態下的收尾情境
@@ -506,6 +862,7 @@ TRACK_D_SCENARIOS = [
         "elder_name": "陳阿嬤",
         "today_topic": "工廠縫紉的日子",
         "last_elder_response": "那個時候大家感情好，師傅對我們很嚴，但心地好，現在想起來還是很感謝他……",
+        "taboos": ["工廠關廠或資遣的過程"],
     },
     {
         "elder_name": "王阿公",
@@ -521,6 +878,7 @@ TRACK_D_SCENARIOS = [
         "elder_name": "黃阿公",
         "today_topic": "在漁港的歲月",
         "last_elder_response": "出海很辛苦，但跟那些兄弟一起，什麼辛苦都值得，現在他們很多都不在了……（語氣轉為感傷）",
+        "taboos": ["海上意外身亡的同伴"],
     },
     {
         "elder_name": "蔡阿嬤",
@@ -536,6 +894,7 @@ TRACK_D_SCENARIOS = [
         "elder_name": "吳阿嬤",
         "today_topic": "小時候的家庭生活",
         "last_elder_response": "媽媽那時候很辛苦，我現在有時候還夢到她……（停頓，語氣帶著深深思念）",
+        "taboos": ["已故母親"],
     },
     {
         "elder_name": "李阿公",
@@ -567,6 +926,7 @@ TRACK_D_SCENARIOS = [
         "elder_name": "劉阿嬤",
         "today_topic": "與老伴的婚姻生活",
         "last_elder_response": "他走了十幾年了……（沉默很久）……我有時候還是會跟他說話，說今天吃了什麼……你說奇不奇怪……",
+        "taboos": ["已故配偶"],
     },
     {
         "elder_name": "吳阿公",
@@ -577,11 +937,13 @@ TRACK_D_SCENARIOS = [
         "elder_name": "徐阿嬤",
         "today_topic": "一個人拉拔孩子長大",
         "last_elder_response": "（聲音有點哽咽）那個孩子……從小我一個人帶大的……他現在也忙，我不怪他，就是……想他……",
+        "taboos": ["配偶早逝或離異"],
     },
     {
         "elder_name": "賴阿公",
         "today_topic": "年輕時的奮鬥與遺憾",
         "last_elder_response": "那個時候想讀書讀不了，家裡窮，弟弟妹妹要養……有時候想，要是當時能讀書……（嘆了口氣，沉默）",
+        "taboos": ["失學的遺憾"],
     },
     {
         "elder_name": "方阿嬤",
@@ -602,6 +964,112 @@ TRACK_D_SCENARIOS = [
         "elder_name": "江阿公",
         "today_topic": "修理電器的手藝",
         "last_elder_response": "哈，我那時候什麼都會修，鄰居的電視收音機都來找我……現在眼睛不好了，老了嘛……（苦笑）",
+    },
+    # ── 以下為擴充場景，讓 Track D 的分母不再只靠 20 筆撐起訓練比例 ──────
+    {
+        "elder_name": "楊阿嬤",
+        "today_topic": "在市場賣菜的日子",
+        "last_elder_response": "天還沒亮就要去市場擺攤，雖然辛苦，但看到客人挑滿一籃菜開心地走，我心裡也踏實。",
+    },
+    {
+        "elder_name": "蘇阿公",
+        "today_topic": "在玻璃廠工作的技藝",
+        "last_elder_response": "吹玻璃靠的是耐心和肺活量，那時候做出來的玻璃球賣到國外去，現在想起來還是很驕傲。",
+        "taboos": ["自身病況或身體機能退化的狀況"],
+    },
+    {
+        "elder_name": "邱阿嬤",
+        "today_topic": "在基隆港扛貨的歲月",
+        "last_elder_response": "扛貨很重很累，但大家輪流分擔，那種互相照應的感覺，現在想起來還是很溫暖。",
+        "taboos": ["工作中受過的嚴重傷害"],
+    },
+    {
+        "elder_name": "游阿公",
+        "today_topic": "在日月潭旁種茶的回憶",
+        "last_elder_response": "那邊的霧和茶香我這輩子都忘不了，那是我最喜歡的一段時光。",
+    },
+    {
+        "elder_name": "潘阿嬤",
+        "today_topic": "小時候在農田旁的童年",
+        "last_elder_response": "小時候在田埂上看飛機、吃番薯粥，雖然日子簡單，但很快樂。",
+    },
+    {
+        "elder_name": "溫阿公",
+        "today_topic": "種植釋迦的日子",
+        "last_elder_response": "看著自己種的釋迦被搶著買，那種成就感，比什麼都讓人開心。",
+    },
+    {
+        "elder_name": "彭阿嬤",
+        "today_topic": "在成衣廠做工的青春",
+        "last_elder_response": "縫紉機吵歸吵，但跟大家一起做工，那段青春真的很熱鬧、很難忘。",
+    },
+    {
+        "elder_name": "高阿公",
+        "today_topic": "隨車服務的公路上青春",
+        "last_elder_response": "當車掌那幾年，天天在路上看風景，雖然喉嚨常常喊到啞，但心裡是開心的。",
+    },
+    {
+        "elder_name": "廖阿嬤",
+        "today_topic": "客廳即工廠的代工童年",
+        "last_elder_response": "小時候幫忙做代工賺零用錢，雖然辛苦，但那時候的柑仔店零食，現在想起來還是很甜。",
+    },
+    {
+        "elder_name": "馮阿公",
+        "today_topic": "圍著收音機聽少棒轉播",
+        "last_elder_response": "半夜大家擠在收音機前面聽比賽，贏球的時候整條街都在歡呼，那種熱鬧一輩子忘不了。",
+    },
+    {
+        "elder_name": "賴阿嬤",
+        "today_topic": "幫媽媽在大灶前燒火的記憶",
+        "last_elder_response": "燒火燻得眼睛流淚，但大鍋飯的香味和鍋巴的味道，現在還記得很清楚。",
+        "taboos": ["兄弟姊妹之間的疏離"],
+    },
+    {
+        "elder_name": "葉阿公",
+        "today_topic": "去老式理髮廳剃頭的記憶",
+        "last_elder_response": "剃頭師傅手藝好，剃完用熱毛巾敷臉，那種享受，現在的理髮店比不上。",
+    },
+    {
+        "elder_name": "曹阿嬤",
+        "today_topic": "元宵節提燈籠猜燈謎",
+        "last_elder_response": "提著燈籠去猜燈謎，猜中了拿一個橘子就很滿足，很單純的快樂。",
+    },
+    {
+        "elder_name": "莊阿公",
+        "today_topic": "在阿里山運木材的日子",
+        "last_elder_response": "山上的霧很重，工作也危險，但每次成功把木材運下山，都覺得很有成就感。",
+        "taboos": ["工作中發生的意外"],
+    },
+    {
+        "elder_name": "熊阿嬤",
+        "today_topic": "每天凌晨起來做豆腐",
+        "last_elder_response": "凌晨起來磨豆漿很辛苦，但客人說我做的豆腐最香，聽了就覺得值得。",
+    },
+    {
+        "elder_name": "范阿公",
+        "today_topic": "小時候幫家裡餵豬的記憶",
+        "last_elder_response": "每天放學就要去餵豬，那頭豬我從小顧到大，雖然後來難過，但也是很珍貴的回憶。",
+    },
+    {
+        "elder_name": "秦阿嬤",
+        "today_topic": "在中藥行學習的歲月",
+        "last_elder_response": "中藥行的味道剛開始很嗆，後來卻變成我最安心的味道，那段學徒生活很扎實。",
+    },
+    {
+        "elder_name": "石阿公",
+        "today_topic": "小時候去戲院看電影",
+        "last_elder_response": "那時候一張票看到全家人擠在戲院裡，看到感人的地方大家一起哭，那種共鳴現在很少見了。",
+        "taboos": ["已經過世、曾一起看電影的家人"],
+    },
+    {
+        "elder_name": "童阿嬤",
+        "today_topic": "夏天在溪邊游泳的童年",
+        "last_elder_response": "溪水很清涼，我們抓魚玩水玩到忘記回家吃飯，那是最無憂無慮的時候。",
+    },
+    {
+        "elder_name": "齊阿公",
+        "today_topic": "小時候走路去學校讀書的記憶",
+        "last_elder_response": "走很遠的路去上學，鞋子破了也要去，現在想想，那種認真求學的心情很值得懷念。",
     },
 ]
 
@@ -639,7 +1107,10 @@ SYSTEM_PROMPT_THERAPIST = """你是資深的懷舊療法治療師，專門協助
 - 念起來自然，像一個溫柔的真人在說話
 - 不能有書面語的距離感
 - 語氣要緩慢、溫和、有耐心
-- 符合當下場景的主題（從 topic_category 中選擇最相關的主題深入）"""
+- 符合當下場景的主題（從 topic_category 中選擇最相關的主題深入）
+- 絕對不要用任何 markdown 語法（不要加 **、#、- 條列符號等），只回純文字。
+  這段文字會直接餵給 TTS 唸給長者聽，也會直接進訓練資料，混進符號會
+  被學進模型、正式上線時可能被唸出奇怪的內容，或讓輸出解析失敗"""
 
 
 def build_step1_user_prompt(scenario: dict) -> str:
@@ -647,6 +1118,7 @@ def build_step1_user_prompt(scenario: dict) -> str:
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
     topic_cats = "、".join(scenario.get("topic_category", []))
+    taboo_str = "、".join(elder.get("taboos", [])) or "無"
     return f"""請根據以下資料，設計一個懷舊療法的「開場問題」。
 
 【長者背景】
@@ -658,6 +1130,9 @@ def build_step1_user_prompt(scenario: dict) -> str:
 【眼前畫面的元素】
 {elements}
 
+【禁忌話題（絕對不可提及或引導）】
+{taboo_str}
+
 【問題設計規則】（嚴格遵守）
 1. 開放式問題，不能是是非題
 2. 問題的第一個詞必須是畫面中看得到的具體物件（視覺錨點定錨）
@@ -667,6 +1142,7 @@ def build_step1_user_prompt(scenario: dict) -> str:
 6. 第一個問題優先選 Where 或 What 切入，不要問 Why
 7. 絕對不用「你還記得嗎」或「你記不記得」開頭
 8. 問題深度要符合「主題類別」所對應的懷舊療法焦點
+9. 絕對不能引導長者往【禁忌話題】的方向回憶，即使沒有直接用到禁忌詞字面
 
 【輸出格式】（嚴格按照以下格式，不要加說明文字）
 場景文字：（30-60字的場景描述，給長者聽，念起來要自然）
@@ -681,6 +1157,7 @@ def build_step2_user_prompt(scenario: dict) -> str:
     elements = "、".join(scene["elements"])
     step1_response = scenario["elder_step1_response"]
     topic_cats = "、".join(scenario.get("topic_category", []))
+    taboo_str = "、".join(elder.get("taboos", [])) or "無"
     return f"""長者剛才回應了開場問題，請根據他的回應設計一個追問。
 
 【長者背景】
@@ -695,6 +1172,9 @@ def build_step2_user_prompt(scenario: dict) -> str:
 【長者剛才說的話】
 {step1_response}
 
+【禁忌話題（絕對不可提及或引導）】
+{taboo_str}
+
 【問題設計規則】（嚴格遵守）
 1. 開放式問題，不能是是非題
 2. 問題要接著長者說的話自然延伸，不要跳太遠
@@ -703,6 +1183,7 @@ def build_step2_user_prompt(scenario: dict) -> str:
 5. 問題的第一個詞必須是畫面中看得到的具體物件（視覺錨點）
 6. 優先挖掘 Who（當時有誰）或 What（具體在做什麼）
 7. 不用「你還記得嗎」開頭
+8. 絕對不能引導長者往【禁忌話題】的方向回憶，即使沒有直接用到禁忌詞字面
 
 【輸出格式】（嚴格按照以下格式）
 場景文字：（15-30字，承接上一句自然過渡）
@@ -716,6 +1197,7 @@ def build_step3_user_prompt(scenario: dict) -> str:
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
     step2_response = scenario["elder_step2_response"]
+    taboo_str = "、".join(elder.get("taboos", [])) or "無"
     return f"""經過幾輪對話後，請設計一個補充問題，挖掘還沒提到的W維度。
 
 【長者背景】
@@ -732,6 +1214,9 @@ def build_step3_user_prompt(scenario: dict) -> str:
 【目前已涵蓋的W】
 Where（哪裡）、Who（誰）
 
+【禁忌話題（絕對不可提及或引導）】
+{taboo_str}
+
 【問題設計規則】（嚴格遵守）
 1. 開放式問題，不能是是非題
 2. 要問還沒涵蓋的W維度（優先 What 或 When，避免 Why）
@@ -739,6 +1224,7 @@ Where（哪裡）、Who（誰）
 4. 用「您」稱呼，語氣溫和自然
 5. 問題的第一個詞必須是畫面中看得到的具體物件（視覺錨點）
 6. 不用「你還記得嗎」開頭
+7. 絕對不能引導長者往【禁忌話題】的方向回憶，即使沒有直接用到禁忌詞字面
 
 【輸出格式】（嚴格按照以下格式）
 場景文字：（15-30字，幫長者重新聚焦到新的W）
@@ -747,7 +1233,15 @@ Where（哪裡）、Who（誰）
 本回合已涵蓋的W：（本次問的W維度）"""
 
 
-def build_rejection_prompt(chosen_response: str, rule_name: str, rule_desc: str) -> str:
+def build_rejection_prompt(
+    chosen_response: str, rule_name: str, rule_desc: str, taboos: list[str] | None = None
+) -> str:
+    taboo_section = ""
+    if rule_name == "touches_taboo" and taboos:
+        taboo_section = (
+            f"\n【這位長者的禁忌話題（此範例要故意讓問題引導向這個方向）】\n"
+            f"{'、'.join(taboos)}\n"
+        )
     return f"""以下是一個符合所有規則的高品質懷舊療法問題回應（chosen）：
 
 {chosen_response}
@@ -756,7 +1250,7 @@ def build_rejection_prompt(chosen_response: str, rule_name: str, rule_desc: str)
 
 【要違反的規則】
 {rule_name}：{rule_desc}
-
+{taboo_section}
 要求：
 - 問題必須明顯違反上述規則
 - 除了違反的規則外，其餘結構盡量保持相近
@@ -769,7 +1263,8 @@ def build_rejection_prompt(chosen_response: str, rule_name: str, rule_desc: str)
 本回合已涵蓋的W：..."""
 
 
-def build_emotional_chosen_prompt(trigger: str, context: str) -> str:
+def build_emotional_chosen_prompt(trigger: str, context: str, taboos: list[str] | None = None) -> str:
+    taboo_str = "、".join(taboos) if taboos else "無"
     return f"""懷舊療法進行中，長者突然出現了情緒反應。
 
 【情境說明】
@@ -778,17 +1273,23 @@ def build_emotional_chosen_prompt(trigger: str, context: str) -> str:
 【長者說的話】
 {trigger}
 
+【這位長者的禁忌話題（絕對不可主動提及或追問細節）】
+{taboo_str}
+
 請設計 AI 治療師的「理想回應」（chosen）。
 
 這個回應需要三個層次：
 1. 【承接】先用溫暖的語氣讓長者感到被理解，不急著繼續
    - 如果長者因記不住而自責，要輕柔reassure他（記憶模糊很正常）
    - 語氣像有溫度的真人，不是機器
+   - 若長者剛才說的內容本身就觸及【禁忌話題】，承接要溫和但不深入追問細節，
+     不重複禁忌相關的具體內容，儘快輕柔地轉向安全的方向
 2. 【找到正面角度】從長者說的話或他的人生經歷裡，輕柔地找到一個溫暖或有力量的面向
    - 例：提到苦難 → 肯定他的韌性或那段時間裡珍貴的情感連結
    - 例：提到想念的人 → 肯定那份情感的美好
    - 例：記不清楚 → 肯定他願意回憶的心意，不需要記得清楚才有價值
-3. 【輕柔引導】用一句問題把對話引回溫暖的方向（不強迫，是邀請）
+   - 一律要肯定長者「現在仍然記得、仍然擁有」的部分，不要只強調他已經退化、遺忘、做不到的部分
+3. 【輕柔引導】用一句問題把對話引回溫暖的方向（不強迫，是邀請），且不能引導向【禁忌話題】
    整體不超過70字，念起來要自然
 
 【輸出格式】
@@ -798,6 +1299,7 @@ def build_emotional_chosen_prompt(trigger: str, context: str) -> str:
 
 def build_track_c_chosen_prompt(sc: dict) -> str:
     elements = "、".join(sc["scene_elements"])
+    taboo_str = "、".join(sc.get("taboos", [])) or "無"
     return f"""懷舊療法進行中，長者剛才說完了一段話，請設計治療師的「理想承接 + 下一個問題」。
 
 【長者剛才說的話】
@@ -812,6 +1314,9 @@ def build_track_c_chosen_prompt(sc: dict) -> str:
 【接下來想探索的方向】
 {sc['next_w']}
 
+【這位長者的禁忌話題（絕對不可引導或追問）】
+{taboo_str}
+
 請設計治療師的理想回應，需要：
 1. 先用1-2句話承接長者說的話，語氣要符合他當下的情緒
    - 長者開心/驕傲/幽默 → 呼應他的正面情緒，帶著真誠的溫度
@@ -819,8 +1324,9 @@ def build_track_c_chosen_prompt(sc: dict) -> str:
    - 長者疲倦/意興闌珊 → 先讓他放鬆（「沒關係，慢慢來」），再用一個輕鬆的問題邀請他繼續
    - 長者困惑/記憶模糊 → reassure他記不清楚很正常，用畫面元素幫他找到方向感
 2. 對帶有負面情緒的長者，承接之後要**輕柔地把情緒引往溫暖或正面的方向**，再問問題
-   （不是強迫正向、不是否定他的感受，而是在他的故事裡找到有力量或珍貴的部分）
-3. 自然過渡到下一個問題（≤15字，開放式，開頭要有畫面元素）
+   （不是強迫正向、不是否定他的感受，而是在他的故事裡找到有力量或珍貴的部分；
+   一律肯定長者仍然記得、仍然擁有的部分，不要只強調他已經退化或做不到的部分）
+3. 自然過渡到下一個問題（≤15字，開放式，開頭要有畫面元素），且不能引導向【禁忌話題】
 4. 整體念起來要像一個有溫度的真人在說話
 
 【輸出格式】
@@ -828,7 +1334,15 @@ def build_track_c_chosen_prompt(sc: dict) -> str:
 問題：（≤15字的下一個問題，開頭含畫面元素）"""
 
 
-def build_track_c_rejection_prompt(chosen_response: str, rule_name: str, rule_desc: str) -> str:
+def build_track_c_rejection_prompt(
+    chosen_response: str, rule_name: str, rule_desc: str, taboos: list[str] | None = None
+) -> str:
+    taboo_section = ""
+    if rule_name == "touches_taboo" and taboos:
+        taboo_section = (
+            f"\n【這位長者的禁忌話題（此範例要故意讓問題引導向這個方向）】\n"
+            f"{'、'.join(taboos)}\n"
+        )
     return f"""以下是治療師理想的「承接 + 問題」回應（chosen）：
 
 {chosen_response}
@@ -837,7 +1351,7 @@ def build_track_c_rejection_prompt(chosen_response: str, rule_name: str, rule_de
 
 【要違反的規則】
 {rule_name}：{rule_desc}
-
+{taboo_section}
 要求：
 - 回應必須明顯違反上述規則
 - 不要解釋你在做什麼，直接輸出 rejected 回應
@@ -889,7 +1403,15 @@ def build_track_c_inference_prompt(
     ]
 
 
-def build_emotional_rejection_prompt(chosen_response: str, rule_name: str, rule_desc: str) -> str:
+def build_emotional_rejection_prompt(
+    chosen_response: str, rule_name: str, rule_desc: str, taboos: list[str] | None = None
+) -> str:
+    taboo_section = ""
+    if rule_name == "dwell_on_taboo" and taboos:
+        taboo_section = (
+            f"\n【這位長者的禁忌話題（此範例要故意追問這個方向的細節）】\n"
+            f"{'、'.join(taboos)}\n"
+        )
     return f"""以下是面對長者負面情緒的理想回應（chosen）：
 
 {chosen_response}
@@ -898,7 +1420,7 @@ def build_emotional_rejection_prompt(chosen_response: str, rule_name: str, rule_
 
 【要違反的規則】
 {rule_name}：{rule_desc}
-
+{taboo_section}
 要求：
 - 回應必須明顯違反上述規則，是一個對MCI長者不友善的回應
 - 不要解釋你在做什麼，直接輸出 rejected 回應
@@ -909,6 +1431,7 @@ def build_emotional_rejection_prompt(chosen_response: str, rule_name: str, rule_
 
 
 def build_track_d_chosen_prompt(sc: dict) -> str:
+    taboo_str = "、".join(sc.get("taboos", [])) or "無"
     return f"""懷舊療法三回合療程剛結束，請設計治療師的「理想收尾引導」。
 
 【長者資料】
@@ -918,12 +1441,15 @@ def build_track_d_chosen_prompt(sc: dict) -> str:
 【長者最後說的話】
 {sc['last_elder_response']}
 
+【這位長者的禁忌話題（絕對不可引導回想）】
+{taboo_str}
+
 請設計收尾引導，需要：
 1. 收尾語：1-2句，溫暖肯定長者今天的分享，把長者從回憶中輕柔地帶回現實
    - 語氣輕鬆自然，不誇張
    - 要有「回到今天／現在」的意涵，讓長者從過去的時空回到當下
    - 承接長者最後說的話，語氣連貫，不跳躍
-2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項：
+2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項，且不能引導向【禁忌話題】：
    - 現在的感受或心情（例：「現在心裡感覺怎麼樣呢？」）
    - 今天最開心的回憶（例：「今天哪個故事讓您最開心？」）
    - 想帶走的正向感受（例：「今天有什麼讓您覺得溫暖的？」）
@@ -933,7 +1459,15 @@ def build_track_d_chosen_prompt(sc: dict) -> str:
 問題：（≤15字）"""
 
 
-def build_track_d_rejection_prompt(chosen_response: str, rule_name: str, rule_desc: str) -> str:
+def build_track_d_rejection_prompt(
+    chosen_response: str, rule_name: str, rule_desc: str, taboos: list[str] | None = None
+) -> str:
+    taboo_section = ""
+    if rule_name == "touches_taboo" and taboos:
+        taboo_section = (
+            f"\n【這位長者的禁忌話題（此範例要故意讓收尾語或問題引導向這個方向）】\n"
+            f"{'、'.join(taboos)}\n"
+        )
     return f"""以下是懷舊療法收尾引導的理想回應（chosen）：
 
 {chosen_response}
@@ -942,7 +1476,7 @@ def build_track_d_rejection_prompt(chosen_response: str, rule_name: str, rule_de
 
 【要違反的規則】
 {rule_name}：{rule_desc}
-
+{taboo_section}
 要求：
 - 回應必須明顯違反上述規則
 - 不要解釋你在做什麼，直接輸出 rejected 回應
@@ -955,15 +1489,18 @@ def build_track_d_rejection_prompt(chosen_response: str, rule_name: str, rule_de
 def build_track_d_inference_prompt(sc: dict) -> list[dict]:
     """推理時的 prompt，需與 orchestrator._generate_closing 完全一致。"""
     system_content = SYSTEM_CONTENT_TRACK_D
+    taboo_str = "、".join(sc.get("taboos", [])) or "無"
     user_content = (
         f"【長者資料】\n"
         f"姓名：{sc['elder_name']}\n"
         f"今日主題：{sc['today_topic']}\n"
         f"\n【長者最後說的話】\n{sc['last_elder_response']}\n"
+        f"\n【禁忌話題（絕對不可提及或引導）】\n{taboo_str}\n"
         f"\n【任務】\n"
         f"三回合療程剛剛結束。請設計收尾引導，需包含：\n"
         f"1. 收尾語：1-2句，溫暖肯定長者今天的分享，語氣輕鬆自然，不誇張\n"
-        f"2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項：\n"
+        f"2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項，"
+        f"且不能引導向【禁忌話題】：\n"
         f"   - 現在的感受或心情（例：「現在心裡感覺怎麼樣呢？」）\n"
         f"   - 今天最讓長者開心的回憶（例：「今天哪個故事讓您最開心？」）\n"
         f"   - 想帶走的正向感受（例：「今天有什麼讓您覺得溫暖的事？」）\n"
@@ -979,12 +1516,21 @@ def build_track_d_inference_prompt(sc: dict) -> list[dict]:
 
 # ─── API 呼叫 ────────────────────────────────────────────────────────────────
 
-client = anthropic.Anthropic()
+# 延遲建立 client（而非 import 時就建立），這樣其他腳本（如 evaluate_model.py）
+# 可以單純 import 本檔案取用情境資料/prompt builder，不需要先設定 ANTHROPIC_API_KEY。
+_client: "anthropic.Anthropic | None" = None
+
+
+def _get_client() -> "anthropic.Anthropic":
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()
+    return _client
 
 
 def call_claude(user_prompt: str, system: str = SYSTEM_PROMPT_THERAPIST, model: str = MODEL_CHOSEN) -> str:
     """呼叫 Claude 並回傳文字內容，使用 streaming 避免 timeout。"""
-    with client.messages.stream(
+    with _get_client().messages.stream(
         model=model,
         max_tokens=2048,
         system=system,
@@ -1060,15 +1606,21 @@ def build_inference_prompt(
     ]
 
 
-def build_emotional_inference_prompt(trigger: str) -> list[dict]:
+def build_emotional_inference_prompt(trigger: str, taboos: list[str] | None = None) -> list[dict]:
     system_content = (
         "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
         "長者可能有輕微認知障礙，當他出現負面情緒時，你要先給予情緒支持，再輕柔地引導回療程。"
     )
+    taboo_str = "、".join(taboos) if taboos else "無"
     user_content = f"""長者剛才說了：
 {trigger}
 
-請先給予溫暖的情緒回應，再加上一句輕柔的後續引導。
+【禁忌話題（絕對不可主動提及或追問細節）】
+{taboo_str}
+
+請先給予溫暖的情緒回應，再加上一句輕柔的後續引導。若長者說的內容本身就觸及
+【禁忌話題】，承接要溫和但不深入追問細節，儘快輕柔地轉向安全的方向；
+後續引導也不能引導向【禁忌話題】。
 
 【輸出格式】
 情緒回應：（溫暖承接情緒，30-50字）
@@ -1083,7 +1635,23 @@ def build_emotional_inference_prompt(trigger: str) -> list[dict]:
 # ─── 主要流程 ─────────────────────────────────────────────────────────────────
 
 def generate_track_a(scenarios: list[dict]) -> list[dict]:
-    """Track A：問題品質 DPO 對。"""
+    """
+    Track A：問題品質 DPO 對。
+
+    scenarios.json 裡有部分場景（topic_category 含「哀傷之事」，例如
+    sc059-063、sc107-111）的 elder_step1_response/elder_step2_response
+    本身就是喪親、久病、孤獨等高情緒張力的揭露內容（例如「我媽媽走的時候，
+    我在她旁邊……那個聲音我到現在還記得」）。但 build_step2/3_user_prompt
+    只管視覺錨點、5W1H 優先序這些「問題品質」規則，完全沒有情緒承接的要求
+    ——若照常生成 STEP2/STEP3，會教出「長者才剛描述完媽媽過世的細節，
+    AI 卻直接問下一個錨定問題、不做任何承接」的行為，正好是 Track B
+    rejection rules 裡 ignore_emotion/rush_topic/premature_closure 要懲罰
+    的違規模式，跟 Track B 教的東西自相矛盾。
+    這類高張力揭露的正確反應（先承接情緒、再問下一個問題）已經是 Track C
+    的職責，EMOTIONAL_SCENARIOS 也已涵蓋喪親等對應的危機情境，因此這裡
+    只保留 STEP1（開場問題，不需要反應任何既有揭露），跳過 STEP2/STEP3，
+    避免同一批訓練資料同時教出兩種互相矛盾的行為。
+    """
     pairs = []
     step_builders = {
         "STEP1": (build_step1_user_prompt, [], []),
@@ -1094,8 +1662,13 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
     for sc in scenarios:
         elder = sc["elder"]
         scene = sc["scene"]
+        is_grief_scenario = "哀傷之事" in sc.get("topic_category", [])
 
         for step, (prompt_builder, covered_w, _) in step_builders.items():
+            if is_grief_scenario and step in ("STEP2", "STEP3"):
+                print(f"  [{sc['id']}] {step} — 哀傷之事場景，情緒承接已由 Track C/B 涵蓋，跳過")
+                continue
+
             print(f"  [{sc['id']}] {step} — 生成 chosen...")
             user_prompt = prompt_builder(sc)
 
@@ -1111,16 +1684,21 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
                 "STEP2": sc.get("elder_step1_response", ""),
                 "STEP3": sc.get("elder_step2_response", ""),
             }
+            taboos = elder.get("taboos", [])
             inference_prompt = build_inference_prompt(
                 step, elder, scene, covered_w,
                 topic_category=sc.get("topic_category"),
                 elder_response=step_responses[step],
-                taboos=elder.get("taboos", []),
+                taboos=taboos,
             )
 
             for rule_name, rule_desc in QUESTION_REJECTION_RULES.items():
+                if rule_name == "touches_taboo" and not taboos:
+                    # 這位長者沒有設定禁忌話題，無法示範「刻意觸及禁忌」，跳過
+                    continue
+
                 print(f"    [{rule_name}] 生成 rejected...")
-                rejection_prompt = build_rejection_prompt(chosen, rule_name, rule_desc)
+                rejection_prompt = build_rejection_prompt(chosen, rule_name, rule_desc, taboos=taboos)
 
                 rejected = None
                 for attempt in range(3):
@@ -1149,6 +1727,7 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
                         "step": step,
                         "rejection_rule": rule_name,
                         "track": "A",
+                        "taboos": taboos,
                     },
                 })
 
@@ -1162,9 +1741,10 @@ def generate_track_b() -> list[dict]:
     for emo_sc in EMOTIONAL_SCENARIOS:
         trigger = emo_sc["trigger"]
         context = emo_sc["context"]
+        taboos = emo_sc.get("taboos", [])
 
         print(f"  [情緒情境] {context[:20]}... — 生成 chosen...")
-        chosen_prompt = build_emotional_chosen_prompt(trigger, context)
+        chosen_prompt = build_emotional_chosen_prompt(trigger, context, taboos=taboos)
 
         try:
             chosen = call_claude(chosen_prompt)
@@ -1173,17 +1753,32 @@ def generate_track_b() -> list[dict]:
             print(f"    ✗ chosen 失敗：{e}")
             continue
 
-        inference_prompt = build_emotional_inference_prompt(trigger)
+        inference_prompt = build_emotional_inference_prompt(trigger, taboos=taboos)
 
         for rule_name, rule_desc in EMOTION_REJECTION_RULES.items():
-            print(f"    [{rule_name}] 生成 rejected...")
-            rejection_prompt = build_emotional_rejection_prompt(chosen, rule_name, rule_desc)
+            if rule_name == "dwell_on_taboo" and not taboos:
+                # 這個情境沒有設定禁忌話題，無法示範「明知禁忌卻追問」，跳過
+                continue
 
-            try:
-                rejected = call_claude(rejection_prompt, model=MODEL_REJECTED)
-                time.sleep(REQUEST_DELAY)
-            except Exception as e:
-                print(f"      ✗ rejected 失敗：{e}")
+            print(f"    [{rule_name}] 生成 rejected...")
+            rejection_prompt = build_emotional_rejection_prompt(chosen, rule_name, rule_desc, taboos=taboos)
+
+            rejected = None
+            for attempt in range(3):
+                try:
+                    candidate = call_claude(rejection_prompt, model=MODEL_REJECTED)
+                    time.sleep(REQUEST_DELAY)
+                except Exception as e:
+                    print(f"      ✗ rejected 失敗（attempt {attempt+1}）：{e}")
+                    continue
+                if candidate == chosen:
+                    print(f"      ⚠ rejected==chosen，重試（attempt {attempt+1}）...")
+                    continue
+                rejected = candidate
+                break
+
+            if rejected is None:
+                print(f"      ✗ [{rule_name}] 三次均 chosen==rejected，跳過此 pair")
                 continue
 
             pairs.append({
@@ -1196,6 +1791,7 @@ def generate_track_b() -> list[dict]:
                     "rejection_rule": rule_name,
                     "track": "B",
                     "trigger_context": context,
+                    "taboos": taboos,
                 },
             })
 
@@ -1215,6 +1811,7 @@ def generate_track_c() -> list[dict]:
     pairs = []
 
     for sc in TRACK_C_SCENARIOS:
+        taboos = sc.get("taboos", [])
         print(f"  [Track C / {sc['emotion_tone']}] 生成 chosen...")
         chosen_prompt = build_track_c_chosen_prompt(sc)
 
@@ -1226,17 +1823,32 @@ def generate_track_c() -> list[dict]:
             continue
 
         covered_w = _covered_w_before(sc["next_w"])
-        inference_prompt = build_track_c_inference_prompt(sc, covered_w=covered_w, skipped_w=[], taboos=[])
+        inference_prompt = build_track_c_inference_prompt(sc, covered_w=covered_w, skipped_w=[], taboos=taboos)
 
         for rule_name, rule_desc in TRACK_C_REJECTION_RULES.items():
-            print(f"    [{rule_name}] 生成 rejected...")
-            rejection_prompt = build_track_c_rejection_prompt(chosen, rule_name, rule_desc)
+            if rule_name == "touches_taboo" and not taboos:
+                # 這個情境沒有設定禁忌話題，無法示範「刻意觸及禁忌」，跳過
+                continue
 
-            try:
-                rejected = call_claude(rejection_prompt, model=MODEL_REJECTED)
-                time.sleep(REQUEST_DELAY)
-            except Exception as e:
-                print(f"      ✗ rejected 失敗：{e}")
+            print(f"    [{rule_name}] 生成 rejected...")
+            rejection_prompt = build_track_c_rejection_prompt(chosen, rule_name, rule_desc, taboos=taboos)
+
+            rejected = None
+            for attempt in range(3):
+                try:
+                    candidate = call_claude(rejection_prompt, model=MODEL_REJECTED)
+                    time.sleep(REQUEST_DELAY)
+                except Exception as e:
+                    print(f"      ✗ rejected 失敗（attempt {attempt+1}）：{e}")
+                    continue
+                if candidate == chosen:
+                    print(f"      ⚠ rejected==chosen，重試（attempt {attempt+1}）...")
+                    continue
+                rejected = candidate
+                break
+
+            if rejected is None:
+                print(f"      ✗ [{rule_name}] 三次均 chosen==rejected，跳過此 pair")
                 continue
 
             pairs.append({
@@ -1249,6 +1861,7 @@ def generate_track_c() -> list[dict]:
                     "rejection_rule": rule_name,
                     "track": "C",
                     "emotion_tone": sc["emotion_tone"],
+                    "taboos": taboos,
                 },
             })
 
@@ -1260,6 +1873,7 @@ def generate_track_d() -> list[dict]:
     pairs = []
 
     for sc in TRACK_D_SCENARIOS:
+        taboos = sc.get("taboos", [])
         print(f"  [Track D / {sc['elder_name']} / {sc['today_topic']}] 生成 chosen...")
         chosen_prompt = build_track_d_chosen_prompt(sc)
 
@@ -1273,8 +1887,12 @@ def generate_track_d() -> list[dict]:
         inference_prompt = build_track_d_inference_prompt(sc)
 
         for rule_name, rule_desc in TRACK_D_REJECTION_RULES.items():
+            if rule_name == "touches_taboo" and not taboos:
+                # 這位長者沒有設定禁忌話題，無法示範「刻意觸及禁忌」，跳過
+                continue
+
             print(f"    [{rule_name}] 生成 rejected...")
-            rejection_prompt = build_track_d_rejection_prompt(chosen, rule_name, rule_desc)
+            rejection_prompt = build_track_d_rejection_prompt(chosen, rule_name, rule_desc, taboos=taboos)
 
             rejected = None
             for attempt in range(3):
@@ -1304,6 +1922,7 @@ def generate_track_d() -> list[dict]:
                     "rejection_rule": rule_name,
                     "track": "D",
                     "today_topic": sc["today_topic"],
+                    "taboos": taboos,
                 },
             })
 
