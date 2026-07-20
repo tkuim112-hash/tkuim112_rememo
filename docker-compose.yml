@@ -74,7 +74,7 @@ services:
       - ./qdrant_storage:/qdrant/storage
     restart: always
 
-  # M3: 本地語音合成 (BreezyVoice, RTX 50 系列/Blackwell 專用建置)
+  # M3: 本地語音合成 (BlueMagpie-TTS, RTX 50 系列/Blackwell 專用建置)
   tts:
     build:
       context: ./bluemagpie
@@ -89,7 +89,7 @@ services:
       - MODEL_ID=OpenFormosa/BlueMagpie-TTS
       - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
       # 要用你自己的聲音：
-      # - SPEAKER_PROMPT_AUDIO_PATH=/workspace/references/audrey.wav
+      - SPEAKER_PROMPT_AUDIO_PATH=/workspace/references/audrey.wav
     volumes:
       - ./models/bluemagpie:/workspace/models
       - ./bluemagpie/references:/workspace/references
