@@ -1,13 +1,8 @@
 """
 BlueMagpie-TTS FastAPI Server
-- POST /v1/audio/speech  — 相容 BreezyVoice / OpenAI TTS 格式
-- POST /inference_clone  — 直接上傳參考音檔做聲音複製
+- POST /v1/audio/speech  — 相容 OpenAI TTS 格式，用預計算的 speaker centroid
+- POST /inference_clone  — 上傳參考音檔即時合成
 - GET  /health
-
-改動：
-- 啟動時預先計算 audrey.wav 的語者向量，存在記憶體
-- 每次請求直接用向量，不重新讀音檔 → 速度快很多
-- cfg_value 從 2.8 降到 2.0 → 語速較自然
 """
 
 import argparse
@@ -26,13 +21,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── 全域 ─────────────────────────────────────────────────────
-bm_model       = None
-bm_tokenizer   = None
-default_spk_vec = None   # 預先計算好的語者向量（啟動時算一次）
+bm_model        = None
+bm_tokenizer    = None
+speaker_centroid = None  # 預載的 Peichi_centroid.pt
 
-DEFAULT_REF_WAV = os.environ.get("SPEAKER_PROMPT_AUDIO_PATH", "")
-CFG_VALUE       = float(os.environ.get("CFG_VALUE", "2.0"))
-INFER_STEPS     = int(os.environ.get("INFER_STEPS", "9"))
+SPEAKER_CENTROID_PT = os.environ.get(
+    "SPEAKER_CENTROID_PT", "/workspace/references/Peichi_centroid.pt"
+)
+CFG_VALUE   = float(os.environ.get("CFG_VALUE", "2.0"))
+INFER_STEPS = int(os.environ.get("INFER_STEPS", "9"))
 
 
 # ============================================================
@@ -62,13 +59,32 @@ def load_model(model_id: str, model_dir: str):
     return model, tokenizer
 
 
-def precompute_speaker_vector(model_dir: str):
-    """BlueMagpie 不支援 encode_speaker，改用 reference_wav_path 做聲音複製"""
-    if DEFAULT_REF_WAV and os.path.exists(DEFAULT_REF_WAV):
-        logger.info(f"參考音檔確認存在：{DEFAULT_REF_WAV}，將用 reference_wav_path 合成")
-        return True
-    logger.warning(f"找不到參考音檔：{DEFAULT_REF_WAV}，fallback 到 hung_yi_lee")
-    return False
+def load_speaker_centroid(model_dir: str):
+    """
+    載入語者向量，優先順序：
+    1. SPEAKER_CENTROID_PT 指定的 .pt 檔（你的聲音）
+    2. 內建 female_voice
+    3. 內建 hung_yi_lee
+    """
+    # 方案 A：自訂語者向量
+    if os.path.exists(SPEAKER_CENTROID_PT):
+        vec = torch.load(SPEAKER_CENTROID_PT, map_location="cpu", weights_only=True)
+        logger.info(f"載入語者向量 ✓ shape={vec.shape}（{SPEAKER_CENTROID_PT}）")
+        return vec
+
+    # 方案 B：內建向量
+    centroid_path = os.path.join(model_dir, "checkpoints", "speaker_centroids.pt")
+    if os.path.exists(centroid_path):
+        centroids = torch.load(centroid_path, map_location="cpu", weights_only=True)
+        speaker_ids = centroids["speaker_ids"]
+        # 優先用 female_voice
+        target = "female_voice" if "female_voice" in speaker_ids else "hung_yi_lee"
+        vec = centroids["centroids"][speaker_ids.index(target)]
+        logger.info(f"載入內建語者向量 ✓（{target}）")
+        return vec
+
+    logger.warning("找不到語者向量，將用無音色控制模式")
+    return None
 
 
 # ============================================================
@@ -88,7 +104,7 @@ def numpy_to_wav_bytes(audio, sample_rate: int) -> bytes:
 # FastAPI
 # ============================================================
 
-app = FastAPI(title="BlueMagpie-TTS Service", version="1.1.0")
+app = FastAPI(title="BlueMagpie-TTS Service", version="1.3.0")
 
 
 @app.get("/health")
@@ -96,7 +112,7 @@ def health():
     return {
         "status": "ok",
         "model_loaded": bm_model is not None,
-        "speaker_vector": default_spk_vec is not None,
+        "speaker_centroid_loaded": speaker_centroid is not None,
         "cfg_value": CFG_VALUE,
         "infer_steps": INFER_STEPS,
     }
@@ -139,21 +155,15 @@ async def inference_clone(
 
     try:
         if ref_wav is not None:
-            # 臨時音檔 → 即時提取向量
+            # 上傳的音檔 → 即時抽取向量
+            from bluemagpie import extract_speaker_centroid
             tmp_path = f"/tmp/ref_{ref_wav.filename}"
             content = await ref_wav.read()
             with open(tmp_path, "wb") as f:
                 f.write(content)
-            audio = bm_model.generate(
-                target_text=tts_text,
-                reference_wav_path=tmp_path,
-                cfg_value=CFG_VALUE,
-                inference_timesteps=INFER_STEPS,
-                max_len=2000,
-                retry_badcase=True,
-            )
+            tmp_centroid = extract_speaker_centroid(tmp_path)
+            audio = _synthesize_with_centroid(tts_text, tmp_centroid)
         else:
-            # 用預先計算好的向量，快很多
             audio = _synthesize(tts_text)
     except Exception as e:
         logger.exception("clone 合成失敗")
@@ -163,40 +173,22 @@ async def inference_clone(
     return Response(content=wav, media_type="audio/wav")
 
 
-# ── 內部合成 ────────────────────────────────────────────────
+# ── 內部合成 ─────────────────────────────────────────────────
 
 def _synthesize(text: str):
-    # 有參考音檔 → 聲音複製
-    if default_spk_vec and DEFAULT_REF_WAV and os.path.exists(DEFAULT_REF_WAV):
-        return bm_model.generate(
-            target_text=text,
-            reference_wav_path=DEFAULT_REF_WAV,
-            cfg_value=CFG_VALUE,
-            inference_timesteps=INFER_STEPS,
-            max_len=2000,
-            retry_badcase=True,
-        )
-    # fallback：hung_yi_lee 向量
-    model_dir = os.environ.get("MODEL_LOCAL_DIR", "/workspace/models/BlueMagpie-TTS")
-    centroid_path = os.path.join(model_dir, "checkpoints", "hung_yi_lee_speaker_centroids.pt")
-    if os.path.exists(centroid_path):
-        centroids = torch.load(centroid_path, map_location="cpu", weights_only=True)
-        spk_vec = centroids["centroids"][centroids["speaker_ids"].index("hung_yi_lee")]
-        return bm_model.generate(
-            target_text=text,
-            speaker_centroid=spk_vec,
-            cfg_value=CFG_VALUE,
-            inference_timesteps=INFER_STEPS,
-            max_len=2000,
-            retry_badcase=True,
-        )
-    # 最終 fallback：無音色控制
-    return bm_model.generate(
+    return _synthesize_with_centroid(text, speaker_centroid)
+
+
+def _synthesize_with_centroid(text: str, centroid):
+    audio = bm_model.generate(
         target_text=text,
+        speaker_centroid=centroid,
         cfg_value=CFG_VALUE,
         inference_timesteps=INFER_STEPS,
         max_len=2000,
+        retry_badcase=True,
     )
+    return audio
 
 
 # ============================================================
@@ -212,6 +204,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     bm_model, bm_tokenizer = load_model(args.model_id, args.model_dir)
-    default_spk_vec = precompute_speaker_vector(args.model_dir)
+    speaker_centroid = load_speaker_centroid(args.model_dir)
 
     uvicorn.run(app, host=args.host, port=args.port)
