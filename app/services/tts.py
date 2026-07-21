@@ -1,5 +1,5 @@
 """
-TTS Service - 呼叫本地 BreezyVoice 服務（MediaTek Research 台灣繁中語音）
+TTS Service - 呼叫本地 BlueMagpie-TTS 服務（OpenFormosa 台灣繁中語音）
 透過 HTTP POST /v1/audio/speech，回傳 WAV bytes 存成檔案。
 """
 from pathlib import Path
@@ -7,7 +7,7 @@ from config import settings
 import httpx
 
 class TTSService:
-    """呼叫 BreezyVoice TTS 服務"""
+    """呼叫 BlueMagpie-TTS 服務"""
 
     def __init__(self, output_dir: str = "/media/audio"):
         self.base_url = settings.tts_host
@@ -38,7 +38,7 @@ class TTSService:
 
         filepath = session_dir / filename
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(
                 f"{self.base_url}/v1/audio/speech",
                 json={"model": "", "input": text},
