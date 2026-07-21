@@ -88,8 +88,10 @@ services:
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib
       - MODEL_ID=OpenFormosa/BlueMagpie-TTS
       - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
+      - CFG_VALUE=2.5
+      - INFER_STEPS=10
       # 要用你自己的聲音：
-      - SPEAKER_CENTROID_PT=/workspace/references/Peichi_centroid.pt
+      - SPEAKER_CENTROID_PT=/workspace/references/Peichi_avg_centroid.pt
     volumes:
       - ./models/bluemagpie:/workspace/models
       - ./bluemagpie/references:/workspace/references
