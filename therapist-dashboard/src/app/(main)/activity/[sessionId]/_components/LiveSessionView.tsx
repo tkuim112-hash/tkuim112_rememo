@@ -207,7 +207,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
          {/* AI 建議 */}
          <div className="bg-[#f9fafb] rounded-xl p-3 md:p-3 lg:p-6 xl:p-8 flex flex-col gap-2 md:gap-2 lg:gap-4 xl:gap-5">
            <h3 className="text-[15px] md:text-[18px] lg:text-[20px] font-medium text-[#0a0a0a]">AI 建議追問語（參考用）</h3>
-           <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">本回合可引導的方向：</p>
+           <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">下回合可引導的方向：</p>
            <div className="flex flex-col gap-2 lg:gap-3 xl:gap-4">
              {session.aiSuggestions.map((s, i) => (
                <button

@@ -66,7 +66,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const tabooStr = Array.isArray(tabooTopics) ? tabooTopics.join("、") : (tabooTopics ?? "");
 
-  await sql`
+  const [updated] = await sql`
     UPDATE patients SET
       birth_year  = ${birthYear ? parseInt(birthYear) : 0},
       hometown    = ${birthPlace ?? ""},
@@ -76,7 +76,12 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       taboo_words = ${tabooStr},
       avatar      = ${avatar ?? null}
     WHERE id = ${parseInt(id)} AND organization_id = ${session.organizationId}
+    RETURNING id
   `;
+
+  if (!updated) {
+    return NextResponse.json({ error: "找不到個案" }, { status: 404 });
+  }
 
   const [p] = await sql`
     SELECT
@@ -89,7 +94,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   await logAccess({
     therapistId: session.therapistId,
-    patientId: parseInt(id),
+    patientId: updated.id,
     action: "update_patient",
     resource: `patients:${id}`,
     req,
@@ -104,18 +109,25 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
   const { id } = await params;
 
-  // 先寫稽核紀錄再刪除：patients 被刪除後，audit_logs.patient_id 這個外鍵欄位會被
-  // ON DELETE SET NULL 清空，但 resource（例如 "patients:7"）是純文字欄位，
-  // 不受外鍵約束影響，之後仍看得出這筆紀錄原本是哪個病患。
+  // 用 RETURNING 確認真的刪到資料才寫稽核紀錄，避免 id 打錯或跨機構時
+  // audit_logs 留下一筆從未發生過的「刪除成功」紀錄。
+  const [deleted] = await sql`
+    DELETE FROM patients
+    WHERE id = ${parseInt(id)} AND organization_id = ${session.organizationId}
+    RETURNING id
+  `;
+
+  if (!deleted) {
+    return NextResponse.json({ error: "找不到個案" }, { status: 404 });
+  }
+
   await logAccess({
     therapistId: session.therapistId,
-    patientId: parseInt(id),
+    patientId: deleted.id,
     action: "delete_patient",
     resource: `patients:${id}`,
     req,
   });
-
-  await sql`DELETE FROM patients WHERE id = ${parseInt(id)} AND organization_id = ${session.organizationId}`;
 
   return NextResponse.json({ ok: true });
 }
