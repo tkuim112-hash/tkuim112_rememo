@@ -25,7 +25,7 @@ public class ShareController : MonoBehaviour
     public KinectSensorSender kinectSensorSender;
 
     [Header("後端設定")]
-    public string backendUrl = "http://localhost:8000";
+    public string backendUrl = "https://api.re-memo.com";
 
     [Header("WebSocket 設定（內建麥克風模式用）")]
     public string serverUrl = "ws://localhost:8000/ws/stt";

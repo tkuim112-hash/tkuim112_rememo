@@ -15,7 +15,7 @@ public class GameController : MonoBehaviour
     public static int currentRound = 1;
 
     [Header("後端設定")]
-    public string backendUrl = "http://localhost:8000";
+    public string backendUrl = "https://api.re-memo.com";
     public string userId = "user_001";
     public string sessionId = "sess_001";
 

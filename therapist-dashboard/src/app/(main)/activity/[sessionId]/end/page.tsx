@@ -22,7 +22,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const router = useRouter();
  const searchParams = useSearchParams();
  const from = searchParams.get("from");
- const backUrl = from === "history" ? `/activity/${sessionId}` : "/cases";
+ const backUrl = from === "history" ? `/activity/${sessionId}` : "/dashboard";
 
  const [caseName, setCaseName] = useState("—");
  const [sessionNumber, setSessionNumber] = useState<number | null>(null);

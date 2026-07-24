@@ -78,7 +78,7 @@ app = FastAPI(title="Rememo Backend", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "https://app.re-memo.com"],
     allow_methods=["*"],
     allow_headers=["*"],
     # /session 有些端點是治療師後台瀏覽器直接呼叫、帶 rememo_session cookie 驗證身分，
