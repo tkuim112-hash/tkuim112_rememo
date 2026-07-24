@@ -231,7 +231,9 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
            <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">請從以下選項中選擇下回合要問的問題:</p>
            <div className="flex flex-col gap-2 lg:gap-3 xl:gap-4">
              {session.aiSuggestions.length === 0 ? (
-               <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#888]">尚未產生下回合提問選項</p>
+               <div className="bg-white border border-[#e5e7eb] rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 flex items-center justify-center">
+                 <p className="text-[13px] md:text-[14px] lg:text-[16px] text-[#888]">尚未產生下回合提問選項</p>
+               </div>
              ) : (
                session.aiSuggestions.map((s, i) => (
                  <button
