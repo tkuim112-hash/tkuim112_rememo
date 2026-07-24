@@ -88,7 +88,6 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
         {/* 標題 */}
         <div className="flex flex-col gap-1">
           <h1 className="text-[28px] font-bold text-[#1a1a1a] mt-[0.8%]">開始療程</h1>
-          <p className="text-[13px] text-[#888]">確認設定後，系統將啟動 AI 者編故事</p>
         </div>
 
         {/* 長者 */}
