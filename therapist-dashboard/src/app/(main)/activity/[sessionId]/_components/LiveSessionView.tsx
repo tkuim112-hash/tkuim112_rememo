@@ -35,6 +35,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
  });
  const [currentRound, setCurrentRound] = useState(1);
  const [view, setView] = useState<View>("scene");
+ const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
 
 
  const router = useRouter();
@@ -80,16 +81,23 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
        });
        if (!res.ok) return;
        const data = await res.json();
-       setSession((s) => ({
-         ...s,
-         emotionState: data.emotion ?? s.emotionState,
-         responseTime: data.response_time ?? s.responseTime,
-         currentScene: data.current_scene ?? s.currentScene,
-         elderResponse: data.elder_response ?? s.elderResponse,
-         aiSuggestions: data.ai_suggestions ?? s.aiSuggestions,
-         currentRound: data.current_round ?? s.currentRound,
-         totalRounds: data.total_rounds ?? s.totalRounds,
-       }));
+       setSession((s) => {
+         const nextSuggestions = data.ai_suggestions ?? s.aiSuggestions;
+         // 新一批建議出現時（跟上次拿到的不一樣），預設選第一個選項
+         if (JSON.stringify(nextSuggestions) !== JSON.stringify(s.aiSuggestions)) {
+           setSelectedSuggestionIndex(0);
+         }
+         return {
+           ...s,
+           emotionState: data.emotion ?? s.emotionState,
+           responseTime: data.response_time ?? s.responseTime,
+           currentScene: data.current_scene ?? s.currentScene,
+           elderResponse: data.elder_response ?? s.elderResponse,
+           aiSuggestions: nextSuggestions,
+           currentRound: data.current_round ?? s.currentRound,
+           totalRounds: data.total_rounds ?? s.totalRounds,
+         };
+       });
        if (data.current_round) setCurrentRound(data.current_round);
      } catch {
        // 網路暫時中斷時保留上次數值，不中斷顯示
@@ -109,6 +117,19 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
      credentials: "include",
      body: JSON.stringify({ action }),
    }).catch(() => {});
+
+ // 治療師選定下回合要問的問題後送給後端；這支 /select-question 端點後端尚未實作，
+ // 之後後端接上後前端不用再改。
+ const handleSelectSuggestion = (index: number) => {
+   setSelectedSuggestionIndex(index);
+   const question = session.aiSuggestions[index];
+   fetch(`${API_BASE}/session/${sessionId}/select-question`, {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+     credentials: "include",
+     body: JSON.stringify({ question }),
+   }).catch(() => {});
+ };
 
  const handleReplay = () => sendControl("replay_audio");
  const handleSkip = () => sendControl("skip_scene");
@@ -205,18 +226,29 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
 
          {/* AI 建議 */}
          <div className="bg-[#f9fafb] rounded-xl p-3 md:p-3 lg:p-6 xl:p-8 flex flex-col gap-2 md:gap-2 lg:gap-4 xl:gap-5">
-           <h3 className="text-[15px] md:text-[18px] lg:text-[20px] font-medium text-[#0a0a0a]">AI 建議追問語（參考用）</h3>
-           <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">本回合可引導的方向：</p>
+           <h3 className="text-[15px] md:text-[18px] lg:text-[20px] font-medium text-[#0a0a0a]">下回合提問選項</h3>
+           <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">請從以下選項中選擇下回合要問的問題:</p>
            <div className="flex flex-col gap-2 lg:gap-3 xl:gap-4">
-             {session.aiSuggestions.map((s, i) => (
-               <button
-                 key={i}
-                 type="button"
-                 className="bg-white border border-[#e5e7eb] rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 text-[13px] md:text-[14px] lg:text-[16px] font-medium text-[#0a0a0a] text-left hover:bg-[#f5f5f5] transition-colors"
-               >
-                 {s}
-               </button>
-             ))}
+             {session.aiSuggestions.length === 0 ? (
+               <div className="bg-white border border-[#e5e7eb] rounded-xl px-3 md:px-3 lg:px-5 xl:px-6 min-h-[120px] lg:min-h-[192px] xl:min-h-[224px] flex items-center justify-center">
+                 <p className="text-[13px] md:text-[14px] lg:text-[16px] text-[#888]">尚未產生下回合提問選項</p>
+               </div>
+             ) : (
+               session.aiSuggestions.map((s, i) => (
+                 <button
+                   key={i}
+                   type="button"
+                   onClick={() => handleSelectSuggestion(i)}
+                   className={`rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 text-[13px] md:text-[14px] lg:text-[16px] font-medium text-left transition-colors ${
+                     i === selectedSuggestionIndex
+                       ? "bg-[#fdf1e6] border-2 border-[#e09540] text-[#0a0a0a]"
+                       : "bg-white border border-[#e5e7eb] text-[#0a0a0a] hover:bg-[#f5f5f5]"
+                   }`}
+                 >
+                   {s}
+                 </button>
+               ))
+             )}
            </div>
          </div>
        </div>
