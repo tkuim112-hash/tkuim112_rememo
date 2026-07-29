@@ -426,11 +426,13 @@ async def session_start(
             topic_override=topic or None,
         )
         result["state"]["question_number"] = 1
-        result["state"]["question_asked_at"] = int(time.time() * 1000)
         tts = request.app.state.tts_service
         result["audio_path"] = await _synthesize_audio(
             tts, result["scene_text"] + result["question"], session_id, 1, 1,
         )
+        # 時間戳記在語音合成「之後」才設，避免 TTS API 延遲被算進長者的反應時間裡
+        # （跟 session_respond 的量測方式保持一致）
+        result["state"]["question_asked_at"] = int(time.time() * 1000)
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id), topic=topic)
         await _update_live_view(
             request.app.state.redis, session_id,
@@ -505,12 +507,14 @@ async def session_round(
             topic_override=topic_override,
         )
         result["state"]["question_number"] = 1
-        result["state"]["question_asked_at"] = int(time.time() * 1000)
         if result.get("question"):
             tts = request.app.state.tts_service
             result["audio_path"] = await _synthesize_audio(
                 tts, result["scene_text"] + result["question"], session_id, round_number, 1,
             )
+        # 時間戳記在語音合成「之後」才設，避免 TTS API 延遲被算進長者的反應時間裡
+        # （跟 session_respond 的量測方式保持一致）
+        result["state"]["question_asked_at"] = int(time.time() * 1000)
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
         await _update_live_view(
             request.app.state.redis, session_id,
@@ -869,7 +873,9 @@ async def session_respond(
             db, body.state.session_id, body.state.round,
             question_number=body.state.question_number, answer=body.elder_response,
         )
-        # 這一題長者花了多久回答，累加進本回合的反應時間統計
+        # 這一題長者花了多久回答，累加進本回合的反應時間統計，
+        # 同時也傳給 orchestrator 讓它在語氣上放軟（不影響任何流程判斷，見 _SLOW_RESPONSE_MS）
+        elapsed_ms: int | None = None
         if body.state.question_asked_at:
             elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
             await _accumulate_round_response_time(
@@ -883,6 +889,7 @@ async def session_respond(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
             emotion=emotion,
+            elapsed_ms=elapsed_ms,
         )
 
         if result.get("state") is None:

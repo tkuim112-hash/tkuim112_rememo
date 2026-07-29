@@ -55,7 +55,9 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const { id: caseId } = use(params);
   const router = useRouter();
   const [scene, setScene] = useState("");
-  const [status, setStatus] = useState<DeviceStatus>("unstable");
+  // 目前沒有真正的 Kinect 連線檢查機制，先預設為已連線，避免擋住啟動療程按鈕；
+  // 之後接上真實裝置狀態 API 後，這裡應改成從那個 API 讀初始值。
+  const [status, setStatus] = useState<DeviceStatus>("connected");
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState("");

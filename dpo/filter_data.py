@@ -49,6 +49,16 @@ def has_double_question(q: str) -> bool:
     return (q.count("？") + q.count("?")) >= 2
 
 
+_MECHANICAL_ACTION_RE = re.compile(r"怎麼(走|湊|挪|移動)(過去|過來)?(的)?呢?[？?]?\s*$")
+
+
+def is_mechanical_action(q: str) -> bool:
+    """問法只剩「怎麼+空洞動作動詞」，沒有具體受詞或情境，答案通常只有一個動作詞
+    （例：「你都怎麼走呢？」「都怎麼湊過來呢？」），跟「長耙你都怎麼用呢？」這種
+    有意義動詞的問法不同，只抓固定句型，換句話說的版本抓不到，需搭配人工複查。"""
+    return bool(_MECHANICAL_ACTION_RE.search(q))
+
+
 def has_anchor(q: str, elements: list[str]) -> bool:
     """與 validate_data.py 的邏輯保持一致。"""
     if not elements:
@@ -64,6 +74,23 @@ def has_anchor(q: str, elements: list[str]) -> bool:
         if overlap >= threshold:
             return True
     return False
+
+
+def uses_polite_nin(text: str) -> bool:
+    """稱呼一律用「你」，「您」念起來太正式，會破壞老朋友聊天的溫暖感。
+    邏輯與 dpo/evaluate_model.py 一致，跨全部 track 都適用（chosen 之前只在
+    Track A/C 檢查是非題/錨點等問題品質規則，沒檢查過「您」跟 markdown——
+    2026-07 用 test_claude_sample.py 小規模試跑時，實際抓到 Track B 的
+    chosen 範例混進「您」，才發現這個漏洞）。"""
+    return "您" in text
+
+
+_MARKDOWN_LEAK_RE = re.compile(r"\*\*|##|`|^\s*[-*]\s", re.MULTILINE)
+
+
+def has_markdown_leak(text: str) -> bool:
+    """禁止任何 markdown 語法——這段文字會直接餵給 TTS 唸給長者聽。"""
+    return bool(_MARKDOWN_LEAK_RE.search(text))
 
 
 def chosen_touches_taboo(obj: dict) -> bool:
@@ -91,6 +118,12 @@ def chosen_is_bad(obj: dict) -> tuple[bool, str]:
     if chosen_touches_taboo(obj):
         return True, "chosen_touches_taboo"
 
+    if uses_polite_nin(chosen):
+        return True, "chosen_uses_nin"
+
+    if has_markdown_leak(chosen):
+        return True, "chosen_markdown_leak"
+
     track = obj["meta"]["track"]
     if track not in ("A", "C", "D"):
         return False, ""
@@ -110,6 +143,8 @@ def chosen_is_bad(obj: dict) -> tuple[bool, str]:
         elements = extract_scene_elements(obj["prompt"])
         if not has_anchor(q, elements):
             return True, "no_anchor"
+        if is_mechanical_action(q):
+            return True, "mechanical_action"
 
     return False, ""
 

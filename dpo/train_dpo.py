@@ -22,11 +22,14 @@ DPO 微調腳本（Unsloth 版）
 
 import json
 import random
+import sys
 from pathlib import Path
 
 from datasets import Dataset
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from trl import DPOConfig, DPOTrainer
+
+from validate_data import Validator
 
 # ─── 設定 ───────────────────────────────────────────────────────────────────
 
@@ -134,6 +137,42 @@ def load_model_and_tokenizer():
     return model, tokenizer
 
 
+# ─── 訓練前驗證關卡 ──────────────────────────────────────────────────────────
+
+def _run_validation_gate() -> None:
+    """
+    訓練前強制跑一次 dpo/validate_data.py 的檢查邏輯，有 critical failure 就中止。
+
+    2026-07 稽核發現：train_dpo.py 原本只檢查 train.jsonl 存不存在，完全不管
+    裡面的資料有沒有問題（例如 chosen==rejected、chosen 本身違規、rejected
+    沒有真的違反該筆記錄的規則）。validate_data.py 雖然存在，但沒有任何東西
+    強制要求「訓練前一定要先跑過」，全靠使用者記得手動執行——已知至少一次
+    train.jsonl 在有 critical failure 的狀態下仍被拿去訓練（見
+    dpo/data/validate_report.txt 的歷史記錄）。這裡直接在訓練腳本裡內建同一套
+    檢查，沒通過就不給訓練，避免同樣的事再發生一次。
+    """
+    v = Validator()
+    with DATA_FILE.open(encoding="utf-8") as f:
+        for lineno, raw in enumerate(f, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                v.check(json.loads(raw), lineno)
+            except json.JSONDecodeError as e:
+                print(f"Line {lineno} JSON 解析失敗：{e}")
+
+    passed = v.report()
+    if not passed:
+        print(
+            "\n訓練已中止：train.jsonl 有上述關鍵檢查失敗項目，請先修正"
+            "（或重新執行 python dpo/collect_data.py 產生資料）再訓練。\n"
+            "若你已確認這些失敗可以接受，暫時可自行修改 train_dpo.py 略過此檢查，"
+            "但不建議在關鍵檢查未通過的情況下訓練。"
+        )
+        sys.exit(1)
+
+
 # ─── 訓練 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -148,6 +187,9 @@ def main() -> None:
             f"找不到訓練資料：{DATA_FILE}\n"
             "請先執行 python dpo/collect_data.py 生成資料。"
         )
+
+    print("訓練前先驗證 train.jsonl（等同執行一次 python dpo/validate_data.py）...")
+    _run_validation_gate()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
