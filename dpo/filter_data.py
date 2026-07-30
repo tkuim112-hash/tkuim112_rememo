@@ -28,6 +28,21 @@ def extract_question(content: str) -> str | None:
     return None
 
 
+def extract_lead_in(content: str) -> str:
+    """取出同一個 chosen 裡「場景文字：」或「承接語：」這一行的內容，當作額外的
+    錨點比對來源——這段文字本身就是根據畫面元素/長者話語生成的，今天新增的
+    「動作優先」「準備動作」等規則會鼓勵問題從這段文字描述的動作延伸（例如
+    「一路走回家，你都在想什麼呢」），不會逐字重複 elements 清單裡的名詞，
+    只比對 elements 太嚴格，需要放寬到也比對這段文字。"""
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("場景文字："):
+            return line[len("場景文字："):].strip()
+        if line.startswith("承接語："):
+            return line[len("承接語："):].strip()
+    return ""
+
+
 def extract_scene_elements(prompt: list[dict]) -> list[str]:
     user_msg = next((m["content"] for m in prompt if m["role"] == "user"), "")
     match = re.search(r"【眼前畫面元素】\n(.+)", user_msg)
@@ -59,9 +74,15 @@ def is_mechanical_action(q: str) -> bool:
     return bool(_MECHANICAL_ACTION_RE.search(q))
 
 
-def has_anchor(q: str, elements: list[str]) -> bool:
-    """與 validate_data.py 的邏輯保持一致。"""
-    if not elements:
+def has_anchor(q: str, elements: list[str], lead_in: str = "") -> bool:
+    """與 validate_data.py 的邏輯保持一致。
+
+    elements 比對太嚴格會誤殺今天新增規則鼓勵的「動作/狀態延伸」問法（例如
+    「一路走回家，你都在想什麼呢」不會逐字重複 elements 清單裡的名詞）——
+    多一層比對 lead_in（同一個 chosen 裡的場景文字／承接語），用連續2字的
+    詞組重疊來判斷問題是否真的承接自這段文字，比逐字元重疊更準確。
+    """
+    if not elements and not lead_in:
         return True
     prefix = q[:10]
     for e in elements:
@@ -73,6 +94,11 @@ def has_anchor(q: str, elements: list[str]) -> bool:
         overlap = sum(1 for c in set(e) if c in prefix)
         if overlap >= threshold:
             return True
+    if lead_in:
+        for i in range(len(lead_in) - 1):
+            bigram = lead_in[i:i + 2]
+            if bigram in prefix:
+                return True
     return False
 
 
@@ -115,6 +141,9 @@ def chosen_is_bad(obj: dict) -> tuple[bool, str]:
     if chosen.strip() == rejected.strip():
         return True, "chosen_equals_rejected"
 
+    if has_leaked_self_check(chosen):
+        return True, "chosen_leaked_self_check"
+
     if chosen_touches_taboo(obj):
         return True, "chosen_touches_taboo"
 
@@ -141,12 +170,33 @@ def chosen_is_bad(obj: dict) -> tuple[bool, str]:
 
     if track in ("A", "C"):
         elements = extract_scene_elements(obj["prompt"])
-        if not has_anchor(q, elements):
+        lead_in = extract_lead_in(chosen)
+        if not has_anchor(q, elements, lead_in):
             return True, "no_anchor"
         if is_mechanical_action(q):
             return True, "mechanical_action"
 
     return False, ""
+
+
+_DASH_RE = re.compile(r"^-{3,}\s*$", re.MULTILINE)
+_SELF_CORRECT_RE = re.compile(r"等等[，,]|重新檢查這個|需要改|需要修正|違反第\s*\d+\s*條|修正如下")
+
+
+def has_leaked_self_check(content: str) -> bool:
+    """偵測模型把自我檢查/多輪草稿過程洩漏到正式輸出裡（例如用「---」分隔線
+    寫出「先錯一版、自我檢查、再修正」的過程）。真正的洩漏會有「---」分隔線、
+    明確的自我修正措辭，或同一個欄位重複出現兩次——只比對「規則\\d+」字面
+    會誤判思考欄位裡合法提到規則編號的正常情況，所以不用那個當觸發條件。"""
+    if _DASH_RE.search(content):
+        return True
+    if _SELF_CORRECT_RE.search(content):
+        return True
+    for label in ("問題：", "場景文字：", "承接語：", "收尾語："):
+        count = sum(1 for line in content.split("\n") if line.strip().startswith(label))
+        if count >= 2:
+            return True
+    return False
 
 
 def main():

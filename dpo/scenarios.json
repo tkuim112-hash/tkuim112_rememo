@@ -1562,7 +1562,9 @@
       "birth_year": 1953,
       "birth_place": "台北",
       "main_occupation": "護士",
-      "taboos": [],
+      "taboos": [
+        "母親臨終過程細節（彌留時刻、最後說的話）"
+      ],
       "today_topic": "媽媽過世後的思念"
     },
     "scene": {
@@ -1589,7 +1591,10 @@
       "birth_year": 1949,
       "birth_place": "台中",
       "main_occupation": "農民",
-      "taboos": [],
+      "taboos": [
+        "老伴的死因或病情細節",
+        "生前相處的愧疚自責（嫌她嘮叨）"
+      ],
       "today_topic": "老伴走了之後的日子"
     },
     "scene": {
@@ -1615,7 +1620,10 @@
       "birth_year": 1955,
       "birth_place": "台南",
       "main_occupation": "工廠女工",
-      "taboos": [],
+      "taboos": [
+        "病情預後或是否會惡化、死亡",
+        "拖累子女的自責感"
+      ],
       "today_topic": "生病之後心情的起伏"
     },
     "scene": {
@@ -1642,7 +1650,9 @@
       "birth_year": 1952,
       "birth_place": "彰化",
       "main_occupation": "農民",
-      "taboos": [],
+      "taboos": [
+        "家中貧困細節或手足間資源分配的比較"
+      ],
       "today_topic": "年輕時沒辦法繼續讀書的遺憾"
     },
     "scene": {
@@ -1668,7 +1678,10 @@
       "birth_year": 1958,
       "birth_place": "高雄",
       "main_occupation": "家庭主婦",
-      "taboos": [],
+      "taboos": [
+        "子女多久沒回來探視或聯繫頻率",
+        "覺得自己是子女負擔的自我否定感"
+      ],
       "today_topic": "孩子長大離家後的寂寞"
     },
     "scene": {

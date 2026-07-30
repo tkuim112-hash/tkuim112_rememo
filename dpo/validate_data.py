@@ -141,16 +141,32 @@ def is_memory_test(q: str) -> bool:
 def has_double_question(q: str) -> bool:
     return (q.count("？") + q.count("?")) >= 2
 
-def has_anchor(q: str, elements: list[str]) -> bool:
-    """問題前 10 字是否含有任一場景元素的錨點字符。
+def extract_lead_in(content: str) -> str:
+    """取出同一段 chosen 裡「場景文字：」或「承接語：」這一行的內容，當作額外的
+    錨點比對來源——只比對 elements 清單太嚴格，2026-07 稽核發現「動作優先」
+    「準備動作」等規則鼓勵問題從這段文字描述的動作延伸（例如「一路走回家，
+    你都在想什麼呢」），不會逐字重複 elements 清單裡的名詞，需要放寬比對範圍。"""
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("場景文字："):
+            return line[len("場景文字："):].strip()
+        if line.startswith("承接語："):
+            return line[len("承接語："):].strip()
+    return ""
 
-    兩層檢查（任一通過即可）：
+
+def has_anchor(q: str, elements: list[str], lead_in: str = "") -> bool:
+    """問題前 10 字是否含有任一場景元素的錨點字符，或跟 lead_in（同一段 chosen
+    裡的場景文字/承接語）有詞組重疊。
+
+    三層檢查（任一通過即可）：
     1. 嚴格：元素前 2 字為前綴子字串（原邏輯，窗口從 6 擴至 10）
     2. 放寬：元素字符出現在前綴中的數量 ≥ threshold
        - 短元素（≤2字）：至少 1 個字符（處理「老街→那條街」這類同義詞）
        - 長元素（>2字）：至少 2 個字符（避免單字誤判，如「工」誤配「下班工人」）
+    3. lead_in：跟同段 chosen 的場景文字/承接語有連續2字的詞組重疊
     """
-    if not elements:
+    if not elements and not lead_in:
         return True
     prefix = q[:10]
     for e in elements:
@@ -162,6 +178,10 @@ def has_anchor(q: str, elements: list[str]) -> bool:
         overlap = sum(1 for c in set(e) if c in prefix)
         if overlap >= threshold:
             return True
+    if lead_in:
+        for i in range(len(lead_in) - 1):
+            if lead_in[i:i + 2] in prefix:
+                return True
     return False
 
 def asks_why(q: str) -> bool:
@@ -181,6 +201,27 @@ _MARKDOWN_LEAK_RE = re.compile(r"\*\*|##|`|^\s*[-*]\s", re.MULTILINE)
 def has_markdown_leak(text: str) -> bool:
     """禁止任何 markdown 語法——這段文字會直接餵給 TTS 唸給長者聽。"""
     return bool(_MARKDOWN_LEAK_RE.search(text))
+
+
+_DASH_RE = re.compile(r"^-{3,}\s*$", re.MULTILINE)
+_SELF_CORRECT_RE = re.compile(r"等等[，,]|重新檢查這個|需要改|需要修正|違反第\s*\d+\s*條|修正如下")
+
+
+def has_leaked_self_check(content: str) -> bool:
+    """偵測模型把自我檢查/多輪草稿過程洩漏到正式輸出裡（2026-07 稽核發現，
+    Track A 有 273 筆 chosen 混進「---」分隔線＋「等等，我需要重新檢查...」
+    這類自我修正旁白，本該只印最終定案版本）。只比對「規則\\d+」字面會誤判
+    思考欄位裡合法提到規則編號的正常情況，所以不用那個當觸發條件，改抓
+    「---」分隔線、明確的自我修正措辭，或同一個欄位重複出現兩次。"""
+    if _DASH_RE.search(content):
+        return True
+    if _SELF_CORRECT_RE.search(content):
+        return True
+    for label in ("問題：", "場景文字：", "承接語：", "收尾語："):
+        count = sum(1 for line in content.split("\n") if line.strip().startswith(label))
+        if count >= 2:
+            return True
+    return False
 
 
 def content_touches_taboo(text: str, taboos: list[str]) -> bool:
@@ -236,6 +277,8 @@ class Validator:
             self._fail("chosen:uses_nin", info_base)
         if has_markdown_leak(chosen):
             self._fail("chosen:markdown_leak", info_base)
+        if has_leaked_self_check(chosen):
+            self._fail("chosen:leaked_self_check", info_base)
 
         # ── touches_taboo/dwell_on_taboo 規則：確認 rejected 真的觸及禁忌 ──
         if rule in ("touches_taboo", "dwell_on_taboo") and taboos:
@@ -266,7 +309,7 @@ class Validator:
             if has_double_question(chosen_q):
                 self._fail("chosen:double_question", {**info_base, "q": chosen_q})
 
-            if not has_anchor(chosen_q, elements):
+            if not has_anchor(chosen_q, elements, extract_lead_in(chosen)):
                 self._fail("chosen:no_anchor",
                            {**info_base, "q": chosen_q, "elements": elements})
 
@@ -346,7 +389,7 @@ class Validator:
                 if cjk_len(chosen_q) > 20:
                     self._fail("chosen_c:too_long",
                                {**info_base, "q": chosen_q, "cjk": cjk_len(chosen_q)})
-                if not has_anchor(chosen_q, elements):
+                if not has_anchor(chosen_q, elements, extract_lead_in(chosen)):
                     self._fail("chosen_c:no_anchor",
                                {**info_base, "q": chosen_q, "elements": elements})
 
@@ -414,6 +457,7 @@ class Validator:
             ("chosen:touches_taboo",       "Chosen 字面觸及該筆資料的禁忌話題"),
             ("chosen:uses_nin",            "Chosen 誤用「您」（全軌跡皆須用「你」）"),
             ("chosen:markdown_leak",       "Chosen 洩漏 markdown 語法"),
+            ("chosen:leaked_self_check",   "Chosen 洩漏自我檢查/多輪草稿過程"),
             ("chosen:missing_question_line","Track A Chosen 缺少「問題：」行"),
             ("chosen:too_long",            "Track A Chosen 問題 > 20 CJK 字"),
             ("chosen:is_yesno",            "Track A Chosen 問題是是非題"),
