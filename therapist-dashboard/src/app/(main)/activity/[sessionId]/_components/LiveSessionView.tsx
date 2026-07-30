@@ -4,8 +4,7 @@
 import { useState, Fragment, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ActiveSession } from "@/lib/types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_BASE } from "@/lib/api";
 
 
 const EMOTION_COLORS: Record<string, string> = {
@@ -29,7 +28,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
    status: "running",
    currentScene: "",
    elderResponse: "",
-   emotionState: "適當",
+   emotionState: "",
    responseTime: "—",
    aiSuggestions: [],
    tabooTopics: [],
@@ -266,9 +265,9 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
              <div className="bg-white rounded-xl p-3 lg:p-5 xl:p-6 flex-1 flex flex-col gap-1 items-center justify-center">
                <span
                  className="text-[16px] md:text-[20px] lg:text-[24px] font-medium"
-                 style={{ color: EMOTION_COLORS[session.emotionState] }}
+                 style={{ color: session.emotionState ? EMOTION_COLORS[session.emotionState] : undefined }}
                >
-                 {session.emotionState}
+                 {session.emotionState || "—"}
                </span>
                <span className="text-[11px] md:text-[13px] lg:text-[14px] text-[#888]">情緒狀態</span>
              </div>

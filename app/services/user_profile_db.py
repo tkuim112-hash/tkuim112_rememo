@@ -43,8 +43,9 @@ class DBUserProfileClient:
         if patient.taboo_words:
             taboos = [w.strip() for w in patient.taboo_words.split(",") if w.strip()]
 
-        scene_weights = patient.scene_weights or ""
-        today_topic = scene_weights.split(",")[0].strip() if scene_weights else "懷舊生活"
+        scene_weights = patient.preferences or patient.scene_weights or ""
+        normalized_weights = scene_weights.replace("，", "、").replace(",", "、")
+        today_topic = normalized_weights.split("、")[0].strip() if normalized_weights else "懷舊生活"
         
         # ⚠️ key 對齊 mock,避免動 orchestrator
         return {
