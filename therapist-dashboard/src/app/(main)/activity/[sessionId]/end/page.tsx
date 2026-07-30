@@ -22,7 +22,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const router = useRouter();
  const searchParams = useSearchParams();
  const from = searchParams.get("from");
- const backUrl = from === "history" ? `/activity/${sessionId}` : "/cases";
+ const backUrl = from === "history" ? `/activity/${sessionId}` : "/dashboard";
 
  const [caseName, setCaseName] = useState("—");
  const [sessionNumber, setSessionNumber] = useState<number | null>(null);
@@ -78,7 +78,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
    setScores((prev) => prev.map((s, i) => (i === rowIdx ? colIdx : s)));
  }
 
- async function saveToDb() {
+ async function saveToDb(status: "completed" | "in_progress") {
    await fetch(`/api/sessions/${sessionId}`, {
      method: "PUT",
      headers: { "Content-Type": "application/json" },
@@ -86,6 +86,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        totalScore: total,
        emotionalStatus: CRITERIA[3].options[scores[3]],
        notes,
+       status,
        scoreParticipation: scores[0] + 1,
        scoreAttention:     scores[1] + 1,
        scoreEndurance:     scores[2] + 1,
@@ -96,12 +97,12 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  }
 
  async function handleSave() {
-   await saveToDb();
+   await saveToDb("completed");
    router.push(backUrl);
  }
 
  async function handleLater() {
-   await saveToDb();
+   await saveToDb("in_progress");
    router.push(backUrl);
  }
 

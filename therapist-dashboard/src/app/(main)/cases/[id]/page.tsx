@@ -298,7 +298,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                           <span className="text-[13px] font-medium" style={{ color }}>{s.rating}</span>
                         </div>
                       </div>
-                      <Link href={`/activity/${s.id}`} className="text-[15px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors">
+                      <Link href={s.status === "completed" ? `/activity/${s.id}` : `/activity/${s.id}?live=1`} className="text-[15px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors">
                         查看 ›
                       </Link>
                     </div>

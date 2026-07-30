@@ -43,8 +43,12 @@ export default function DashboardPage() {
           >
             帳號設定
           </Link>
-          <Link
-            href="/login"
+          <button
+            type="button"
+            onClick={async () => {
+              await fetch("/api/auth/logout", { method: "POST" });
+              window.location.href = "/login";
+            }}
             className="border border-[#1a1a1a] rounded-xl px-5 py-2.5 text-[15px] font-medium text-[#1a1a1a] hover:bg-[#f5f5f5] transition-colors flex items-center gap-2"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -53,7 +57,7 @@ export default function DashboardPage() {
               <line x1="21" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
             登出
-          </Link>
+          </button>
         </div>
       </nav>
 

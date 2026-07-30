@@ -5,9 +5,9 @@ import Link from "next/link";
 
 import { useRouter } from "next/navigation";
 import type { Session, SessionRound, Case } from "@/lib/types";
+import { API_BASE as AI_BASE } from "@/lib/api";
 
 const ROUND_LABELS = ["一", "二", "三"];
-const AI_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function ImageWithFallback({ src, alt }: { src: string; alt: string }) {
   const [failed, setFailed] = useState(false);
