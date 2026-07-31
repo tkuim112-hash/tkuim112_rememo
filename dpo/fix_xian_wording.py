@@ -30,7 +30,7 @@ import filter_data as fd
 # 「先」後面接任何字都算，只排除「先生／先夫／先父／先母／先人／先前／先天」這幾個
 # 「先」是固定詞語一部分、不是「先+動詞」贅字用法的合法詞（例如「你先生以前都做
 # 什麼工作呢？」問的是「先生」這個人，不是要拿掉的贅字「先」）。
-_XIAN_RE = re.compile(r"先(?!生|夫|父|母|人|前|天)")
+_XIAN_RE = re.compile(r"(?<!最)先(?!生|夫|父|母|人|前|天)")
 _ZANMEN_RE = re.compile(r"咱")
 _TOUYIJU_RE = re.compile(r"頭一句(?!話)")
 _BOOKISH_VC_RE = re.compile(r"做下來|說下去")
