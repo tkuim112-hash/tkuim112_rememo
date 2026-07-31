@@ -499,6 +499,7 @@ class TherapyOrchestrator:
         question_count: int = 1,
         supplement_count: int = 0,
         slow_response: bool = False,
+        elder_response: str = "",
     ) -> dict:
         result = await guarded_generate(
             self._generate_supplement_question,
@@ -506,7 +507,7 @@ class TherapyOrchestrator:
             llm_service=self.llm,
             max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
             user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
-            emotion=emotion, slow_response=slow_response,
+            emotion=emotion, slow_response=slow_response, elder_response=elder_response,
         )
         print(f"  → 補問 W({target_w}): {result['question']}")
         new_state = {
@@ -609,6 +610,7 @@ class TherapyOrchestrator:
         return await self._ask_supplement(
             user, scene_els, covered_w, skipped_w, next_w, state, emotion,
             question_count, supplement_count, slow_response,
+            elder_response=elder_response,
         )
 
     # ══════════════════════════════════════════════════════════════
@@ -974,12 +976,20 @@ class TherapyOrchestrator:
         emotion: str = "happy",
         slow_response: bool = False,
         retry_feedback: str = "",
+        elder_response: str = "",
     ) -> dict:
         """
         W 補問：明確針對尚未涵蓋的 W 維度切入（STEP3 格式）。
         Returns: {"scene_text": str, "question": str}
 
         retry_feedback: 見 _generate_question 的同名參數說明。
+        elder_response: 長者在 STEP2 自由追問裡剛說的話——STEP2 是完全跟著長者
+            話走的自由對話，內容常常已經飄離眼前畫面，補問的場景文字要負責把
+            注意力拉回來，若不知道長者剛才說了什麼，拉回來的方式只能是憑空
+            接畫面，答非所問、不像在聊天（2026-07 使用者回饋發現這裡漏了
+            elder_response，_next_step_or_end 手上明明有這個值卻沒往下傳）。
+            預設空字串是為了兼容 suggest_next_questions 這個純預覽用途的呼叫
+            （那裡沒有對應到單一長者回應，本來就沒有值可傳）。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -994,6 +1004,7 @@ class TherapyOrchestrator:
         topic_str    = "、".join(user.get("topic_category", [])) or user["today_topic"]
         covered_str  = "、".join(covered_w) if covered_w else "無"
         taboo_str    = "、".join(user["taboos"]) if user["taboos"] else "無"
+        elder_section = f"\n【長者剛才說的話】\n{elder_response}\n" if elder_response else ""
 
         user_content = (
             f"【長者資料】\n"
@@ -1003,6 +1014,7 @@ class TherapyOrchestrator:
             f"懷舊治療主題類別：{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
+            f"{elder_section}"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion, slow_response)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n"
@@ -1012,7 +1024,8 @@ class TherapyOrchestrator:
             f"思考：（主題判斷：一句話判斷今日主題最貼近哪個核心主題；"
             f"切入角度：一到兩句話決定這題要用什麼當錨點、往哪個方向問——"
             f"兩段都要寫，不會念給長者聽）\n"
-            f"場景文字：（15-30字，幫長者重新聚焦）\n"
+            f"場景文字：（15-30字，幫長者重新聚焦到畫面，若【長者剛才說的話】有內容，"
+            f"盡量從那句話自然接回畫面，不要憑空硬轉）\n"
             f"問題：（≤15字，開放式，開頭要有畫面中的具體物件）\n"
             f"問題類型：STEP3補問\n"
             f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個W維度名稱本身，"
