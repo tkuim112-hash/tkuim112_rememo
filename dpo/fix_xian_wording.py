@@ -202,12 +202,34 @@ def load_existing() -> list[dict]:
     return pairs
 
 
+def _has_any_wording_issue_a(content: str) -> bool:
+    """Track A 專用：含 scene_as_question（只檢查「場景文字：」這一行，Track C
+    的「承接語：」不適用這條規則，所以獨立一支給 Track A 用，不要跟 Track C
+    共用同一支檢查函式）。"""
+    return (
+        has_xian_wording(content)
+        or has_zanmen_wording(content)
+        or has_touyiju_wording(content)
+        or has_bookish_verb_complement(content)
+        or has_scene_text_as_question(content)
+    )
+
+
+def _has_any_wording_issue_c(content: str) -> bool:
+    return (
+        has_xian_wording(content)
+        or has_zanmen_wording(content)
+        or has_touyiju_wording(content)
+        or has_bookish_verb_complement(content)
+    )
+
+
 def find_affected_track_a(existing: list[dict]) -> set[tuple[str, str]]:
     affected = set()
     for obj in existing:
         if obj["meta"]["track"] != "A":
             continue
-        if has_xian_wording(obj["chosen"][0]["content"]):
+        if _has_any_wording_issue_a(obj["chosen"][0]["content"]):
             affected.add((obj["meta"]["scenario_id"], obj["meta"]["step"]))
     return affected
 
@@ -217,7 +239,7 @@ def find_affected_track_c(existing: list[dict]) -> set[str]:
     for obj in existing:
         if obj["meta"]["track"] != "C":
             continue
-        if has_xian_wording(obj["chosen"][0]["content"]):
+        if _has_any_wording_issue_c(obj["chosen"][0]["content"]):
             affected.add(obj["meta"]["emotion_tone"])
     return affected
 
