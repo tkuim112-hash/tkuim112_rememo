@@ -699,6 +699,11 @@ class TherapyOrchestrator:
         """
         收尾引導：三回合結束後帶領長者從回憶回到現實，詢問感受或正向回憶。
 
+        2026-07-31 曾試過拆成「收縮期→結果期」兩次獨立呼叫（對應 Chao, Chen,
+        Liu, & Clark, 2008 的四階段模型），但實測本地模型（DPO 訓練資料 Track D
+        一律是「收尾語+問題」成對出現）看到只要求單一欄位的新任務形狀時會退化成
+        逐字複誦長者的話，收尾語品質反而比單次呼叫差，因此改回單次生成。
+
         retry_feedback: 見 _generate_question 的同名參數說明。
         """
         # 讀 app/prompts/closing.txt，跟 dpo/collect_data.py 的 Track D 共用同一份
@@ -876,7 +881,8 @@ class TherapyOrchestrator:
             f"場景文字：（30-60字，給長者聽的場景描述）\n"
             f"問題：（≤15字，開放式，開頭要有畫面中的具體物件）\n"
             f"問題類型：{_STEP_TYPE_LABEL[step]}\n"
-            f"本回合已涵蓋的W：（只填W名稱，不要加括號說明）"
+            f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個W維度名稱本身，"
+            f"不要自創其他詞彙、不要加括號說明）"
         )
 
         messages = [
@@ -1009,7 +1015,8 @@ class TherapyOrchestrator:
             f"場景文字：（15-30字，幫長者重新聚焦）\n"
             f"問題：（≤15字，開放式，開頭要有畫面中的具體物件）\n"
             f"問題類型：STEP3補問\n"
-            f"本回合已涵蓋的W：（只填W名稱，不要加括號說明）"
+            f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個W維度名稱本身，"
+            f"不要自創其他詞彙、不要加括號說明）"
         )
 
         messages = [

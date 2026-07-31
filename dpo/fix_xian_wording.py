@@ -25,6 +25,57 @@ import collect_data as cd
 import filter_data as fd
 
 _XIAN_RE = re.compile(r"先(做|夾|準備|備|看|想|說|走|怎麼)")
+_ZANMEN_RE = re.compile(r"咱")
+_TOUYIJU_RE = re.compile(r"頭一句(?!話)")
+_BOOKISH_VC_RE = re.compile(r"做下來|說下去")
+_SCENE_AS_QUESTION_RE = re.compile(r"(呢|嗎)[。！.!]?\s*$")
+
+# 以下 4 條是 QUESTION_REJECTION_RULES / TRACK_C_REJECTION_RULES 裡結構性、
+# 不需要語意判斷就能穩定判斷的規則，改用確定性 regex 而不是丟給 Haiku 判斷——
+# 實測同一句明顯的是非題丟給 Haiku 判斷 4 次只抓到 1 次，這種格式層級的規則
+# regex 比 LLM 判斷可靠得多。
+_YESNO_END_RE = re.compile(r"嗎[？?]?\s*$")
+_YESNO_PHRASE_RE = re.compile(r"有沒有|是不是|會不會|要不要|對不對|好不好")
+_PUNCT_RE = re.compile(r"[，。、！？!?,.\s「」『』（）()]")
+_MEMORY_TEST_START_RE = re.compile(r"^你?(還記得|記不記得)")
+
+# 這 4 條交給 Haiku 語意判斷（覆蓋 QUESTION_REJECTION_RULES 扣掉上面 4 條後的
+# 其餘 7 條：no_anchor、wrong_w_priority、leading_question、touches_taboo、
+# treats_image_as_real、template_echo、elder_as_photo_subject）
+_DETERMINISTIC_RULE_NAMES = {"is_yesno", "double_question", "too_long", "memory_test"}
+
+
+def has_yesno_wording(content: str) -> bool:
+    q = extract_question(content)
+    return bool(_YESNO_END_RE.search(q)) or bool(_YESNO_PHRASE_RE.search(q))
+
+
+def has_double_question(content: str) -> bool:
+    q = extract_question(content)
+    return (q.count("？") + q.count("?")) > 1
+
+
+def has_too_long_question(content: str) -> bool:
+    q = extract_question(content)
+    return len(_PUNCT_RE.sub("", q)) > 15
+
+
+def has_memory_test_wording(content: str) -> bool:
+    q = extract_question(content)
+    return bool(_MEMORY_TEST_START_RE.match(q))
+
+
+def check_deterministic_rules(content: str) -> str | None:
+    """回傳第一個命中的確定性規則名稱，全部通過回傳 None。"""
+    if has_yesno_wording(content):
+        return "is_yesno"
+    if has_double_question(content):
+        return "double_question"
+    if has_too_long_question(content):
+        return "too_long"
+    if has_memory_test_wording(content):
+        return "memory_test"
+    return None
 
 
 def extract_question(content: str) -> str:
@@ -37,9 +88,106 @@ def extract_question(content: str) -> str:
     return ""
 
 
+def extract_scene_text(content: str) -> str:
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("場景文字："):
+            return line[len("場景文字："):].strip()
+    return ""
+
+
 def has_xian_wording(content: str) -> bool:
     q = extract_question(content)
     return bool(_XIAN_RE.search(q))
+
+
+def has_zanmen_wording(content: str) -> bool:
+    """「咱們／咱」不限於問題句，承接語等其他欄位也可能出現，所以掃整段內容。"""
+    return bool(_ZANMEN_RE.search(content))
+
+
+def has_touyiju_wording(content: str) -> bool:
+    """「頭一句」省略「話」字語法不完整，同樣不限於問題句，掃整段內容。"""
+    return bool(_TOUYIJU_RE.search(content))
+
+
+def has_bookish_verb_complement(content: str) -> bool:
+    """只攔已知踩到過的生硬動補搭配（做下來/說下去），不是窮舉所有書面翻譯腔。"""
+    return bool(_BOOKISH_VC_RE.search(content))
+
+
+def has_scene_text_as_question(content: str) -> bool:
+    """場景文字偷埋問句（用「呢/嗎」結尾），會跟後面的「問題：」重複問兩次。
+    只檢查「場景文字：」這一行，Track C 的「承接語：」不適用這條規則。
+    """
+    scene = extract_scene_text(content)
+    return bool(scene) and bool(_SCENE_AS_QUESTION_RE.search(scene))
+
+
+# 不屬於 QUESTION_REJECTION_RULES / TRACK_C_REJECTION_RULES、但同樣需要語意判斷
+# 的額外檢查項目，併入同一次 Haiku 呼叫，不多花一次 API 成本。
+_EXTRA_SEMANTIC_RULES = {
+    "fabricated_biography": "在場景文字、思考、或問題裡把長者本人沒有根據的具體人生"
+    "事實、事件或人際關係當成既定事實來寫（例如編造具體服務年資、跟誰的關係、某個"
+    "事件的具體經過），而不是根據已知的長者背景資料或長者剛才親口說過的話",
+}
+
+
+def build_chosen_validation_prompt(
+    chosen: str, rules: dict[str, str], taboos: list[str] | None = None
+) -> str:
+    taboo_str = "、".join(taboos) if taboos else "無"
+    rules_text = "\n".join(f"{i + 1}. {name}：{desc}" for i, (name, desc) in enumerate(rules.items()))
+    return f"""以下是一則懷舊治療 AI 要對長者說的問題回應，理論上應該是完全遵守規則的正面
+示範（chosen）：
+
+{chosen}
+
+【這位長者的禁忌話題】
+{taboo_str}
+
+請檢查這則回應有沒有不小心違反下面任何一條規則。這些規則原本是設計來故意生成
+「違規負面範例」用的，這裡要反過來用——檢查這則「理論上應該正確」的範例有沒有
+意外也踩到其中任何一條：
+
+{rules_text}
+
+嚴格照這個格式輸出，不要多寫任何說明或理由：
+如果沒有違反任何一條，只輸出：PASS
+如果違反了其中一條或多條，輸出：FAIL: <違反的規則名稱，用逗號分隔>"""
+
+
+def check_chosen_against_rules(
+    chosen: str, rules: dict[str, str], taboos: list[str] | None = None
+) -> str | None:
+    """反向檢查 chosen 有沒有不小心違反 rules 裡任何一條規則（這些規則原本只用來
+    生成 rejected 反例，從沒反過來驗證過 chosen 本身）。回傳 None 代表通過；
+    否則回傳違規規則名稱（字串）。
+
+    格式層級的規則（is_yesno/double_question/too_long/memory_test，見
+    _DETERMINISTIC_RULE_NAMES）先用確定性 regex 判斷——實測同一句明顯的是非題
+    丟給 Haiku 判斷 4 次只抓到 1 次，這類規則 regex 遠比 LLM 判斷可靠。剩下需要
+    語意判斷的規則（no_anchor/wrong_w_priority/leading_question/touches_taboo/
+    treats_image_as_real/template_echo/elder_as_photo_subject）才呼叫 Haiku。
+    """
+    det = check_deterministic_rules(chosen)
+    if det and det in rules:
+        return det
+
+    llm_rules = {name: desc for name, desc in rules.items() if name not in _DETERMINISTIC_RULE_NAMES}
+    llm_rules.update(_EXTRA_SEMANTIC_RULES)
+
+    prompt = build_chosen_validation_prompt(chosen, llm_rules, taboos=taboos)
+    try:
+        result = cd.call_claude(prompt, model=cd.MODEL_REJECTED)
+        time.sleep(cd.REQUEST_DELAY)
+    except Exception as e:
+        print(f"    ✗ chosen 規則驗證呼叫失敗：{e}（視為通過，不阻擋）")
+        return None
+    result = result.strip()
+    if result.upper().startswith("PASS"):
+        return None
+    return result
 
 
 def load_existing() -> list[dict]:
@@ -97,8 +245,25 @@ def regenerate_track_a_scenario_step(sc: dict, step: str) -> list[dict]:
     if has_xian_wording(chosen):
         print("    ! 重新生成後仍是「先」語法，跳過此組（需要人工檢查）")
         return []
+    if has_zanmen_wording(chosen):
+        print("    ! 重新生成後出現「咱們／咱」，跳過此組（需要人工檢查）")
+        return []
+    if has_touyiju_wording(chosen):
+        print("    ! 重新生成後出現「頭一句」（省略話字），跳過此組（需要人工檢查）")
+        return []
+    if has_bookish_verb_complement(chosen):
+        print("    ! 重新生成後出現生硬動補搭配（做下來/說下去），跳過此組（需要人工檢查）")
+        return []
+    if has_scene_text_as_question(chosen):
+        print("    ! 重新生成後場景文字偷埋問句（呢/嗎結尾），跳過此組（需要人工檢查）")
+        return []
     if fd.has_leaked_self_check(chosen):
         print("    ! 重新生成後偵測到自我檢查洩漏，跳過此組（需要人工檢查）")
+        return []
+    taboos = elder.get("taboos", [])
+    violation = check_chosen_against_rules(chosen, cd.QUESTION_REJECTION_RULES, taboos=taboos)
+    if violation:
+        print(f"    ! chosen 違反規則檢查：{violation}，跳過此組（需要人工檢查）")
         return []
 
     step_responses = {
@@ -106,7 +271,6 @@ def regenerate_track_a_scenario_step(sc: dict, step: str) -> list[dict]:
         "STEP2": sc.get("elder_step1_response", ""),
         "STEP3": sc.get("elder_step2_response", ""),
     }
-    taboos = elder.get("taboos", [])
     inference_prompt = cd.build_inference_prompt(
         step, elder, scene, covered_w,
         topic_category=sc.get("topic_category"),
@@ -165,8 +329,21 @@ def regenerate_track_c_scenario(sc: dict) -> list[dict]:
     if has_xian_wording(chosen):
         print("    ! 重新生成後仍是「先」語法，跳過此組（需要人工檢查）")
         return []
+    if has_zanmen_wording(chosen):
+        print("    ! 重新生成後出現「咱們／咱」，跳過此組（需要人工檢查）")
+        return []
+    if has_touyiju_wording(chosen):
+        print("    ! 重新生成後出現「頭一句」（省略話字），跳過此組（需要人工檢查）")
+        return []
+    if has_bookish_verb_complement(chosen):
+        print("    ! 重新生成後出現生硬動補搭配（做下來/說下去），跳過此組（需要人工檢查）")
+        return []
     if fd.has_leaked_self_check(chosen):
         print("    ! 重新生成後偵測到自我檢查洩漏，跳過此組（需要人工檢查）")
+        return []
+    violation = check_chosen_against_rules(chosen, cd.TRACK_C_REJECTION_RULES, taboos=taboos)
+    if violation:
+        print(f"    ! chosen 違反規則檢查：{violation}，跳過此組（需要人工檢查）")
         return []
 
     covered_w = cd._covered_w_before(sc["next_w"])
