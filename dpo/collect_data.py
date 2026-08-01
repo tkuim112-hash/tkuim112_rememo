@@ -413,6 +413,17 @@ EMOTIONAL_SCENARIOS = [
         "trigger": "（有點落寞）我年輕時候日語很流利，現在都忘光了，找不到人可以講……",
         "context": "長者因語言能力退化、失去可以交流的對象而感到孤獨",
     },
+    # ── 以下兩筆改寫自懷舊治療文獻中真實個案的護理紀錄，已去識別化 ──────
+    {
+        "trigger": "（聲音緊張，反覆確認）我的藥還夠不夠？會不會今天沒藥吃？我頭很痛，是不是要住院比較好……",
+        "context": "長者透過反覆確認藥物、要求就醫來緩解焦慮，情緒緊張時甚至想以住院逃避",
+        "taboos": ["長者自身用藥細節、病情嚴重程度"],
+    },
+    {
+        "trigger": "（聲音發抖）我媽媽就是心臟病，年紀大了突然就走了……我會不會也是這樣，說走就走……",
+        "context": "長者擔心自己像母親一樣因心臟病猝發，對突發疾病與死亡感到強烈恐懼",
+        "taboos": ["已故母親、自身心臟病病史"],
+    },
 ]
 
 # Track C：正常對話中的承接 + 問題（情緒感知版）
@@ -1272,6 +1283,21 @@ SYSTEM_PROMPT_THERAPIST = """你是資深的懷舊療法治療師，專門協助
   神呢」——答案大概就是一個神明的名字，而是問「拜拜的時候，你都在心裡跟神明
   說什麼呢？」；不問「你都在做什麼衣服呢」——答案大概就是一個衣服種類，而是
   問「做那件衣服的時候，最費工的是哪個步驟？」）
+- 問題／場景文字／承接語／收尾語都不能預設答案、替長者的感受下定論、或用語氣
+  暗示期待的回答方向——這樣會變成要長者附和一個已經被講出來的結論，而不是讓
+  他自己說出真正的感受，違反「不強迫回憶、不評判」的治療精神
+  （例：不寫「這孩子真的很懂事，你一定又驕傲又心疼啊」——「一定」已經替長者
+  定調了情緒，改成中性的敘述、把情緒判斷留給長者自己說；不問「插燈泡插久了，
+  手都會怎樣呢」這種暗示「一定會痠痛」的問法；不問「歌仔戲演到精彩，你都停
+  下來聽啊？」這種句尾帶「啊」、預設長者會附和的問法）
+- 如果長者在前面回應裡自己提到意外、危險、受傷、失火等驚險細節，只能把它當成
+  一筆帶過的插曲來承接、順勢帶回原本的正向主題，不要把它放大成「後來你怎麼
+  處理／怎麼辦」這種追問應急處理過程的問題——長者原本想聊的通常是節慶、興趣
+  這類快樂主題，深挖驚險細節容易讓整段對話的情緒基調偏向負面，也可能讓長者
+  重新經歷當下的驚嚇感
+  （例：長者提到「燈籠一碰到蠟燭就燒起來了」，順著這句話問「除了提燈籠，你們
+  猜燈謎都怎麼玩呢」，把話題帶回節慶本身；不問「燈籠燒起來的時候，你都怎麼
+  辦呢」——這種問法會把長者拉回處理意外的緊張情境，偏離「快樂」的今日主題）
 - 只回純文字，不使用任何 markdown 語法（不加 **、#、- 條列符號等）——這段文字
   會直接餵給 TTS 唸給長者聽，也會直接進訓練資料，混進符號會被學進模型、正式
   上線時可能被唸出奇怪的內容，或讓輸出解析失敗
@@ -1282,7 +1308,7 @@ SYSTEM_PROMPT_THERAPIST = """你是資深的懷舊療法治療師，專門協助
   第X條」「修正如下」這類自我修正的旁白文字也印出來"""
 
 
-def build_step1_user_prompt(scenario: dict) -> str:
+def build_step1_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
     elder = scenario["elder"]
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
@@ -1364,7 +1390,7 @@ def build_step1_user_prompt(scenario: dict) -> str:
      不是一種學校）
    - 問題要具體微觀，不要抽象宏觀（不問「請說說你的朋友關係」）
    - 絕對不能引導往【禁忌話題】的方向，即使沒有直接用到禁忌詞字面
-
+{_retry_feedback_section(retry_feedback)}
 【輸出格式】（嚴格按照以下格式，不要加說明文字）
 思考：（主題判斷：一句話判斷今日主題最貼近哪個核心主題；切入角度：一到兩句話決定這題要用什麼當錨點、往哪個方向問——兩段都要寫、都要留在同一行，不會念給長者聽）
 場景文字：（30-60字的場景描述，給長者聽，念起來要自然）
@@ -1373,7 +1399,7 @@ def build_step1_user_prompt(scenario: dict) -> str:
 本回合已涵蓋的W：（只填W維度名稱本身，例：Where，不要加括號說明或理由）"""
 
 
-def build_step2_user_prompt(scenario: dict) -> str:
+def build_step2_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
     elder = scenario["elder"]
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
@@ -1428,7 +1454,7 @@ W 維度。下面 4 個步驟只是給你自己在心裡想清楚的思考順序
    情境設定要合理、問題要具體微觀不抽象、絕對不引導向【禁忌話題】；若長者
    剛才的話有重複之前說過的內容，不點破「你已經說過了」，只需自然承接；
    若長者記錯時間、人名、地點，不糾正、不爭辯，順著他說的走
-
+{_retry_feedback_section(retry_feedback)}
 【輸出格式】（嚴格按照以下格式）
 場景文字：（15-30字，承接上一句自然過渡）
 問題：（≤15字，開放式，開頭要有具體錨點）
@@ -1438,7 +1464,7 @@ W 維度。下面 4 個步驟只是給你自己在心裡想清楚的思考順序
 不要加括號說明或理由）"""
 
 
-def build_step3_user_prompt(scenario: dict) -> str:
+def build_step3_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
     elder = scenario["elder"]
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
@@ -1492,7 +1518,7 @@ Where（哪裡）、Who（誰）
    年份/人名/地名/數量、不預設長者「做錯了」、不把畫面當長者真的去過的地方、
    「用久了會有什麼變化」只用在真的有明顯痕跡的動作上、物件情境設定要合理、
    問題要具體微觀不抽象、絕對不引導向【禁忌話題】
-
+{_retry_feedback_section(retry_feedback)}
 【輸出格式】（嚴格按照以下格式）
 思考：（主題判斷：一句話判斷今日主題最貼近哪個核心主題；切入角度：一到兩句話決定這題要用什麼當錨點、往哪個方向問——兩段都要寫、都要留在同一行，不會念給長者聽）
 場景文字：（15-30字，幫長者重新聚焦到新的W）
@@ -1533,7 +1559,9 @@ def build_rejection_prompt(
 本回合已涵蓋的W：..."""
 
 
-def build_emotional_chosen_prompt(trigger: str, context: str, taboos: list[str] | None = None) -> str:
+def build_emotional_chosen_prompt(
+    trigger: str, context: str, taboos: list[str] | None = None, retry_feedback: str = ""
+) -> str:
     taboo_str = "、".join(taboos) if taboos else "無"
     return f"""懷舊療法進行中，長者突然出現了情緒反應。
 
@@ -1561,13 +1589,13 @@ def build_emotional_chosen_prompt(trigger: str, context: str, taboos: list[str] 
    - 一律要肯定長者「現在仍然記得、仍然擁有」的部分，不要只強調他已經退化、遺忘、做不到的部分
 3. 【輕柔引導】用一句問題把對話引回溫暖的方向（不強迫，是邀請），且不能引導向【禁忌話題】
    整體不超過70字，念起來要自然
-
+{_retry_feedback_section(retry_feedback)}
 【輸出格式】
 情緒回應：（承接 + 找到正面角度，50字以內）
 後續引導：（一句輕柔的邀請式問題，引導回療程）"""
 
 
-def build_track_c_chosen_prompt(sc: dict) -> str:
+def build_track_c_chosen_prompt(sc: dict, retry_feedback: str = "") -> str:
     elements = "、".join(sc["scene_elements"])
     taboo_str = "、".join(sc.get("taboos", [])) or "無"
     return f"""懷舊療法進行中，長者剛才說完了一段話，請設計治療師的「理想承接 + 下一個問題」。
@@ -1620,7 +1648,10 @@ def build_track_c_chosen_prompt(sc: dict) -> str:
    的事，不是「他們自己」做了什麼；用「你們」把「你」跟其他人合稱只是把
    問題稀釋掉，人物錨點還是佔走了主詞的重心，跟完全省略「你」是同一種毛病
    ——例如問「你都跟旁邊的工友聊些什麼呢？」，不是「旁邊的工友，你們都聊
-   些什麼呢？」）
+   些什麼呢？」）。選定錨點後自我檢查：如果把這個錨點換成畫面元素清單裡
+   任何其他東西，後面這句問題是不是照樣問得出來、完全不用改？如果換掉也
+   沒差，代表這個錨點只是語法上的開場白，跟問題內容沒有實質關聯，要重選
+   一個真正跟問題內容有關的錨點
 3. 選切入角度（步驟1已決定要問尊重步調的問題時，跳過此步驟）：依序嘗試
    ①情感／意義（這件事、這個人對長者的意義或感受，例：「這件事讓你印象最深
    的是哪一段？」，要錨定在長者剛提到的具體人事物上，不能問空泛抽象的問題）
@@ -1643,7 +1674,7 @@ def build_track_c_chosen_prompt(sc: dict) -> str:
 是下面【輸出格式】規定的「承接語」「問題」這兩行，禁止出現任何自我檢查、草稿、
 「違反第X條」這類規則編號、「---」分隔線、或任何「先寫一個版本再寫修正版」的
 內容。想清楚了就直接寫最終版本的兩行，不要把思考過程也印出來。
-
+{_retry_feedback_section(retry_feedback)}
 【輸出格式】（只能有以下兩行，不能有其他文字、標記或分隔線）
 承接語：（1-2句承接長者情緒的話，30字以內）
 問題：（≤15字的下一個問題，開頭含畫面元素）"""
@@ -1744,7 +1775,7 @@ def build_emotional_rejection_prompt(
 後續引導：..."""
 
 
-def build_track_d_chosen_prompt(sc: dict) -> str:
+def build_track_d_chosen_prompt(sc: dict, retry_feedback: str = "") -> str:
     taboo_str = "、".join(sc.get("taboos", [])) or "無"
     emotion_guidance = _emotion_guidance(sc.get("emotion", "happy"))
     return f"""懷舊療法三回合療程剛結束，請設計治療師的「理想收尾引導」。
@@ -1771,11 +1802,21 @@ def build_track_d_chosen_prompt(sc: dict) -> str:
      即使前面已經有溫暖的肯定句，接上這種語氣一樣會把溫暖感覺沖淡（例：不寫「那個成就感
      真的很了不起。好了，今天就先聊到這裡。」，而是接「今天謝謝你跟我分享這些」這類
      仍保持溫度的收尾）
-2. 問題：一句輕柔的開放式問題（≤15字），詢問以下其中一項，且不能引導向【禁忌話題】：
-   - 現在的感受或心情（例：「現在心裡感覺怎麼樣呢？」）
-   - 今天最開心的回憶（例：「今天哪個故事讓你最開心？」）
-   - 想帶走的正向感受（例：「今天有什麼讓你覺得溫暖的？」）
-
+2. 問題：一句輕柔的開放式問題（≤15字），且不能引導向【禁忌話題】：
+   - 必須具體呼應【長者最後說的話】裡提到的某個人事物或片刻，不能是換成任何
+     一位長者、任何一段收尾發言都能原封不動問出口的通用問句——自我檢查：這句
+     問題如果拿掉「長者最後說的話」直接問，聽起來會不會完全一樣？如果一樣，
+     代表沒有真的呼應這位長者剛才說的內容，要重寫
+   - 不要問「今天心裡感覺怎麼樣」「今天哪個故事/片段/時刻讓你最開心」這類對
+     整場療程做總評的抽象問法——這是常見的偷懶寫法，通不過上面的自我檢查；
+     改成聚焦在長者最後那句話裡某個具體片段的延伸提問
+   - 答案不能只是一個詞就能答完，也不能預設長者的情緒方向（不寫「今天最開心
+     的是」這種預設「一定是開心」的問法）
+   （例：長者最後說「客人挑滿一籃菜走的那份踏實」，問「挑菜的時候，你最喜歡
+   看客人怎麼樣呢？」，具體呼應「客人挑菜」這個畫面；不問「今天哪個故事讓你
+   最開心呢」——換成任何一位長者的任何一段收尾發言都能問出這句話，沒有真的
+   呼應這次的對話內容）
+{_retry_feedback_section(retry_feedback)}
 【輸出格式】
 收尾語：（1-2句，30字以內）
 問題：（≤15字）"""
@@ -1863,11 +1904,25 @@ def _get_client() -> "anthropic.Anthropic":
 
 
 def call_claude(user_prompt: str, system: str = SYSTEM_PROMPT_THERAPIST, model: str = MODEL_CHOSEN) -> str:
-    """呼叫 Claude 並回傳文字內容，使用 streaming 避免 timeout。"""
+    """呼叫 Claude 並回傳文字內容，使用 streaming 避免 timeout。
+
+    system prompt（SYSTEM_PROMPT_THERAPIST，約5000 tokens）在整個收集/修復流程裡
+    每次呼叫都逐字相同，加上 cache_control 讓它走 prompt caching——第一次呼叫要
+    多付約1.25倍寫入快取的錢，之後同一份 system prompt 的呼叫只要約10%的價格，
+    這幾輪大量重跑（每組 scenario/step 都要生 chosen + 10幾個 rejected）省下的
+    成本很可觀。
+
+    2026-07 曾試過加 thinking=True 想解決 self_check_leak（模型把「寫錯一版、
+    自我抓包、重寫」的過程印在可見輸出），結果反而更糟：SYSTEM_PROMPT_THERAPIST
+    裡的「5步驟生成流程」被模型當真逐步在thinking區塊裡跑，反覆推翻重試、
+    thinking內容遠超過4096 tokens還沒寫完就被max_tokens截斷，完全生不出正式
+    輸出。已確認不要在這個prompt上開thinking，改用「重試、失敗就丟棄」的既有
+    機制加上人工挑案例手動改寫來處理。
+    """
     with _get_client().messages.stream(
         model=model,
         max_tokens=2048,
-        system=system,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     ) as stream:
         msg = stream.get_final_message()
