@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 export default function ResetPasswordPage() {
@@ -9,6 +10,39 @@ export default function ResetPasswordPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [success, setSuccess] = useState(false); // 控制是否顯示成功畫面
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const searchParams = useSearchParams();
+  const email = searchParams.get("email") ?? "";
+
+  async function handleSubmit(e: { preventDefault: () => void }) {
+    e.preventDefault();
+    setError("");
+
+    if (password !== confirm) {
+      setError("兩次輸入的密碼不一致");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "重設密碼失敗，請稍後再試");
+        return;
+      }
+      setSuccess(true);
+    } catch {
+      setError("網路連線失敗，請稍後再試");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   // 成功畫面
   if (success) {
@@ -65,13 +99,7 @@ export default function ResetPasswordPage() {
         </div>
 
         {/* 表單 */}
-        <form
-          className="w-full flex flex-col gap-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setSuccess(true); // 提交後顯示成功畫面
-          }}
-        >
+        <form className="w-full flex flex-col gap-4" onSubmit={handleSubmit}>
           {/* 新密碼 */}
           <div className="flex flex-col gap-2">
             <label className="font-medium text-[#1a1a1a] text-[15px]">新密碼</label>
@@ -81,6 +109,7 @@ export default function ResetPasswordPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="請輸入至少 8 個字元"
+                required
                 className="w-full border border-[#e0e0e0] rounded-xl px-4 py-3.5 pr-12 text-[#1a1a1a] placeholder:text-[#1a1a1a]/40 outline-none focus:border-[#1a1a1a] transition-colors text-[15px]"
               />
               <button
@@ -108,6 +137,7 @@ export default function ResetPasswordPage() {
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
                 placeholder="請再次輸入密碼"
+                required
                 className="w-full border border-[#e0e0e0] rounded-xl px-4 py-3.5 pr-12 text-[#1a1a1a] placeholder:text-[#1a1a1a]/40 outline-none focus:border-[#1a1a1a] transition-colors text-[15px]"
               />
               <button
@@ -126,12 +156,15 @@ export default function ResetPasswordPage() {
             </div>
           </div>
 
+          {error && <p className="text-[14px] text-[#e05c3a]">{error}</p>}
+
           {/* 重設密碼按鈕 */}
           <button
             type="submit"
-            className="w-full bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px] mt-2"
+            disabled={loading}
+            className="w-full bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px] mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            重設密碼
+            {loading ? "處理中..." : "重設密碼"}
           </button>
         </form>
 

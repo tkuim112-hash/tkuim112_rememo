@@ -1,16 +1,62 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-const MOCK_EMAIL = "user@example.com"; // 模擬收件信箱，之後改為從路由或 state 取得
 const OTP_LENGTH = 6; // 驗證碼位數
 
 export default function VerifyEmailPage() {
   const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill("")); // 每格一個字元
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [resent, setResent] = useState(false);
   const inputs = useRef<(HTMLInputElement | null)[]>([]); // 各格 input 的 ref
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const email = searchParams.get("email") ?? "";
+
+  async function handleVerify() {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code: otp.join("") }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "驗證失敗，請稍後再試");
+        return;
+      }
+      router.push(`/reset-password?email=${encodeURIComponent(email)}`);
+    } catch {
+      setError("網路連線失敗，請稍後再試");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResend() {
+    setError("");
+    setResent(false);
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error ?? "重新發送失敗，請稍後再試");
+        return;
+      }
+      setResent(true);
+    } catch {
+      setError("網路連線失敗，請稍後再試");
+    }
+  }
 
   // 處理每格輸入
   function handleChange(value: string, index: number) {
@@ -66,7 +112,7 @@ export default function VerifyEmailPage() {
         <div className="flex flex-col items-center gap-2 text-center">
           <h1 className="text-[28px] font-semibold text-[#1a1a1a]">驗證您的電子信箱</h1>
           <p className="text-[15px] text-[#888]">我們已將驗證碼發送至</p>
-          <p className="text-[15px] text-[#1a1a1a] font-medium">{MOCK_EMAIL}</p>
+          <p className="text-[15px] text-[#1a1a1a] font-medium">{email}</p>
         </div>
 
         {/* 6 格 OTP 輸入 */}
@@ -86,20 +132,26 @@ export default function VerifyEmailPage() {
           ))}
         </div>
 
+        {error && <p className="text-[14px] text-[#e05c3a]">{error}</p>}
+
         {/* 繼續按鈕 */}
         <button
           type="button"
-          onClick={() => router.push("/reset-password")}
-          className="w-full bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px]"
+          onClick={handleVerify}
+          disabled={loading || otp.some((d) => !d)}
+          className="w-full bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px] disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          繼續
+          {loading ? "驗證中..." : "繼續"}
         </button>
 
         {/* 重新發送 */}
         <div className="flex flex-col items-center gap-1">
-          <p className="text-[14px] text-[#888]">沒有收到驗證碼？</p>
+          <p className="text-[14px] text-[#888]">
+            {resent ? "驗證碼已重新發送" : "沒有收到驗證碼？"}
+          </p>
           <button
             type="button"
+            onClick={handleResend}
             className="text-[14px] font-medium text-[#e05c3a] hover:text-[#c04a2c] transition-colors"
           >
             點此重新發送
