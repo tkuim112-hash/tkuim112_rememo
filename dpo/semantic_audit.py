@@ -135,12 +135,29 @@ def regex_checks_fail(content: str) -> str | None:
     return None
 
 
+def _describe_deterministic_fail(content: str, rule_name: str) -> str:
+    """把確定性regex檢查的結果，展開成模型看得懂、能據以修正的具體說明——只回傳
+    「FAIL:too_long」這種光禿禿的標籤，模型不知道超了幾個字、原句是什麼，等於
+    沒拿到有用的回饋，retry_feedback 機制對這幾條規則就形同虛設。"""
+    q = fx.extract_question(content)
+    if rule_name == "too_long":
+        length = len(fx._PUNCT_RE.sub("", q))
+        return f"問題「{q}」共{length}字，超過15字上限{length - 15}字，請把這句話縮短到15字以內，可以拿掉不影響意思的修飾詞或合併語意重複的部分"
+    if rule_name == "is_yesno":
+        return f"問題「{q}」是是非題（用了「嗎／有沒有／是不是／會不會／要不要／對不對／好不好」這類句型），只能換一種開放式問法，不是刪掉這些字就好"
+    if rule_name == "double_question":
+        return f"問題「{q}」裡有兩個問號，等於一次問兩件事，長者會不知道先回答哪一個，請只保留一個問題"
+    if rule_name == "memory_test":
+        return f"問題「{q}」用「你還記得／記不記得」開頭，這是在測長者的記憶力而不是邀請他分享，請拿掉這個開頭、直接問內容本身"
+    return rule_name
+
+
 def validate_full(chosen: str, taboos: list[str], rules: dict[str, str], context: str) -> str:
     """完整驗證：格式regex → 內容regex → 規則LLM判斷 → 語意/好問題LLM判斷。
     回傳 "PASS" 或 "FAIL:<原因>"。"""
     det = fx.check_deterministic_rules(chosen)
     if det and det in rules:
-        return f"FAIL:{det}"
+        return f"FAIL:{det}:{_describe_deterministic_fail(chosen, det)}"
     r = regex_checks_fail(chosen)
     if r:
         return f"FAIL:{r}"
