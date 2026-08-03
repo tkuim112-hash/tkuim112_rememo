@@ -150,31 +150,43 @@ class TherapyOrchestrator:
             user = {**user, "today_topic": topic_override, "topic_category": [topic_override]}
         print(f"  → {user['name']}，主題: {user['today_topic']}")
 
+        # ── 步驟 1：RAG 最先撈（跟生圖無關，可以最早發出）──
         _t1 = _time.time()
-        image_plan = await self._plan_image(user)
-        print(f"  → [計時] LLM 規劃圖片: {_time.time()-_t1:.1f}s")
+        memories = await self.rag.retrieve_memories(
+            user_id=user_id,
+            query=f"{user['today_topic']} {user['main_occupation']}",
+            limit=3,
+        )
+        # RAG 失敗時（Ollama 還沒好）等 3 秒後 retry 一次
+        if not memories:
+            import asyncio as _asyncio
+            print(f"  → [RAG] 第一次失敗，等 3 秒後 retry...")
+            await _asyncio.sleep(3)
+            memories = await self.rag.retrieve_memories(
+                user_id=user_id,
+                query=f"{user['today_topic']} {user['main_occupation']}",
+                limit=3,
+            )
+        print(f"  → [計時] RAG 撈回憶: {_time.time()-_t1:.1f}s")
+
+        # ── 步驟 2：把 memories 餵進 _plan_image，讓 LLM 從回憶挑元素 ──
+        _t2 = _time.time()
+        image_plan = await self._plan_image(user, memories=memories)
+        print(f"  → [計時] LLM 規劃圖片: {_time.time()-_t2:.1f}s")
         print(f"  → 圖片元素: {image_plan['elements']}")
 
         safe_prompt = self.deidentifier.desensitize_text(
             image_plan["image_prompt"], taboos=user["taboos"]
         )
 
-        _t2 = _time.time()
+        _t3 = _time.time()
         image_path = await self.image.generate(
             prompt=safe_prompt,
             session_id=session_id,
             round_number=round_number,
         )
-        print(f"  → [計時] Stability AI 生圖: {_time.time()-_t2:.1f}s")
+        print(f"  → [計時] Stability AI 生圖: {_time.time()-_t3:.1f}s")
         print(f"  → 圖片: {image_path}")
-
-        _t3 = _time.time()
-        memories = await self.rag.retrieve_memories(
-            user_id=user_id,
-            query=f"{user['today_topic']} {user['main_occupation']}",
-            limit=3,
-        )
-        print(f"  → [計時] RAG 撈回憶: {_time.time()-_t3:.1f}s")
 
         _t4 = _time.time()
         q = await guarded_generate(
@@ -575,8 +587,14 @@ class TherapyOrchestrator:
     # 私有：問題生成
     # ══════════════════════════════════════════════════════════════
 
-    async def _plan_image(self, user: dict) -> dict:
-        """請 LLM 規劃圖片元素與生圖 prompt。"""
+    async def _plan_image(self, user: dict, memories: list[dict] | None = None) -> dict:
+        """請 LLM 規劃圖片元素與生圖 prompt，可傳入 memories 讓 LLM 從回憶挑元素。"""
+        memory_section = ""
+        if memories:
+            memory_section = "\n【長者相關回憶（優先從這裡挑場景元素）】\n"
+            for m in memories:
+                memory_section += f"- {m.get('summary', m.get('text', ''))}\n"
+
         prompt = f"""你是懷舊療法的圖片規劃師。請根據長者資料規劃一張場景圖。
 
 【長者資料】
@@ -585,9 +603,10 @@ class TherapyOrchestrator:
 出生地：{user['birth_place']}
 職業背景：{user['main_occupation']}
 今日主題：{user['today_topic']}
-
+{memory_section}
 【任務】
 規劃一張水彩風格的回憶場景圖，符合主題，要能引發長者的回憶。
+若有【長者相關回憶】，優先從其中選取真實場景元素；若無，則依主題自行規劃。
 
 【嚴格規定】
 回傳一個 JSON 物件，**只回 JSON，不要任何說明文字或 markdown 標記**。

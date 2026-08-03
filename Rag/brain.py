@@ -80,22 +80,21 @@ class ElderlyAI:
         return output
 
     def retrieve_memories(self, elder_id, query, limit=3):
-        """純檢索端點核心邏輯：RAG-Fusion + RRF"""
-        # 1. 生成多路查詢（原始查詢保留為其中一路，防止 LLM 改寫偏題）
-        multi_queries = self._generate_multi_queries(query)
-        if query not in multi_queries:
-            multi_queries.append(query)
-        
-        # 2. 多路並行檢索 (僅依據 elder_id 過濾)
-        all_results = []
-        for q in multi_queries:
-            hits = self.db.similarity_search(
-                q, k=5,
-                filter=models.Filter(must=[
-                    models.FieldCondition(key="metadata.elder_id", match=models.MatchValue(value=elder_id))
-                ])
-            )
-            all_results.append(hits)
-
-        # 3. RRF 演算法融合排序
-        return self._rrf_score(all_results, limit=limit)
+        """單次向量搜尋（移除 RAG-Fusion 多查詢 + RRF，減少 Ollama 呼叫次數）"""
+        hits = self.db.similarity_search(
+            query, k=limit,
+            filter=models.Filter(must=[
+                models.FieldCondition(key="metadata.elder_id", match=models.MatchValue(value=elder_id))
+            ])
+        )
+        output = []
+        for rank, doc in enumerate(hits):
+            meta = doc.metadata or {}
+            output.append({
+                "text": doc.page_content,
+                "score": round(1.0 / (1 + rank), 4),
+                "session_id": meta.get("session_id", ""),
+                "emotion": meta.get("emotion", ""),
+                "created_at": meta.get("created_at", ""),
+            })
+        return output

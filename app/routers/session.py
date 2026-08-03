@@ -393,12 +393,14 @@ async def session_start(
         result["state"]["question_number"] = 1
         result["state"]["question_asked_at"] = int(time.time() * 1000)
         tts = request.app.state.tts_service
-        scene_audio_path = await tts.synthesize(
-            text=result["scene_text"],
-            session_id=session_id,
-            round_number=1,
-            turn_number=None,
-        )
+        scene_audio_path = None
+        if result.get("scene_text"):
+            scene_audio_path = await tts.synthesize(
+                text=result["scene_text"],
+                session_id=session_id,
+                round_number=1,
+                turn_number=None,
+            )
         question_audio_path = await tts.synthesize(
             text=result["question"],
             session_id=session_id,
@@ -470,12 +472,14 @@ async def session_round(
         result["state"]["question_asked_at"] = int(time.time() * 1000)
         if result.get("question"):
             tts = request.app.state.tts_service
-            scene_audio_path = await tts.synthesize(
-                text=result["scene_text"],
-                session_id=session_id,
-                round_number=round_number,
-                turn_number=None,
-            )
+            scene_audio_path = None
+            if result.get("scene_text"):
+                scene_audio_path = await tts.synthesize(
+                    text=result["scene_text"],
+                    session_id=session_id,
+                    round_number=round_number,
+                    turn_number=None,
+                )
             question_audio_path = await tts.synthesize(
                 text=result["question"],
                 session_id=session_id,
