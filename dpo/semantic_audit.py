@@ -562,9 +562,16 @@ def cmd_fix(args) -> None:
     print(f"待處理：{len(keys)} 組（{'丟棄後重新生成' if discard else '純新增，不discard'}）")
 
     existing = fx.load_existing()
+    discarded_by_key: dict[tuple, list[dict]] = {}
     if discard:
         to_discard = set(keys)
-        kept = [p for p in existing if meta_to_key(p["meta"]) not in to_discard]
+        kept = []
+        for p in existing:
+            k = meta_to_key(p["meta"])
+            if k in to_discard:
+                discarded_by_key.setdefault(k, []).append(p)
+            else:
+                kept.append(p)
     else:
         kept = existing
     print(f"原有 {len(existing)} 筆，保留 {len(kept)} 筆")
@@ -585,6 +592,10 @@ def cmd_fix(args) -> None:
             new_pairs.extend(pairs)
         else:
             still_failed.append(format_key(key))
+            old_pairs = discarded_by_key.get(key)
+            if old_pairs:
+                log(f"  -> 重新生成失敗，保留舊版本（{len(old_pairs)} 筆），不留空缺")
+                new_pairs.extend(old_pairs)
 
     all_pairs = kept + new_pairs
     with cd.OUTPUT_FILE.open("w", encoding="utf-8") as f:
