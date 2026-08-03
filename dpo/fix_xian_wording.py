@@ -41,7 +41,7 @@ _SCENE_AS_QUESTION_RE = re.compile(r"(呢|嗎)[。！.!]?\s*$")
 # 實測同一句明顯的是非題丟給 Haiku 判斷 4 次只抓到 1 次，這種格式層級的規則
 # regex 比 LLM 判斷可靠得多。
 _YESNO_END_RE = re.compile(r"嗎[？?]?\s*$")
-_YESNO_PHRASE_RE = re.compile(r"有沒有|是不是|會不會|要不要|對不對|好不好")
+_YESNO_PHRASE_RE = re.compile(r"有沒有|是不是|會不會|要不要|對不對|好不好|想不想")
 _PUNCT_RE = re.compile(r"[，。、！？!?,.\s「」『』（）()]")
 _MEMORY_TEST_START_RE = re.compile(r"^你?(還記得|記不記得)")
 

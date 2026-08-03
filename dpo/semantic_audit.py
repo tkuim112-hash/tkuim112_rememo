@@ -13,13 +13,13 @@ fix_track_a_64.py / generate_missing_52.py 等）的邏輯，收斂成單一、�
       終端機，FAIL 詳情寫進 --out 指定的檔案（預設 dpo/data/semantic_audit_fail.txt）。
 
   python dpo/semantic_audit.py gaps
-      比對 scenarios.json / TRACK_C_SCENARIOS / TRACK_D_SCENARIOS 算出的理論key
-      空間，跟 train.jsonl 實際涵蓋的key做差集，列出從沒被生成過的組合。
+      比對 scenarios.json / EMOTIONAL_SCENARIOS / TRACK_C_SCENARIOS / TRACK_D_SCENARIOS
+      算出的理論key空間，跟 train.jsonl 實際涵蓋的key做差集，列出從沒被生成過的組合。
 
-  python dpo/semantic_audit.py fix A:sc074:STEP2 C:happy D:吳阿嬤 B
+  python dpo/semantic_audit.py fix A:sc074:STEP2 B:b001 C:happy D:吳阿嬤
       丟棄指定 key 現有的資料（如果有），用帶 retry_feedback 的生成流程重新產生，
       驗證通過（validate_full）才寫回。key 格式：A:<scenario_id>:<STEP1|STEP2|STEP3>、
-      C:<emotion_tone>、D:<elder_name>、B。
+      B:<emotional_scenario_id>、C:<emotion_tone>、D:<elder_name>。
 
   python dpo/semantic_audit.py fix --from-scan
       丟棄並重新生成上一次 scan 找到的所有 FAIL key（讀 --out 那份報告檔）。
@@ -57,7 +57,7 @@ AUDIT_SYSTEM = """你是嚴格的中文語言品質審查員，負責審查懷�
 （場景文字/承接語/問題/收尾語等）。這些內容會直接用TTS念給有輕微認知障礙的
 長者聽，審查標準是：
 
-1. 邏輯通順：如果內容裡有「思考：」欄位，检查它描述的判斷/角度跟後面實際寫出來
+1. 邏輯通順：如果內容裡有「思考：」欄位，檢查它描述的判斷/角度跟後面實際寫出來
    的場景文字、問題是不是真的對得上——常見錯誤是思考欄位說要問A，但問題卻寫成
    意思不同、對不上的B（例如思考說要問「什麼變化讓長者滿意」，但問題卻寫成
    「你最先看哪裡」，兩者語意不一致）
@@ -172,8 +172,11 @@ def validate_full(chosen: str, taboos: list[str], rules: dict[str, str], context
 
 # ---------------------------------------------------------------------------
 # key 表示法：A key 是 ("A", scenario_id, step)；C 是 ("C", emotion_tone)；
-# D 是 ("D", elder_name)；B 是 ("B",)。字串格式："A:sc074:STEP2"、"C:happy"、
-# "D:吳阿嬤"、"B"。
+# D 是 ("D", elder_name)；B 是 ("B", emotional_scenario_id)。字串格式：
+# "A:sc074:STEP2"、"C:happy"、"D:吳阿嬤"、"B:b001"。
+# 註：B 過去曾經整條track只用一個共用key ("B",)，導致 EMOTIONAL_SCENARIOS
+# 61筆情境裡實際上只有第一筆被生成/稽核過，其餘60筆完全沒有訓練資料、
+# 也沒被gaps/scan發現——2026-08-02 改成每筆情境各自一個key才修正。
 # ---------------------------------------------------------------------------
 
 def parse_key(s: str) -> tuple:
@@ -181,10 +184,8 @@ def parse_key(s: str) -> tuple:
     track = parts[0].upper()
     if track == "A":
         return ("A", parts[1], parts[2])
-    if track in ("C", "D"):
+    if track in ("B", "C", "D"):
         return (track, parts[1])
-    if track == "B":
-        return ("B",)
     raise ValueError(f"無法解析的 key：{s}")
 
 
@@ -196,24 +197,25 @@ def meta_to_key(m: dict) -> tuple | None:
     track = m.get("track")
     if track == "A":
         return ("A", m.get("scenario_id"), m.get("step"))
+    if track == "B":
+        return ("B", m.get("scenario_id"))
     if track == "C":
         return ("C", m.get("emotion_tone"))
     if track == "D":
         return ("D", m.get("scenario_id", "").replace("track_d_", ""))
-    if track == "B":
-        return ("B",)
     return None
 
 
-def load_lookup_tables() -> tuple[dict, dict, dict]:
+def load_lookup_tables() -> tuple[dict, dict, dict, dict]:
     scenarios = json.loads(cd.SCENARIOS_FILE.read_text(encoding="utf-8"))
     by_id = {s["id"]: s for s in scenarios}
+    track_b_by_id = {s["id"]: s for s in cd.EMOTIONAL_SCENARIOS}
     track_c_by_tone = {s["emotion_tone"]: s for s in cd.TRACK_C_SCENARIOS}
     track_d_by_name = {s["elder_name"]: s for s in cd.TRACK_D_SCENARIOS}
-    return by_id, track_c_by_tone, track_d_by_name
+    return by_id, track_b_by_id, track_c_by_tone, track_d_by_name
 
 
-def build_context(key: tuple, m: dict, by_id: dict, track_c_by_tone: dict, track_d_by_name: dict) -> str:
+def build_context(key: tuple, m: dict, by_id: dict, track_b_by_id: dict, track_c_by_tone: dict, track_d_by_name: dict) -> str:
     track = key[0]
     if track == "A":
         sc = by_id.get(key[1])
@@ -225,9 +227,12 @@ def build_context(key: tuple, m: dict, by_id: dict, track_c_by_tone: dict, track
             )
         return f"步驟：{key[2]}，禁忌：{'、'.join(m.get('taboos', [])) or '無'}"
     if track == "B":
+        sc = track_b_by_id.get(key[1])
+        trigger_context = sc.get("context", "") if sc else m.get("trigger_context", "")
+        taboos = sc.get("taboos", []) if sc else m.get("taboos", [])
         return (
-            f"【背景】情緒引導情境：{m.get('trigger_context', '')}\n"
-            f"禁忌：{'、'.join(m.get('taboos', [])) or '無'}"
+            f"【背景】情緒引導情境：{trigger_context}\n"
+            f"禁忌：{'、'.join(taboos) or '無'}"
         )
     if track == "C":
         sc = track_c_by_tone.get(key[1])
@@ -241,14 +246,25 @@ def build_context(key: tuple, m: dict, by_id: dict, track_c_by_tone: dict, track
         return f"長者情緒：{key[1]}"
     if track == "D":
         sc = track_d_by_name.get(key[1])
+        d_rule = (
+            "問題規則：只能問「①現在的感受或心情／②今天最讓長者開心的回憶／③想帶走的"
+            "正向感受」這三類其中一種，不能問其他類型的問題（例如操作細節、旁人是誰這類"
+            "三回合對話裡才問的問題）；但每一類都必須具體呼應長者最後說的話裡提到的某個"
+            "人事物或片刻，不能是換成任何一位長者、任何一段收尾發言都能原封不動問出口的"
+            "通用句（例如「現在心裡感覺怎麼樣呢」「今天哪個故事讓你最開心」這類套死的句型，"
+            "即使屬於允許的三類之一，沒有具體呼應內容一樣不合格）；即使做到具體呼應，也"
+            "絕對不能用「是不是／想不想／會不會／對不對」這類確認型問法把問題包裝成看似"
+            "呼應內容、實際上長者只能回答「是/不是」「想/不想」的是非題，一樣算違規"
+        )
         if sc:
             return (
                 f"【背景】三回合療程收尾，長者：{sc.get('elder_name')}，"
                 f"今日主題：{sc.get('today_topic')}\n"
                 f"長者最後說：「{sc.get('last_elder_response', '')}」\n"
-                f"禁忌：{'、'.join(sc.get('taboos', [])) or '無'}"
+                f"禁忌：{'、'.join(sc.get('taboos', [])) or '無'}\n"
+                f"{d_rule}"
             )
-        return f"三回合療程收尾，今日主題：{m.get('today_topic', '')}"
+        return f"三回合療程收尾，今日主題：{m.get('today_topic', '')}\n{d_rule}"
     return ""
 
 
@@ -272,7 +288,8 @@ def expected_key_space() -> set[tuple]:
         expected.add(("C", sc["emotion_tone"]))
     for sc in cd.TRACK_D_SCENARIOS:
         expected.add(("D", sc["elder_name"]))
-    expected.add(("B",))
+    for sc in cd.EMOTIONAL_SCENARIOS:
+        expected.add(("B", sc["id"]))
     return expected
 
 
@@ -296,7 +313,7 @@ def _regen_track_a(sid: str, step: str, by_id: dict, log) -> list[dict] | None:
     elder, scene = sc["elder"], sc["scene"]
     taboos = elder.get("taboos", [])
     key = ("A", sid, step)
-    context = build_context(key, {}, by_id, {}, {})
+    context = build_context(key, {}, by_id, {}, {}, {})
 
     chosen, feedback = None, ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -332,7 +349,7 @@ def _regen_track_c(tone: str, track_c_by_tone: dict, log) -> list[dict] | None:
         log(f"  ! 找不到 track_c {tone}")
         return None
     taboos = sc.get("taboos", [])
-    context = build_context(("C", tone), {}, {}, track_c_by_tone, {})
+    context = build_context(("C", tone), {}, {}, {}, track_c_by_tone, {})
 
     chosen, feedback = None, ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -366,7 +383,7 @@ def _regen_track_d(name: str, track_d_by_name: dict, log) -> list[dict] | None:
         log(f"  ! 找不到 track_d {name}")
         return None
     taboos = sc.get("taboos", [])
-    context = build_context(("D", name), {}, {}, {}, track_d_by_name)
+    context = build_context(("D", name), {}, {}, {}, {}, track_d_by_name)
 
     chosen, feedback = None, ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -393,22 +410,26 @@ def _regen_track_d(name: str, track_d_by_name: dict, log) -> list[dict] | None:
                          rejection_prompt_builder=lambda rn, rd: cd.build_track_d_rejection_prompt(chosen, rn, rd, taboos=taboos))
 
 
-def _regen_track_b(log) -> list[dict] | None:
-    emo_sc = cd.EMOTIONAL_SCENARIOS[0]
+def _regen_track_b(bid: str, track_b_by_id: dict, log) -> list[dict] | None:
+    emo_sc = track_b_by_id.get(bid)
+    if emo_sc is None:
+        log(f"  ! 找不到 emotional scenario {bid}")
+        return None
     trigger, context_desc, taboos = emo_sc["trigger"], emo_sc["context"], emo_sc.get("taboos", [])
-    context = build_context(("B",), {"trigger_context": context_desc, "taboos": taboos}, {}, {}, {})
+    key = ("B", bid)
+    context = build_context(key, {}, {}, track_b_by_id, {}, {})
 
     chosen, feedback = None, ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             candidate = cd.call_claude(cd.build_emotional_chosen_prompt(trigger, context_desc, taboos=taboos, retry_feedback=feedback))
         except Exception as e:
-            log(f"  [track_b] 第{attempt}次：連線錯誤，重試（{e}）")
+            log(f"  [{bid}] 第{attempt}次：連線錯誤，重試（{e}）")
             time.sleep(3)
             continue
         time.sleep(cd.REQUEST_DELAY)
         r = validate_full(candidate, taboos, cd.EMOTION_REJECTION_RULES, context)
-        log(f"  [track_b] 第{attempt}次：{r}")
+        log(f"  [{bid}] 第{attempt}次：{r}")
         if r == "PASS":
             chosen = candidate
             break
@@ -418,7 +439,7 @@ def _regen_track_b(log) -> list[dict] | None:
 
     inference_prompt = cd.build_emotional_inference_prompt(trigger, taboos=taboos)
     return _build_pairs(chosen, inference_prompt, cd.EMOTION_REJECTION_RULES, taboos, log,
-                         meta_base={"scenario_id": "emotional", "step": "EMOTIONAL", "track": "B",
+                         meta_base={"scenario_id": bid, "step": "EMOTIONAL", "track": "B",
                                     "trigger_context": context_desc, "taboos": taboos},
                          rejection_prompt_builder=lambda rn, rd: cd.build_emotional_rejection_prompt(chosen, rn, rd, taboos=taboos))
 
@@ -450,16 +471,16 @@ def _build_pairs(chosen, inference_prompt, rules, taboos, log, meta_base, reject
     return pairs
 
 
-def regen_one(key: tuple, by_id: dict, track_c_by_tone: dict, track_d_by_name: dict, log) -> list[dict] | None:
+def regen_one(key: tuple, by_id: dict, track_b_by_id: dict, track_c_by_tone: dict, track_d_by_name: dict, log) -> list[dict] | None:
     track = key[0]
     if track == "A":
         return _regen_track_a(key[1], key[2], by_id, log)
+    if track == "B":
+        return _regen_track_b(key[1], track_b_by_id, log)
     if track == "C":
         return _regen_track_c(key[1], track_c_by_tone, log)
     if track == "D":
         return _regen_track_d(key[1], track_d_by_name, log)
-    if track == "B":
-        return _regen_track_b(log)
     raise ValueError(f"未知 track：{track}")
 
 
@@ -469,7 +490,7 @@ def regen_one(key: tuple, by_id: dict, track_c_by_tone: dict, track_d_by_name: d
 
 def cmd_scan(args) -> None:
     pairs = fx.load_existing()
-    by_id, track_c_by_tone, track_d_by_name = load_lookup_tables()
+    by_id, track_b_by_id, track_c_by_tone, track_d_by_name = load_lookup_tables()
     seen = iter_unique_pairs(pairs)
     print(f"待審查：{len(seen)} 筆不重複 chosen", flush=True)
 
@@ -480,7 +501,7 @@ def cmd_scan(args) -> None:
         for i, (key, p) in enumerate(seen.items(), 1):
             m = p["meta"]
             chosen = p["chosen"][0]["content"]
-            context = build_context(key, m, by_id, track_c_by_tone, track_d_by_name)
+            context = build_context(key, m, by_id, track_b_by_id, track_c_by_tone, track_d_by_name)
             prompt = build_audit_prompt(chosen, context)
             try:
                 result = cd.call_claude(prompt, system=AUDIT_SYSTEM, model=cd.MODEL_CHOSEN)
@@ -523,7 +544,7 @@ def cmd_gaps(args) -> None:
 
 
 def cmd_fix(args) -> None:
-    by_id, track_c_by_tone, track_d_by_name = load_lookup_tables()
+    by_id, track_b_by_id, track_c_by_tone, track_d_by_name = load_lookup_tables()
 
     if args.from_scan:
         keys = _keys_from_report(Path(args.out))
@@ -556,7 +577,7 @@ def cmd_fix(args) -> None:
     for i, key in enumerate(keys, 1):
         log(f"\n=== [{i}/{len(keys)}] {format_key(key)} ===")
         try:
-            pairs = regen_one(key, by_id, track_c_by_tone, track_d_by_name, log)
+            pairs = regen_one(key, by_id, track_b_by_id, track_c_by_tone, track_d_by_name, log)
         except Exception as e:
             log(f"  ! 例外：{e}")
             pairs = None
