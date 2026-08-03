@@ -124,6 +124,10 @@ def regex_checks_fail(content: str) -> str | None:
         return "xian"
     if fx.has_zanmen_wording(content):
         return "zanmen"
+    if fx.has_dabashou_wording(content):
+        return "dabashou"
+    if fx.has_shouchang_wording(content):
+        return "shouchang"
     if fx.has_touyiju_wording(content):
         return "touyiju"
     if fx.has_bookish_verb_complement(content):

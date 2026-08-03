@@ -32,6 +32,8 @@ import filter_data as fd
 # 什麼工作呢？」問的是「先生」這個人，不是要拿掉的贅字「先」）。
 _XIAN_RE = re.compile(r"(?<!最)先(?!生|夫|父|母|人|前|天)")
 _ZANMEN_RE = re.compile(r"咱")
+_DABASHOU_RE = re.compile(r"搭把手|搭一把手")
+_SHOUCHANG_RE = re.compile(r"收場.{0,3}(回家|下班|下工)")
 _TOUYIJU_RE = re.compile(r"頭一句(?!話)")
 _BOOKISH_VC_RE = re.compile(r"做下來|說下去")
 _SCENE_AS_QUESTION_RE = re.compile(r"(呢|嗎)[。！.!]?\s*$")
@@ -110,6 +112,17 @@ def has_xian_wording(content: str) -> bool:
 def has_zanmen_wording(content: str) -> bool:
     """「咱們／咱」不限於問題句，承接語等其他欄位也可能出現，所以掃整段內容。"""
     return bool(_ZANMEN_RE.search(content))
+
+
+def has_dabashou_wording(content: str) -> bool:
+    """「搭把手」是北方/大陸口語，不限於問題句，掃整段內容。"""
+    return bool(_DABASHOU_RE.search(content))
+
+
+def has_shouchang_wording(content: str) -> bool:
+    """「收場」接「回家/下班/下工」是誤用——「收場」是抽象語境（事情/戲怎麼收場），
+    具體收拾東西離開要用「收工/收拾」，不限於問題句，掃整段內容。"""
+    return bool(_SHOUCHANG_RE.search(content))
 
 
 def has_touyiju_wording(content: str) -> bool:
@@ -215,6 +228,8 @@ def _has_any_wording_issue_a(content: str) -> bool:
     return (
         has_xian_wording(content)
         or has_zanmen_wording(content)
+        or has_dabashou_wording(content)
+        or has_shouchang_wording(content)
         or has_touyiju_wording(content)
         or has_bookish_verb_complement(content)
         or has_scene_text_as_question(content)
@@ -225,6 +240,8 @@ def _has_any_wording_issue_c(content: str) -> bool:
     return (
         has_xian_wording(content)
         or has_zanmen_wording(content)
+        or has_dabashou_wording(content)
+        or has_shouchang_wording(content)
         or has_touyiju_wording(content)
         or has_bookish_verb_complement(content)
     )
@@ -275,6 +292,12 @@ def regenerate_track_a_scenario_step(sc: dict, step: str) -> list[dict]:
         return []
     if has_zanmen_wording(chosen):
         print("    ! 重新生成後出現「咱們／咱」，跳過此組（需要人工檢查）")
+        return []
+    if has_dabashou_wording(chosen):
+        print("    ! 重新生成後出現「搭把手」，跳過此組（需要人工檢查）")
+        return []
+    if has_shouchang_wording(chosen):
+        print("    ! 重新生成後出現「收場回家」誤用，跳過此組（需要人工檢查）")
         return []
     if has_touyiju_wording(chosen):
         print("    ! 重新生成後出現「頭一句」（省略話字），跳過此組（需要人工檢查）")
@@ -359,6 +382,12 @@ def regenerate_track_c_scenario(sc: dict) -> list[dict]:
         return []
     if has_zanmen_wording(chosen):
         print("    ! 重新生成後出現「咱們／咱」，跳過此組（需要人工檢查）")
+        return []
+    if has_dabashou_wording(chosen):
+        print("    ! 重新生成後出現「搭把手」，跳過此組（需要人工檢查）")
+        return []
+    if has_shouchang_wording(chosen):
+        print("    ! 重新生成後出現「收場回家」誤用，跳過此組（需要人工檢查）")
         return []
     if has_touyiju_wording(chosen):
         print("    ! 重新生成後出現「頭一句」（省略話字），跳過此組（需要人工檢查）")
