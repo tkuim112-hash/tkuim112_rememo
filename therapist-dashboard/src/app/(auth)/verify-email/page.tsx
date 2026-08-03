@@ -1,12 +1,20 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 const OTP_LENGTH = 6; // 驗證碼位數
 
 export default function VerifyEmailPage() {
+  return (
+    <Suspense>
+      <VerifyEmailForm />
+    </Suspense>
+  );
+}
+
+function VerifyEmailForm() {
   const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill("")); // 每格一個字元
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
