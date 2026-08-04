@@ -29,8 +29,6 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib  # 強制指向掛載進來的驅動路徑
-    ports:
-      - "11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
     deploy:
@@ -46,8 +44,6 @@ services:
       context: ./Rag
       dockerfile: Dockerfile
     container_name: tku-care-rag-service-1
-    ports:
-      - "8002:8000"
     volumes:
       - ./Rag:/app                                    # 程式碼熱更新，改完 restart 即生效
       - ./models/ckip_cache:/root/.cache/huggingface  # CKIP 模型只下載一次
@@ -67,9 +63,6 @@ services:
     container_name: tku-care-qdrant-1
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
     restart: always
@@ -80,8 +73,6 @@ services:
       context: ./bluemagpie
       dockerfile: Dockerfile
     container_name: tku-care-tts-1
-    ports:
-      - "9234:8080"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -132,8 +123,6 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
-    ports:
-      - "5432:5432"
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
     restart: always
@@ -166,8 +155,6 @@ services:
     environment:
       - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
       - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
-    ports:
-      - "5050:80"
     depends_on:
       - db
     restart: always
@@ -177,16 +164,12 @@ services:
     image: redis:alpine
     container_name: tku-care-redis-1
     command: redis-server --requirepass ${REDIS_PASSWORD}
-    ports:
-      - "6379:6379"
     restart: always
 
   # Redis Insight 管理介面
   redisinsight:
     image: redis/redisinsight:latest
     container_name: tku-care-redisinsight-1
-    ports:
-      - "5540:5540"
     environment:
       - RI_REDIS_URI=redis://:${REDIS_PASSWORD}@redis:6379
     depends_on:
@@ -197,8 +180,6 @@ services:
   kinect-svc:
     image: fedirz/faster-whisper-server:latest-cuda
     container_name: tku-care-kinect-1
-    ports:
-      - "8001:8000"  # 規格書定義 Port 8001 [cite: 20, 24]
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
     deploy:
