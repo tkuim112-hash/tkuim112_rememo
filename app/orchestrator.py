@@ -128,6 +128,29 @@ def _strip_leaked_brackets(text: str) -> str:
     return _LEAK_BRACKET_RE.sub("", text).strip()
 
 
+def _element_fallback(scene_elements: list[str], with_covered_w: bool = True) -> dict:
+    """
+    guarded_generate 重試多次仍違規時的最終保底值。之前保底句是完全通用、跟
+    這次情境無關的固定字串（「現在心裡在想些什麼呢？」）——2026-08 用真實
+    pipeline 實測發現：加了 too_long 等格式規則檢查後，落到這個保底句的比例
+    不低（單場測試將近一半），代表有不小比例的回合長者聽到的問題其實跟眼前
+    這次的畫面、記憶完全無關。這裡改成至少帶著這次真正的畫面元素組出保底句，
+    純字串組合、保證合規，不用再多呼叫一次LLM，不影響延遲。
+    """
+    elements_str = _natural_join(scene_elements or [])
+    first = scene_elements[0] if scene_elements else None
+    fallback = {
+        "scene_text": (
+            f"眼前的畫面裡有{elements_str}，我們換個方向聊聊吧。"
+            if elements_str else _FALLBACK_SCENE_TEXT
+        ),
+        "question": f"{first}，讓你想到什麼？" if first else _FALLBACK_QUESTION,
+    }
+    if with_covered_w:
+        fallback["covered_w"] = []
+    return fallback
+
+
 def _natural_join(items: list[str]) -> str:
     """把元素清單接成一句話唸起來自然的中文列舉（最後一項用「和」，不是逗號堆疊到底）。"""
     items = [i for i in items if i]
@@ -272,12 +295,11 @@ class TherapyOrchestrator:
             # 預設的保底字典只有 scene_text/question，沒有 covered_w，重試仍失敗
             # 退回保底時會少這個 key、導致 KeyError('covered_w') 讓開場直接炸掉
             # （2026-07 曾實際發生：療程開場失敗: 'covered_w'）。所以這裡要自帶
-            # 對齊的保底字典，不能用預設值。
-            fallback={
-                "scene_text": "我們換個輕鬆一點的方向聊聊吧。",
-                "question": "現在心裡在想些什麼呢？",
-                "covered_w": [],
-            },
+            # 對齊的保底字典，不能用預設值。用 _element_fallback 帶著這次真正的
+            # 畫面元素組保底句，而不是完全通用、跟這次情境無關的固定字串——
+            # 2026-08 實測發現加了 too_long 等格式檢查後，落到保底句的比例
+            # 不低，通用保底句等於讓長者聽到跟眼前畫面、記憶完全無關的問題。
+            fallback=_element_fallback(image_plan["elements"]),
             step="STEP1",
             user=user,
             scene_elements=image_plan["elements"],
@@ -416,6 +438,9 @@ class TherapyOrchestrator:
                 taboo_words=user["taboos"],
                 llm_service=self.llm,
                 max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
+                # _generate_open_followup 回傳沒有 covered_w 這個 key，跟 STEP1/STEP3
+                # 用的 _generate_question/_generate_supplement_question 不一樣。
+                fallback=_element_fallback(scene_els, with_covered_w=False),
                 user=user, scene_elements=scene_els, covered_w=covered_w,
                 skipped_w=skipped_w, elder_response=elder_response, emotion=emotion,
             )
@@ -505,6 +530,7 @@ class TherapyOrchestrator:
             taboo_words=user["taboos"],
             llm_service=self.llm,
             max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
+            fallback=_element_fallback(scene_els),
             user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
             emotion=emotion, elder_response=elder_response,
         )
@@ -768,26 +794,89 @@ class TherapyOrchestrator:
     # 私有：問題生成
     # ══════════════════════════════════════════════════════════════
 
-    async def _plan_image(self, user: dict, memories: list[dict] | None = None) -> dict:
-        """請 LLM 規劃圖片元素與生圖 prompt，可傳入 memories 讓 LLM 從回憶挑元素。"""
+    async def _decide_scene_anchor(self, user: dict) -> str:
+        """
+        決定這次 _plan_image 該用哪個錨點，回傳 'hometown'／'occupation'／'interest'。
+        獨立判斷、不跟生圖 prompt 混在一起，理由見 _plan_image 的說明。
+        """
+        if not user.get("preferences"):
+            return "occupation"
+        prompt = (
+            f"今日主題：「{user['today_topic']}」\n\n"
+            f"這個主題最貼近長者的哪一種真實生活情境？\n"
+            f"A：家鄉／成長地／故鄉生活\n"
+            f"B：職業背景（{user['main_occupation']}）\n"
+            f"C：興趣嗜好（{user['preferences']}）\n\n"
+            f"只回答 A、B 或 C 其中一個字母，不要任何說明或標點。"
+        )
+        raw = await self.llm.ask(prompt)
+        choice = raw.strip().upper()[:1]
+        return {"A": "hometown", "B": "occupation", "C": "interest"}.get(choice, "occupation")
+
+    def _build_plan_image_prompt(
+        self, user: dict, anchor: str, memories: list[dict] | None = None,
+        hide_field: str | None = None,
+    ) -> str:
+        """
+        組 _plan_image 的 prompt。【長者資料】固定完整顯示，anchor 只決定
+        【任務】那句指令這次要用哪個情境。hide_field 只在重試時才會給值
+        （見 _plan_image），把對應欄位從長者資料整個拿掉。
+        """
         memory_section = ""
         if memories:
             memory_section = "\n【長者相關回憶（優先從這裡挑場景元素）】\n"
             for m in memories:
                 memory_section += f"- {m.get('summary', m.get('text', ''))}\n"
 
-        prompt = f"""你是懷舊療法的圖片規劃師。請根據長者資料規劃一張場景圖。
+        profile_lines = [
+            f"姓名：{user['name']}",
+            f"年齡：{2026 - user['birth_year']} 歲",
+            f"出生地：{user['birth_place']}",
+        ]
+        if hide_field != "main_occupation":
+            profile_lines.append(f"職業背景：{user['main_occupation']}")
+        if hide_field != "preferences":
+            profile_lines.append(f"興趣：{user.get('preferences') or '無'}")
+        profile_lines.append(f"今日主題：{user['today_topic']}")
+        profile_block = "\n".join(profile_lines)
+
+        # 有記憶／沒記憶是完全分開的兩條指令文字，不要用一句條件句（若有...若無...）
+        # 硬湊在一起——實測發現硬湊在一起時，即使真的有記憶，模型也會被句子裡
+        # 沒用到的另一半分支文字干擾，變成兩邊都不用、跑去生成完全不相關的內容。
+        if memories:
+            task_instruction = (
+                "這次的每一個畫面元素都只從【長者相關回憶】的內容延伸挑選，完全"
+                "不使用興趣、職業背景或出生地。"
+            )
+        elif anchor == "hometown":
+            task_instruction = (
+                "這次主場景以【出生地】為背景，結合【職業背景】的真實生活情境挑選"
+                "元素（想像長者在自己的家鄉從事這份職業的真實一刻），不要用到興趣。"
+            )
+        elif anchor == "interest":
+            task_instruction = (
+                "這次主場景以【興趣】的真實生活情境挑選元素（想像長者從事這項興趣"
+                "時的真實一刻），不要用到職業背景。"
+            )
+        else:
+            task_instruction = (
+                "這次主場景以【職業背景】的真實生活情境挑選元素（想像長者在職業"
+                "現場的真實一刻），不要用到興趣。"
+            )
+
+        return f"""你是懷舊療法的圖片規劃師。請根據長者資料規劃一張場景圖。
 
 【長者資料】
-姓名：{user['name']}
-年齡：{2026 - user['birth_year']} 歲
-出生地：{user['birth_place']}
-職業背景：{user['main_occupation']}
-今日主題：{user['today_topic']}
+{profile_block}
 {memory_section}
 【任務】
 規劃一張水彩風格的回憶場景圖，符合主題，要能引發長者的回憶。
-若有【長者相關回憶】，優先從其中選取真實場景元素；若無，則依主題自行規劃。
+
+{task_instruction}這次的每一個畫面元素都只從這個情境延伸挑選——四個元素要像
+同一個現場拍出來的照片，彼此都屬於同一個情境，不要把長者資料裡沒被選中的其他
+候選背景資訊也混進來。
+
+不要只憑【今日主題】天馬行空聯想，也不要選跟長者實際生活背景無關的通俗畫面。
 
 【嚴格規定】
 1. 每個元素必須是「不需要湊近看細節、一眼就能辨認形狀」的大範圍實體物件或情境
@@ -820,11 +909,46 @@ class TherapyOrchestrator:
   "image_prompt": "watercolor painting style, 1940s Taiwan elementary school sports day, relay race, children running on dirt track, dusk light, nostalgic warm tones, no text"
 }}
 """
+
+    async def _plan_image(self, user: dict, memories: list[dict] | None = None) -> dict:
+        """
+        請 LLM 規劃圖片元素與生圖 prompt，可傳入 memories 讓 LLM 從回憶挑元素。
+
+        沒有記憶時，先用 _decide_scene_anchor 獨立判斷這次該用出生地+職業、
+        純職業、還是純興趣當主場景。長者資料一律完整顯示所有欄位，只在
+        【任務】那句指令裡明確告訴模型這次要用哪個情境。
+
+        某些職業（例如導遊，本質就是「帶人看東西、介紹文化」）即使給了明確
+        指令，仍可能把職業跟興趣兩個不相干的情境湊進同一張圖——這裡加一層
+        事後偵測：elements/image_prompt 同時出現職業跟興趣的字面就重新生成
+        一次，且只有這次重試才把沒被選中的那個欄位從長者資料整個拿掉
+        （hide_field），physically 保證不會再犯。只重試一次，延遲上限可控。
+        """
+        anchor = "hometown"  # 有記憶時錨點不影響結果，memory_section 優先權更高，這裡給預設值即可
+        if not memories:
+            anchor = await self._decide_scene_anchor(user)
+
+        prompt = self._build_plan_image_prompt(user, anchor, memories)
         raw = await self.llm.ask(prompt)
         plan = self._extract_json(raw)
-        # 就算 LLM 沒遵守上面的規則，這裡再用關鍵詞黑名單擋一次
-        # （比照 taboo_checker.py 的 Layer 1 粗篩，零額外 LLM 呼叫）。
         plan["elements"] = filter_scene_elements(plan.get("elements", []))
+
+        occupation = user.get("main_occupation", "")
+        interest = user.get("preferences", "")
+        if not memories and occupation and interest:
+            combined = " ".join(plan.get("elements", [])) + " " + plan.get("image_prompt", "")
+            if occupation in combined and interest in combined:
+                # anchor 選了哪個，就拿掉沒被選中的那個候選欄位重試一次
+                hide_field = "preferences" if anchor in ("hometown", "occupation") else "main_occupation"
+                print(f"  → ⚠ 圖片元素同時混進職業（{occupation}）跟興趣（{interest}），"
+                      f"重新生成一次（拿掉{hide_field}）: {plan.get('elements')}")
+                prompt_retry = self._build_plan_image_prompt(
+                    user, anchor, memories, hide_field=hide_field,
+                )
+                raw_retry = await self.llm.ask(prompt_retry)
+                plan = self._extract_json(raw_retry)
+                plan["elements"] = filter_scene_elements(plan.get("elements", []))
+
         return plan
 
     async def _generate_question(
@@ -872,6 +996,7 @@ class TherapyOrchestrator:
             f"姓名：{user['name']}\n"
             f"職業背景：{user['main_occupation']}\n"
             f"今日主題：{user['today_topic']}\n"
+            f"興趣：{user.get('preferences') or '無'}\n"
             f"懷舊治療主題類別：{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
@@ -969,7 +1094,7 @@ class TherapyOrchestrator:
             {"role": "user", "content": user_content},
         ]
         raw = await self.llm.chat(messages)
-        return self._parse_track_c_response(raw)
+        return self._parse_track_c_response(raw, scene_elements=scene_elements)
 
     async def _generate_supplement_question(
         self,
@@ -1014,6 +1139,7 @@ class TherapyOrchestrator:
             f"姓名：{user['name']}\n"
             f"職業背景：{user['main_occupation']}\n"
             f"今日主題：{user['today_topic']}\n"
+            f"興趣：{user.get('preferences') or '無'}\n"
             f"懷舊治療主題類別：{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
@@ -1083,9 +1209,10 @@ class TherapyOrchestrator:
         for key in ("scene_text", "question"):
             result[key] = _strip_leaked_brackets(result[key])
         if not result["question"]:
+            first_element = (scene_elements or [None])[0]
             print(f"[Orchestrator] ⚠ 問題欄位清洗後是空的（本地模型把格式範本原封不動echo回來），"
-                  f"退回保底問題。原始輸出: {raw[:200]!r}")
-            result["question"] = _FALLBACK_QUESTION
+                  f"退回{'含畫面元素的' if first_element else ''}保底問題。原始輸出: {raw[:200]!r}")
+            result["question"] = f"{first_element}，讓你想到什麼？" if first_element else _FALLBACK_QUESTION
         if not result["scene_text"]:
             fallback = (
                 f"眼前的畫面裡有{elements_str}，我們接著聊聊這個吧。"
@@ -1099,7 +1226,7 @@ class TherapyOrchestrator:
             print(f"  → 思考: {thinking}")
         return result
 
-    def _parse_track_c_response(self, raw: str) -> dict:
+    def _parse_track_c_response(self, raw: str, scene_elements: list[str] | None = None) -> dict:
         """解析 Track C（承接語 + 問題）的輸出。"""
         result: dict = {"scene_text": "", "question": ""}
         for line in raw.splitlines():
@@ -1113,9 +1240,10 @@ class TherapyOrchestrator:
         for key in ("scene_text", "question"):
             result[key] = _strip_leaked_brackets(result[key])
         if not result["question"]:
-            print(f"[Orchestrator] ⚠ Track C 問題欄位清洗後是空的，退回保底問題。"
-                  f"原始輸出: {raw[:200]!r}")
-            result["question"] = _FALLBACK_QUESTION
+            first_element = (scene_elements or [None])[0]
+            print(f"[Orchestrator] ⚠ Track C 問題欄位清洗後是空的，退回"
+                  f"{'含畫面元素的' if first_element else ''}保底問題。原始輸出: {raw[:200]!r}")
+            result["question"] = f"{first_element}，讓你想到什麼？" if first_element else _FALLBACK_QUESTION
         if not result["scene_text"]:
             print(f"[Orchestrator] ⚠ Track C 承接語（引導語）欄位是空的，退回保底鋪陳語。"
                   f"原始輸出: {raw[:200]!r}")
