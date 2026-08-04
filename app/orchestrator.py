@@ -304,7 +304,6 @@ class TherapyOrchestrator:
             user=user,
             scene_elements=image_plan["elements"],
             covered_w=[],
-            memories=memories,
         )
         print(f"  → [計時] LLM 生問題: {_time.time()-_t4:.1f}s")
         print(f"  → STEP1 問題: {q['question']}（W: {q['covered_w']}）")
@@ -958,7 +957,6 @@ class TherapyOrchestrator:
         scene_elements: list[str],
         covered_w: list[str],
         elder_response: str = "",
-        memories: list[dict] | None = None,
         emotion: str = "happy",
         retry_feedback: str = "",
     ) -> dict:
@@ -969,6 +967,12 @@ class TherapyOrchestrator:
 
         retry_feedback: guarded_generate 偵測到上一次輸出違規時傳入的具體說明，
             見 _retry_feedback_section。
+
+        2026-08：這裡原本有 memory_section（直接把記憶文字塞進問題生成
+        prompt），實測是null result甚至有違規訊號，且這個欄位從沒進過DPO
+        訓練資料，train/serve本來就不對齊。個人化已經由 _plan_image 的
+        記憶→畫面元素這條路徑達成（有驗證過、且元素本來就走模型訓練過的
+        elements_str 格式），這裡不需要再重複做一次，故拿掉。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -985,11 +989,6 @@ class TherapyOrchestrator:
         taboo_str    = "、".join(user["taboos"]) if user["taboos"] else "無"
 
         elder_section = f"\n【長者剛才說的話】\n{elder_response}\n" if elder_response else ""
-        memory_section = ""
-        if memories:
-            memory_section = "\n【過去分享的相關回憶】\n"
-            for m in memories:
-                memory_section += f"- {m.get('summary', m.get('text', ''))}\n"
 
         user_content = (
             f"【長者資料】\n"
@@ -1001,7 +1000,6 @@ class TherapyOrchestrator:
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"{elder_section}"
-            f"{memory_section}"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n{_STEP_TASKS[step]}\n"
