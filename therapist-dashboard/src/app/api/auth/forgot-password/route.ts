@@ -10,6 +10,30 @@ function getResend(): Resend {
   return resend;
 }
 
+function buildResetCodeEmail(code: string): string {
+  return `
+    <div style="background-color:#f5e6d3; padding:40px 16px; font-family:'PingFang TC','Microsoft JhengHei',Arial,sans-serif;">
+      <div style="max-width:480px; margin:0 auto; background-color:#ffffff; border-radius:16px; padding:40px 32px; text-align:center;">
+        <h1 style="margin:0 0 8px; font-size:22px; color:#1a1a1a;">Rememo 密碼重設</h1>
+        <p style="margin:0 0 24px; font-size:15px; color:#888888; line-height:1.6;">
+          您好，我們收到您重設密碼的請求。<br/>請使用以下驗證碼完成後續步驟：
+        </p>
+        <div style="background-color:#fdf1e6; border:2px solid #e09540; border-radius:12px; padding:16px; margin:0 0 24px;">
+          <span style="font-size:32px; font-weight:600; letter-spacing:8px; color:#1a1a1a;">${code}</span>
+        </div>
+        <p style="margin:0 0 24px; font-size:14px; color:#888888;">
+          此驗證碼將於 <strong style="color:#1a1a1a;">10 分鐘後</strong> 失效，請盡快完成驗證。
+        </p>
+        <hr style="border:none; border-top:1px solid #eeeeee; margin:24px 0;" />
+        <p style="margin:0; font-size:13px; color:#aaaaaa; line-height:1.6;">
+          如果這不是您本人的操作，請忽略此信件，您的帳號密碼不會被變更。<br/>
+          此信件由系統自動發送，請勿直接回覆。
+        </p>
+      </div>
+    </div>
+  `;
+}
+
 export async function POST(req: NextRequest) {
   const { email } = await req.json();
 
@@ -34,10 +58,10 @@ export async function POST(req: NextRequest) {
 
   try {
     await getResend().emails.send({
-      from: "onboarding@resend.dev",
+      from: "Rememo <noreply@re-memo.com>",
       to: email,
       subject: "Rememo 密碼重設驗證碼",
-      html: `<p>您的驗證碼為：<strong style="font-size:24px">${code}</strong></p><p>此驗證碼將於 10 分鐘後失效。</p>`,
+      html: buildResetCodeEmail(code),
     });
   } catch {
     return NextResponse.json({ error: "驗證碼寄送失敗，請稍後再試" }, { status: 500 });
