@@ -72,9 +72,10 @@ def load_dataset_from_jsonl(path: Path) -> Dataset:
                 "prompt": rec["prompt"],
                 "chosen": rec["chosen"],
                 "rejected": rec["rejected"],
-                # 只留 track 字串（不是整個 meta dict），給下面的分層切分用，
-                # 切分完後會移除，不會進到 DPOTrainer。
+                # 只留 track/scenario_id 字串（不是整個 meta dict），給下面的分層
+                # 切分用，切分完後會移除，不會進到 DPOTrainer。
                 "track": rec["meta"]["track"],
+                "scenario_id": rec["meta"]["scenario_id"],
             })
 
     print(f"載入 {len(records)} 筆訓練對")
@@ -83,7 +84,7 @@ def load_dataset_from_jsonl(path: Path) -> Dataset:
 
 def stratified_split(dataset: Dataset, test_size: float, seed: int) -> tuple[Dataset, Dataset]:
     """
-    依 track 分層切 train/eval。
+    依 track 分層切 train/eval，且同一個 scenario_id 的所有 pair 整組分到同一邊。
 
     原本用 dataset.train_test_split() 隨機切分，會直接複製訓練集本身的
     Track 比例（A 佔約 80%），導致 eval_loss/reward accuracy 這類總指標
@@ -91,21 +92,44 @@ def stratified_split(dataset: Dataset, test_size: float, seed: int) -> tuple[Dat
     C（承接+追問）、D（收尾）到底有沒有學到東西——而 B/D 恰好是對長者
     最需要謹慎的兩個環節。這裡改成每個 track 各自抽 test_size 比例，
     確保 eval 集合裡四條軌跡的比例跟訓練集一致，不會被 A 稀釋掉。
+
+    2026-08 稽核發現：光是按 track 分層還不夠——B/D 這兩軌每個 scenario_id
+    平均都被拆成 10 幾筆 pair（同一個 chosen，配不同 rejection_rule 的
+    rejected），舊版切分是直接對「pair 索引」洗牌切分，導致同一個
+    scenario_id 的不同 pair 會同時出現在 train 跟 eval 裡——模型在訓練時
+    已經看過這個情境的 chosen 文字（配另一種 rejected），eval 時只是認
+    另一個沒看過的 rejected 變體，測的不是「有沒有見過新情境」，是「記不
+    記得這個情境」，reward accuracy 會被高估。改成先依 scenario_id 分組，
+    整組一起分進 train 或 eval，確保 eval 裡的每個情境訓練時真的沒看過。
     """
     by_track: dict[str, list[int]] = {}
     for i, track in enumerate(dataset["track"]):
         by_track.setdefault(track, []).append(i)
 
+    scenario_ids = dataset["scenario_id"]
+
     rng = random.Random(seed)
     train_idx: list[int] = []
     test_idx: list[int] = []
     for track, idxs in sorted(by_track.items()):
-        idxs = idxs[:]
-        rng.shuffle(idxs)
-        n_test = max(1, round(len(idxs) * test_size))
-        test_idx.extend(idxs[:n_test])
-        train_idx.extend(idxs[n_test:])
-        print(f"    track={track}: 共 {len(idxs)} 筆 → train {len(idxs) - n_test} / eval {n_test}")
+        by_scenario: dict[str, list[int]] = {}
+        for i in idxs:
+            by_scenario.setdefault(scenario_ids[i], []).append(i)
+
+        scenario_keys = list(by_scenario.keys())
+        rng.shuffle(scenario_keys)
+        n_test_scenarios = max(1, round(len(scenario_keys) * test_size))
+        test_scenarios = set(scenario_keys[:n_test_scenarios])
+
+        track_train, track_test = [], []
+        for sid, sid_idxs in by_scenario.items():
+            (track_test if sid in test_scenarios else track_train).extend(sid_idxs)
+
+        train_idx.extend(track_train)
+        test_idx.extend(track_test)
+        print(f"    track={track}: 共 {len(idxs)} 筆／{len(scenario_keys)} 個情境 → "
+              f"train {len(track_train)} 筆／{len(scenario_keys) - n_test_scenarios} 個情境"
+              f"　eval {len(track_test)} 筆／{n_test_scenarios} 個情境")
 
     return dataset.select(train_idx), dataset.select(test_idx)
 
@@ -196,10 +220,10 @@ def main() -> None:
     print("載入訓練資料...")
     dataset = load_dataset_from_jsonl(DATA_FILE)
 
-    print("依 track 分層切分 train/eval...")
+    print("依 track 分層、並依 scenario_id 整組切分 train/eval...")
     train_dataset, eval_dataset = stratified_split(dataset, test_size=0.1, seed=42)
-    train_dataset = train_dataset.remove_columns("track")
-    eval_dataset = eval_dataset.remove_columns("track")
+    train_dataset = train_dataset.remove_columns(["track", "scenario_id"])
+    eval_dataset = eval_dataset.remove_columns(["track", "scenario_id"])
     print(f"訓練集：{len(train_dataset)} 筆，驗證集：{len(eval_dataset)} 筆")
 
     print("載入基底模型（Unsloth 4-bit 量化）...")

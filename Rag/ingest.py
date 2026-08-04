@@ -44,8 +44,10 @@ def _get_cleaner():
 def process_and_save(elder_id, raw_text, session_id="", emotion=""):
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
+    qdrant_collection = os.getenv("QDRANT_COLLECTION", "safe_reminiscence")
     ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
+    embedding_model = os.getenv("EMBEDDING_MODEL", "bge-m3")
+    embeddings = OllamaEmbeddings(model=embedding_model, base_url=ollama_host)
     
     cleaner = _get_cleaner()
     base = cleaner.base_clean(raw_text)
@@ -72,7 +74,7 @@ def process_and_save(elder_id, raw_text, session_id="", emotion=""):
             metadatas=metadatas,
             url=qdrant_url,
             api_key=qdrant_api_key,
-            collection_name="safe_reminiscence"
+            collection_name=qdrant_collection
         )
         return len(chunks)
     return 0
