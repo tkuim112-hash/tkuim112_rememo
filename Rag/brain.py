@@ -1,18 +1,14 @@
 import os
 from qdrant_client import QdrantClient, models
 from langchain_qdrant import QdrantVectorStore
-from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 
 class ElderlyAI:
-    def __init__(self, model_name=None):
-        # 對齊全專案使用的 DPO 微調模型（app/config.py 的 ollama_model）
-        model_name = model_name or os.getenv("RAG_LLM_MODEL", "rememo-llama3")
+    def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
         ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
-        # 保留一個輕量 LLM 僅用於「RAG-Fusion 關鍵字改寫」
-        self.llm = ChatOllama(model=model_name, temperature=0.3, base_url=ollama_host)
         self.embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
 
         self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
@@ -42,57 +38,22 @@ class ElderlyAI:
             embedding=self.embeddings
         )
 
-    def _generate_multi_queries(self, original_query):
-        """RAG-Fusion: 改寫搜尋關鍵字"""
-        prompt = f"請將這句回憶改寫成 3 個不同角度的繁體中文搜尋關鍵字，每行一個，不要有任何多餘文字：\n{original_query}"
-        try:
-            response = self.llm.invoke(prompt).content
-            queries = [q.strip() for q in response.split('\n') if q.strip()]
-            return queries[:3] if queries else [original_query]
-        except Exception:
-            return [original_query]
-
-    def _rrf_score(self, results_list, k=60, limit=3):
-        """RRF 排名融合演算法：計算融合得分"""
-        fused_scores = {}
-        doc_metadata = {}
-        for docs in results_list:
-            for rank, doc in enumerate(docs):
-                content = doc.page_content
-                fused_scores[content] = fused_scores.get(content, 0.0) + 1 / (k + rank)
-                if content not in doc_metadata:
-                    doc_metadata[content] = doc.metadata or {}
-
-        # 排序後取前 limit 名，分數正規化到 0-1（除以理論最大值：每一路都排第一 = len/k）
-        sorted_res = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
-        max_score = len(results_list) / k if results_list else 1.0
-
-        output = []
-        for text, score in sorted_res[:limit]:
-            meta = doc_metadata.get(text, {})
-            output.append({
-                "text": text,
-                "score": round(score / max_score, 4),
-                "session_id": meta.get("session_id", ""),
-                "emotion": meta.get("emotion", ""),
-                "created_at": meta.get("created_at", ""),
-            })
-        return output
-
-    def retrieve_memories(self, elder_id, query, limit=3):
-        """單次向量搜尋（移除 RAG-Fusion 多查詢 + RRF，減少 Ollama 呼叫次數）"""
-        hits = self.db.similarity_search(
+    def retrieve_memories(self, elder_id, query, limit=3, score_threshold=0.5):
+        """單次向量搜尋：查一次、依 Qdrant 回傳的真實相似度排序，低於門檻的結果直接排除（避免硬湊不相關記憶）。"""
+        hits = self.db.similarity_search_with_score(
             query, k=limit,
             filter=models.Filter(must=[
                 models.FieldCondition(key="metadata.elder_id", match=models.MatchValue(value=elder_id))
             ])
         )
         output = []
-        for rank, doc in enumerate(hits):
+        for doc, score in hits:
+            if score < score_threshold:
+                continue
             meta = doc.metadata or {}
             output.append({
                 "text": doc.page_content,
-                "score": round(1.0 / (1 + rank), 4),
+                "score": round(score, 4),
                 "session_id": meta.get("session_id", ""),
                 "emotion": meta.get("emotion", ""),
                 "created_at": meta.get("created_at", ""),
