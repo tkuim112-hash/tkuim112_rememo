@@ -1,5 +1,5 @@
 """
-TTS Service - 呼叫本地 BlueMagpie-TTS 服務
+TTS Service - 呼叫本地 BlueMagpie-TTS 服務（OpenFormosa 台灣繁中語音）
 透過 HTTP POST /v1/audio/speech，回傳 WAV bytes 存成檔案。
 """
 from pathlib import Path
@@ -38,7 +38,7 @@ class TTSService:
 
         filepath = session_dir / filename
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(
                 f"{self.base_url}/v1/audio/speech",
                 json={"model": "", "input": text},

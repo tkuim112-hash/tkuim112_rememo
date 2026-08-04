@@ -1,11 +1,10 @@
-import asyncio
 import json
 import time
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -65,40 +64,6 @@ async def _update_live_view(r, session_id: str, **fields) -> None:
             await r.hset(f"session:{session_id}:metrics", mapping=mapping)
     except Exception as e:
         print(f"[LiveView] metrics 更新失敗（不影響主流程）: {e}")
-
-
-async def _synthesize_audio(
-    tts, text: str, session_id: str, round_number: int, turn_number: int | None,
-) -> str | None:
-    """語音合成失敗（例如 TTS 服務沒啟動）不該擋住整個療程流程——場景、問題、
-    逐字稿都已經是真的資料，音檔只是錦上添花，沒有音檔畫面/長者端就少一段
-    語音，但療程本身要能繼續走下去。"""
-    try:
-        return await tts.synthesize(
-            text=text, session_id=session_id,
-            round_number=round_number, turn_number=turn_number,
-        )
-    except Exception as e:
-        print(f"[TTS] 語音合成失敗（不影響主流程）: {e}")
-        return None
-
-
-async def _refresh_ai_suggestions(
-    orchestrator, r, session_id: str, user_id: str,
-    covered_w: list, skipped_w: list, scene_elements: list, emotion: str,
-) -> None:
-    """背景任務：生成 3 個候選追問語供治療師畫面「參考用」，跑在回應已經
-    送回長者端之後，不拖慢長者端的對話節奏；失敗不影響主流程，最多就是
-    治療師畫面那欄暫時沒更新。"""
-    try:
-        questions = await orchestrator.suggest_next_questions(
-            user_id=user_id, covered_w=covered_w, skipped_w=skipped_w,
-            scene_elements=scene_elements, emotion=emotion,
-        )
-        if questions:
-            await _update_live_view(r, session_id, ai_suggestions=questions)
-    except Exception as e:
-        print(f"[LiveView] AI 建議追問語背景更新失敗（不影響主流程）: {e}")
 
 
 async def _get_or_create_round(
@@ -426,13 +391,25 @@ async def session_start(
             topic_override=topic or None,
         )
         result["state"]["question_number"] = 1
-        tts = request.app.state.tts_service
-        result["audio_path"] = await _synthesize_audio(
-            tts, result["scene_text"] + result["question"], session_id, 1, 1,
-        )
-        # 時間戳記在語音合成「之後」才設，避免 TTS API 延遲被算進長者的反應時間裡
-        # （跟 session_respond 的量測方式保持一致）
         result["state"]["question_asked_at"] = int(time.time() * 1000)
+        tts = request.app.state.tts_service
+        scene_audio_path = None
+        if result.get("scene_text"):
+            scene_audio_path = await tts.synthesize(
+                text=result["scene_text"],
+                session_id=session_id,
+                round_number=1,
+                turn_number=None,
+            )
+        question_audio_path = await tts.synthesize(
+            text=result["question"],
+            session_id=session_id,
+            round_number=1,
+            turn_number=1,
+        )
+        result["scene_audio_path"] = scene_audio_path
+        result["question_audio_path"] = question_audio_path
+        result["audio_path"] = question_audio_path  # 向下相容
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id), topic=topic)
         await _update_live_view(
             request.app.state.redis, session_id,
@@ -442,11 +419,6 @@ async def session_start(
             current_round=1,
             total_rounds=3,
         )
-        asyncio.create_task(_refresh_ai_suggestions(
-            orchestrator, request.app.state.redis, session_id, user_id,
-            result["state"]["covered_w"], result["state"]["skipped_w"],
-            result.get("scene_elements", []), "happy",
-        ))
         await log_access(
             therapist_id=therapist_id,
             patient_id=_to_int(user_id),
@@ -458,16 +430,6 @@ async def session_start(
             scene_text=result.get("scene_text", ""),
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
-        try:
-            await db.execute(
-                update(TherapySession)
-                .where(TherapySession.session_uuid == session_id)
-                .values(topic=result.get("today_topic"))
-            )
-            await db.commit()
-        except Exception as e:
-            print(f"[DB] sessions.topic 寫入失敗（不影響主流程）: {e}")
-            await db.rollback()
         if result.get("question"):
             await _save_round_exchange(
                 db, session_id, 1, question_number=1, question=result["question"],
@@ -507,14 +469,26 @@ async def session_round(
             topic_override=topic_override,
         )
         result["state"]["question_number"] = 1
+        result["state"]["question_asked_at"] = int(time.time() * 1000)
         if result.get("question"):
             tts = request.app.state.tts_service
-            result["audio_path"] = await _synthesize_audio(
-                tts, result["scene_text"] + result["question"], session_id, round_number, 1,
+            scene_audio_path = None
+            if result.get("scene_text"):
+                scene_audio_path = await tts.synthesize(
+                    text=result["scene_text"],
+                    session_id=session_id,
+                    round_number=round_number,
+                    turn_number=None,
+                )
+            question_audio_path = await tts.synthesize(
+                text=result["question"],
+                session_id=session_id,
+                round_number=round_number,
+                turn_number=1,
             )
-        # 時間戳記在語音合成「之後」才設，避免 TTS API 延遲被算進長者的反應時間裡
-        # （跟 session_respond 的量測方式保持一致）
-        result["state"]["question_asked_at"] = int(time.time() * 1000)
+            result["scene_audio_path"] = scene_audio_path
+            result["question_audio_path"] = question_audio_path
+            result["audio_path"] = question_audio_path  # 向下相容
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
         await _update_live_view(
             request.app.state.redis, session_id,
@@ -524,11 +498,6 @@ async def session_round(
             current_round=round_number,
             total_rounds=3,
         )
-        asyncio.create_task(_refresh_ai_suggestions(
-            orchestrator, request.app.state.redis, session_id, user_id,
-            result["state"]["covered_w"], result["state"]["skipped_w"],
-            result.get("scene_elements", []), "happy",
-        ))
         await _save_round_image(
             db, session_id, round_number, result.get("image_path", ""),
             scene_text=result.get("scene_text", ""),
@@ -559,7 +528,7 @@ async def session_metrics(
     except json.JSONDecodeError:
         suggestions = []
     return {
-        "emotion": data.get("emotion", ""),
+        "emotion": data.get("emotion", "適當"),
         "response_time": data.get("response_time", "--"),
         "current_scene": data.get("current_scene", ""),
         "elder_response": data.get("elder_response", ""),
@@ -873,9 +842,7 @@ async def session_respond(
             db, body.state.session_id, body.state.round,
             question_number=body.state.question_number, answer=body.elder_response,
         )
-        # 這一題長者花了多久回答，累加進本回合的反應時間統計，
-        # 同時也傳給 orchestrator 讓它在語氣上放軟（不影響任何流程判斷，見 _SLOW_RESPONSE_MS）
-        elapsed_ms: int | None = None
+        # 這一題長者花了多久回答，累加進本回合的反應時間統計
         if body.state.question_asked_at:
             elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
             await _accumulate_round_response_time(
@@ -889,7 +856,6 @@ async def session_respond(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
             emotion=emotion,
-            elapsed_ms=elapsed_ms,
         )
 
         if result.get("state") is None:
@@ -912,10 +878,22 @@ async def session_respond(
             # /session/{id}/closing 處理，這裡只負責播音檔。
             next_qn = body.state.question_number + 1
             tts = request.app.state.tts_service
-            result["audio_path"] = await _synthesize_audio(
-                tts, result["scene_text"] + result["question"], body.state.session_id,
-                body.state.round, next_qn if result.get("state") is not None else None,
+            if result.get("scene_text"):
+                scene_audio_path = await tts.synthesize(
+                    text=result["scene_text"],
+                    session_id=body.state.session_id,
+                    round_number=body.state.round,
+                    turn_number=None,
+                )
+                result["scene_audio_path"] = scene_audio_path
+            question_audio_path = await tts.synthesize(
+                text=result["question"],
+                session_id=body.state.session_id,
+                round_number=body.state.round,
+                turn_number=next_qn if result.get("state") is not None else None,
             )
+            result["question_audio_path"] = question_audio_path
+            result["audio_path"] = question_audio_path  # 向下相容
             await _update_live_view(
                 request.app.state.redis, body.state.session_id,
                 current_scene=result.get("scene_text", "") + result["question"],
@@ -929,13 +907,6 @@ async def session_respond(
                     question_number=next_qn, question=result["question"],
                     patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
                 )
-                # 背景生成治療師畫面用的候選追問語，不 await：長者端的回應/音檔
-                # 已經準備好了，不能讓這個純參考用的功能拖慢長者端的對話節奏
-                asyncio.create_task(_refresh_ai_suggestions(
-                    orchestrator, request.app.state.redis, body.state.session_id,
-                    body.state.user_id, result["state"]["covered_w"],
-                    result["state"]["skipped_w"], body.state.scene_elements, emotion,
-                ))
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
