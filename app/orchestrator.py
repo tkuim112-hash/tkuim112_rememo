@@ -89,16 +89,10 @@ _EMOTION_GUIDANCE = {
 }
 
 
-def _emotion_guidance(emotion: str, slow_response: bool = False) -> str:
+def _emotion_guidance(emotion: str) -> str:
     # 情緒偵測不見得可靠（例如中風、面癱等生理因素會讓表情辨識失準），
     # 未知情緒保守地當作「不明確」處理，不要預設為 happy 就貿然深入提問。
-    guidance = _EMOTION_GUIDANCE.get(emotion, _EMOTION_GUIDANCE["neutral"])
-    if slow_response:
-        # 純語氣調整，不影響任何流程判斷（是否轉話題、是否結束回合）——
-        # 只是延遲久不代表長者在掙扎放棄，也可能是認真在回想，
-        # 所以刻意不拿這個訊號去驅動任何決策，只放軟語氣、給多一點耐心。
-        guidance += "長者這題想了比較久才回答，語氣放慢一點、多一些耐心與肯定，不要催促。"
-    return guidance
+    return _EMOTION_GUIDANCE.get(emotion, _EMOTION_GUIDANCE["neutral"])
 
 
 # 單回合題數上限、補問上限：避免為了湊滿 5W1H 連環追問到底。
@@ -106,16 +100,6 @@ def _emotion_guidance(emotion: str, slow_response: bool = False) -> str:
 # 不強求六個W維度都要問過一輪。
 _MAX_QUESTIONS_PER_ROUND = 5
 _MAX_SUPPLEMENT_PER_ROUND = 2
-
-# 回應延遲門檻（毫秒）：超過這個時間只用來放軟語氣（見 _emotion_guidance），
-# 不影響 quick_end / can_continue 等任何流程判斷，避免誤判認真思考的長者為放棄。
-#
-# ⚠️ 這個時間量的是「AI問題送出（含TTS合成完成）」到「長者送出回答」之間的差距，
-# 無法扣掉「長者實際聽完整段語音播放」所花的時間（後端不知道前端播放何時結束），
-# 場景文字+問題最長可到 75 字，光聽完就可能要十幾秒。門檻刻意設得比較保守，
-# 就是為了在這個已知的量測誤差之上，還留一段真正屬於「長者反應時間」的空間，
-# 減少把「還在聽AI講話」誤判成「長者想很久」的機率。
-_SLOW_RESPONSE_MS = 30_000
 
 
 # 正式環境用的是本地 Ollama 模型（rememo-llama3，見 app/config.py），不是頂尖級
@@ -216,6 +200,10 @@ class TherapyOrchestrator:
           image_path, question, memories_used,
           state  ← 傳給下一輪 process_response 用
         """
+        # 以下各步驟的計時 print 是效能除錯用（RAG 先撈記憶、餵進 _plan_image，
+        # 移除 RAG-Fusion 多查詢+RRF 後總耗時 97s→58s），正式上線前會拿掉。
+        import time as _time
+        _t0 = _time.time()
         print(f"[Orchestrator] ── 回合 {round_number} 開始 ──")
 
         user = await self.user_profile.get_user(user_id)
@@ -225,13 +213,36 @@ class TherapyOrchestrator:
             user = {**user, "today_topic": topic_override, "topic_category": [topic_override]}
         print(f"  → {user['name']}，主題: {user['today_topic']}")
 
-        image_plan = await self._plan_image(user)
+        # ── 步驟 1：RAG 最先撈（跟生圖無關，可以最早發出）──
+        _t1 = _time.time()
+        memories = await self.rag.retrieve_memories(
+            user_id=user_id,
+            query=f"{user['today_topic']} {user['main_occupation']}",
+            limit=3,
+        )
+        # RAG 失敗時（Ollama 還沒好）等 3 秒後 retry 一次
+        if not memories:
+            import asyncio as _asyncio
+            print(f"  → [RAG] 第一次失敗，等 3 秒後 retry...")
+            await _asyncio.sleep(3)
+            memories = await self.rag.retrieve_memories(
+                user_id=user_id,
+                query=f"{user['today_topic']} {user['main_occupation']}",
+                limit=3,
+            )
+        print(f"  → [計時] RAG 撈回憶: {_time.time()-_t1:.1f}s")
+
+        # ── 步驟 2：把 memories 餵進 _plan_image，讓 LLM 從回憶挑元素 ──
+        _t2 = _time.time()
+        image_plan = await self._plan_image(user, memories=memories)
+        print(f"  → [計時] LLM 規劃圖片: {_time.time()-_t2:.1f}s")
         print(f"  → 圖片元素: {image_plan['elements']}")
 
         safe_prompt = self.deidentifier.desensitize_text(
             image_plan["image_prompt"], taboos=user["taboos"]
         )
 
+        _t3 = _time.time()
         try:
             image_path = await self.image.generate(
                 prompt=safe_prompt,
@@ -241,14 +252,10 @@ class TherapyOrchestrator:
         except Exception as e:
             print(f"  → 圖片生成失敗（不影響對話主流程，長者端這回合沒有配圖）: {e}")
             image_path = ""
+        print(f"  → [計時] Stability AI 生圖: {_time.time()-_t3:.1f}s")
         print(f"  → 圖片: {image_path}")
 
-        memories = await self.rag.retrieve_memories(
-            user_id=user_id,
-            query=f"{user['today_topic']} {user['main_occupation']}",
-            limit=3,
-        )
-
+        _t4 = _time.time()
         q = await guarded_generate(
             self._generate_question,
             taboo_words=user["taboos"],
@@ -277,7 +284,9 @@ class TherapyOrchestrator:
             covered_w=[],
             memories=memories,
         )
+        print(f"  → [計時] LLM 生問題: {_time.time()-_t4:.1f}s")
         print(f"  → STEP1 問題: {q['question']}（W: {q['covered_w']}）")
+        print(f"  → [計時] orchestrator 總計: {_time.time()-_t0:.1f}s")
 
         state = {
             "user_id": user_id,
@@ -312,7 +321,6 @@ class TherapyOrchestrator:
         elder_response: str,
         state: dict,
         emotion: str = "",
-        elapsed_ms: int | None = None,
     ) -> dict:
         """
         狀態機核心：根據長者回應決定下一步。
@@ -321,10 +329,6 @@ class TherapyOrchestrator:
             elder_response: 長者說的話（STT 轉譯結果）
             state: 上一輪回傳的 state dict
             emotion: Kinect 即時偵測的情緒（happy/excited/angry/sad，見 app/routers/sensor.py）
-            elapsed_ms: 從上一題送出到這次回答送出的時間（毫秒），
-                由 app/routers/session.py 算好傳入。只用來讓 _emotion_guidance
-                放軟語氣（見 _SLOW_RESPONSE_MS），不影響任何流程判斷——
-                延遲久不代表長者要放棄，可能只是認真在回想。
 
         Returns dict 含：
           action     : "open_followup" | "ask_supplement_w" | "end_round" | "end_session"
@@ -346,12 +350,9 @@ class TherapyOrchestrator:
         question_count   = state.get("question_count", 1)
         supplement_count = state.get("supplement_count", 0)
 
-        slow_response = elapsed_ms is not None and elapsed_ms > _SLOW_RESPONSE_MS
-
         print(f"[Orchestrator] process_response | round={state['round']} "
               f"last={last_type} covered={covered_w} skipped={skipped_w} "
-              f"questions={question_count} supplements={supplement_count} "
-              f"elapsed_ms={elapsed_ms} slow_response={slow_response}")
+              f"questions={question_count} supplements={supplement_count}")
 
         # ── 快速結束判斷（不叫 LLM）───────────────────────────────
         quick_end = self._is_quick_end(elder_response)
@@ -379,7 +380,7 @@ class TherapyOrchestrator:
                 skipped_w.append(last_w)
                 return await self._next_step_or_end(
                     user, scene_els, covered_w, skipped_w, elder_response, state, emotion,
-                    question_count, supplement_count, slow_response,
+                    question_count, supplement_count,
                 )
 
         # ── STEP2：自由對話中背景追蹤 W 覆蓋 ────────────────────
@@ -417,7 +418,6 @@ class TherapyOrchestrator:
                 max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
                 user=user, scene_elements=scene_els, covered_w=covered_w,
                 skipped_w=skipped_w, elder_response=elder_response, emotion=emotion,
-                slow_response=slow_response,
             )
             new_state = {
                 **state,
@@ -440,7 +440,7 @@ class TherapyOrchestrator:
             # 會依 _MAX_SUPPLEMENT_PER_ROUND 判斷是否還要補問，還是直接收尾。
             return await self._next_step_or_end(
                 user, scene_els, covered_w, skipped_w, elder_response, state, emotion,
-                question_count, supplement_count, slow_response,
+                question_count, supplement_count,
             )
 
     async def suggest_next_questions(
@@ -498,7 +498,6 @@ class TherapyOrchestrator:
         emotion: str = "happy",
         question_count: int = 1,
         supplement_count: int = 0,
-        slow_response: bool = False,
         elder_response: str = "",
     ) -> dict:
         result = await guarded_generate(
@@ -507,7 +506,7 @@ class TherapyOrchestrator:
             llm_service=self.llm,
             max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
             user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
-            emotion=emotion, slow_response=slow_response, elder_response=elder_response,
+            emotion=emotion, elder_response=elder_response,
         )
         print(f"  → 補問 W({target_w}): {result['question']}")
         new_state = {
@@ -577,7 +576,6 @@ class TherapyOrchestrator:
         emotion: str = "happy",
         question_count: int = 1,
         supplement_count: int = 0,
-        slow_response: bool = False,
     ) -> dict:
         """
         話題結束後：最多補問 _MAX_SUPPLEMENT_PER_ROUND 個未涵蓋的W，或結束回合。
@@ -609,7 +607,7 @@ class TherapyOrchestrator:
 
         return await self._ask_supplement(
             user, scene_els, covered_w, skipped_w, next_w, state, emotion,
-            question_count, supplement_count, slow_response,
+            question_count, supplement_count,
             elder_response=elder_response,
         )
 
@@ -770,8 +768,14 @@ class TherapyOrchestrator:
     # 私有：問題生成
     # ══════════════════════════════════════════════════════════════
 
-    async def _plan_image(self, user: dict) -> dict:
-        """請 LLM 規劃圖片元素與生圖 prompt。"""
+    async def _plan_image(self, user: dict, memories: list[dict] | None = None) -> dict:
+        """請 LLM 規劃圖片元素與生圖 prompt，可傳入 memories 讓 LLM 從回憶挑元素。"""
+        memory_section = ""
+        if memories:
+            memory_section = "\n【長者相關回憶（優先從這裡挑場景元素）】\n"
+            for m in memories:
+                memory_section += f"- {m.get('summary', m.get('text', ''))}\n"
+
         prompt = f"""你是懷舊療法的圖片規劃師。請根據長者資料規劃一張場景圖。
 
 【長者資料】
@@ -780,9 +784,10 @@ class TherapyOrchestrator:
 出生地：{user['birth_place']}
 職業背景：{user['main_occupation']}
 今日主題：{user['today_topic']}
-
+{memory_section}
 【任務】
 規劃一張水彩風格的回憶場景圖，符合主題，要能引發長者的回憶。
+若有【長者相關回憶】，優先從其中選取真實場景元素；若無，則依主題自行規劃。
 
 【嚴格規定】
 1. 每個元素必須是「不需要湊近看細節、一眼就能辨認形狀」的大範圍實體物件或情境
@@ -902,7 +907,6 @@ class TherapyOrchestrator:
         skipped_w: list[str],
         elder_response: str,
         emotion: str = "happy",
-        slow_response: bool = False,
         retry_feedback: str = "",
     ) -> dict:
         """
@@ -936,7 +940,7 @@ class TherapyOrchestrator:
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"\n【尚未涵蓋的W維度】\n{uncovered_str}\n"
-            f"\n【長者目前情緒】\n{_emotion_guidance(emotion, slow_response)}\n"
+            f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n請先承接長者的情緒（1-2句，符合他當下的心情，具體呼應他剛才說的內容），"
             f"再順著長者說的話問下一個問題（≤15字，開頭可用長者剛提到的具體人事物，"
@@ -974,7 +978,6 @@ class TherapyOrchestrator:
         covered_w: list[str],
         target_w: str,
         emotion: str = "happy",
-        slow_response: bool = False,
         retry_feedback: str = "",
         elder_response: str = "",
     ) -> dict:
@@ -1015,7 +1018,7 @@ class TherapyOrchestrator:
             f"\n【眼前畫面元素】\n{elements_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"{elder_section}"
-            f"\n【長者目前情緒】\n{_emotion_guidance(emotion, slow_response)}\n"
+            f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n"
             f"生成一個【補充問題】，探索還未涵蓋的W維度。{_W_HINT[target_w]}\n"

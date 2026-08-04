@@ -13,7 +13,7 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       - ollama
-      #- tts
+      - tts
       - db
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
@@ -89,6 +89,8 @@ services:
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib
       - MODEL_ID=OpenFormosa/BlueMagpie-TTS
       - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
+      - CFG_VALUE=2.5
+      - INFER_STEPS=10
       # 要用你自己的聲音：
       - SPEAKER_CENTROID_PT=/workspace/references/Peichi_centroid.pt
     volumes:

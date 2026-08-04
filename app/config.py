@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     stt_host: str = "http://kinect:8000"
     stt_model: str = "Systran/faster-whisper-large-v3"
 
-    # === TTS (BlueMagpie-TTS) ===
+    # === TTS (BlueMagpie-TTS 本地語音合成) ===
     tts_host: str = "http://tts:8080"
 
     # === Stability AI ===

@@ -6,7 +6,32 @@ import Link from "next/link";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
+
+  async function handleSubmit(e: { preventDefault: () => void }) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "發送失敗，請稍後再試");
+        return;
+      }
+      router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+    } catch {
+      setError("網路連線失敗，請稍後再試");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     // 整頁容器：暖色背景，置中
@@ -25,13 +50,7 @@ export default function ForgotPasswordPage() {
         </div>
 
         {/* 表單 */}
-        <form
-          className="w-full flex flex-col gap-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            router.push("/verify-email");
-          }}
-        >
+        <form className="w-full flex flex-col gap-4" onSubmit={handleSubmit}>
           {/* 電子信箱欄位 */}
           <div className="flex flex-col gap-2">
             <label className="font-medium text-[#1a1a1a] text-[15px]">電子信箱</label>
@@ -40,16 +59,20 @@ export default function ForgotPasswordPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="therapist@hospital.com.tw"
+              required
               className="border border-[#e0e0e0] rounded-xl px-4 py-3.5 text-[#1a1a1a] placeholder:text-[#1a1a1a]/40 outline-none focus:border-[#1a1a1a] transition-colors text-[15px]"
             />
           </div>
 
+          {error && <p className="text-[14px] text-[#e05c3a]">{error}</p>}
+
           {/* 繼續按鈕 */}
           <button
             type="submit"
-            className="bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px]"
+            disabled={loading}
+            className="bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px] disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            繼續
+            {loading ? "發送中..." : "繼續"}
           </button>
         </form>
 
