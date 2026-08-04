@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     jwt_expire_minutes: int = 60 * 12  # 12 小時
 
+    # === CORS（允許呼叫這個後端的前端來源，逗號分隔）===
+    cors_origins: str = "http://localhost:3000,https://re-memo.com"
+
     # === 治療師後台的瀏覽器 session cookie（Next.js 簽的另一組 HS256 JWT）===
     # /session、/sensor 有些端點同時被 Unity（帶 Authorization: Bearer）跟
     # 治療師後台瀏覽器（帶 rememo_session cookie）呼叫，這裡驗證後者用。
@@ -45,6 +48,10 @@ class Settings(BaseSettings):
     postgres_password: str = "password"
     postgres_db: str = "m6_db"
     postgres_dsn: str = ""  # 若為空，由 build_urls 自動組裝
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @model_validator(mode="after")
     def build_urls(self) -> "Settings":

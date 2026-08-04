@@ -7,34 +7,36 @@ class ElderlyAI:
     def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
+        qdrant_collection = os.getenv("QDRANT_COLLECTION", "safe_reminiscence")
         ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        embedding_model = os.getenv("EMBEDDING_MODEL", "bge-m3")
 
-        self.embeddings = OllamaEmbeddings(model="bge-m3", base_url=ollama_host)
+        self.embeddings = OllamaEmbeddings(model=embedding_model, base_url=ollama_host)
 
         self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-        
+
         # 如果 collection 不存在就自動建立
         collections = [c.name for c in self.client.get_collections().collections]
-        if "safe_reminiscence" not in collections:
+        if qdrant_collection not in collections:
             self.client.create_collection(
-                collection_name="safe_reminiscence",
+                collection_name=qdrant_collection,
                 vectors_config=models.VectorParams(
                     size=1024,   # bge-m3 的維度
                     distance=models.Distance.COSINE,
                 )
             )
-            print("✅ Qdrant collection 'safe_reminiscence' 建立成功")
+            print(f"✅ Qdrant collection '{qdrant_collection}' 建立成功")
 
         # elder_id 過濾用的 payload index（重複呼叫是冪等的，對既有資料也會回溯建立）
         self.client.create_payload_index(
-            collection_name="safe_reminiscence",
+            collection_name=qdrant_collection,
             field_name="metadata.elder_id",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
 
         self.db = QdrantVectorStore(
             client=self.client,
-            collection_name="safe_reminiscence",
+            collection_name=qdrant_collection,
             embedding=self.embeddings
         )
 

@@ -21,6 +21,7 @@ ollama_data/
 postgres_db/
 pgadmin/
 qdrant_storage/
+qdrant_backups/
 
 # 媒體與大型壓縮檔
 *.wav

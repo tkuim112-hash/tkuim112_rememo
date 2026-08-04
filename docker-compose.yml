@@ -54,6 +54,8 @@ services:
     environment:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - OLLAMA_HOST=http://ollama:11434
     restart: always
 
@@ -65,6 +67,26 @@ services:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
     volumes:
       - ./qdrant_storage:/qdrant/storage
+    restart: always
+
+  # 自動備份 Qdrant：每天呼叫 snapshot API 產生一致性快照、加密後存到跟 qdrant_storage
+  # 分開的獨立資料夾。內容含長者對話/情緒等個資，基於隱私考量刻意只留在本機、
+  # 不同步異地或雲端；落地前一定會用 BACKUP_ENCRYPTION_PASSPHRASE 加密，沒設就直接拒絕啟動。
+  # 注意：換了切分方式(chunk_size/CKIP 篩選規則)重跑 ingest 後，這份備份對應的是舊切法的向量，
+  # 不會自動更新，只能拿來做災難復原/版本回溯。
+  qdrant-backup:
+    build: ./qdrant_backup
+    container_name: tku-care-qdrant-backup-1
+    volumes:
+      - ./qdrant_backups:/backups
+    depends_on:
+      - qdrant
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION}
+      - BACKUP_KEEP_DAYS=7
+      - BACKUP_ENCRYPTION_PASSPHRASE=${QDRANT_BACKUP_PASSPHRASE}
     restart: always
 
   # M3: 本地語音合成 (BlueMagpie-TTS, RTX 50 系列/Blackwell 專用建置)
