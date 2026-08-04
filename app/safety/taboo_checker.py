@@ -163,6 +163,117 @@ def echoes_prompt_example(text: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 獨立於禁忌話題之外的另一道防護：格式/內容規則
+# ══════════════════════════════════════════════════════════════════════
+#
+# 這幾條規則在 question_5w1h.txt 裡都有明文規定，但先前只有口頭指示，沒有對應
+# 的事後防護。2026-08 用真實模型（rememo-llama3）實測發現：即使前面幾道關卡
+# 都通過，仍有相當比例的輸出違反這幾條規則——尤其「要求精確地名/時間」跟
+# 「要求描述畫面內容」這兩條，連 dpo/semantic_audit.py 的訓練資料稽核規則都
+# 沒有涵蓋，是這次才發現的漏洞，優先補在這裡。
+#
+# too_long/double_question/memory_test 跟幾個已知用詞瑕疵（先/咱們/搭把手/
+# 收場/頭一句/做下來說下去）跟 dpo/fix_xian_wording.py 的規則同源——那支腳本
+# import 了 dpo/collect_data.py（需要 ANTHROPIC_API_KEY 才能匯入），不適合讓
+# 正式環境的 app/ 依賴訓練 pipeline，所以這裡用同樣的 regex 重新定義一份，
+# 兩邊之後如果要調規則要記得同步改。dpo/fix_xian_wording.py 自己的註解也
+# 記錄了一個重要的實測結論：這類格式層級的規則丟給 LLM 判斷不可靠（同一句
+# 明顯的是非題丟給 Haiku 判斷4次只抓到1次），regex 判準反而更穩定。
+_FORMAT_PUNCT_RE = re.compile(r"[，。、！？!?,.\s「」『』（）()]")
+_DOUBLE_QUESTION_RE = re.compile(r"[？?]")
+_MEMORY_TEST_RE = re.compile(r"^你?(還記得|記不記得)")
+
+_XIAN_RE = re.compile(r"(?<!最)先(?!生|夫|父|母|人|前|天)")
+_ZANMEN_RE = re.compile(r"咱")
+_DABASHOU_RE = re.compile(r"搭把手|搭一把手")
+_SHOUCHANG_RE = re.compile(r"收場.{0,3}(回家|下班|下工)")
+_TOUYIJU_RE = re.compile(r"頭一句(?!話)")
+_BOOKISH_VC_RE = re.compile(r"做下來|說下去")
+
+# 「精確地名/時間」跟「要求描述畫面內容」：2026-08 用病患4真實資料實測 STEP1
+# 開場問題時發現的兩個新漏洞（見對話紀錄），連 dpo/semantic_audit.py 的11條
+# 訓練資料稽核規則都沒有明確涵蓋——question_5w1h.txt 裡只有口頭指示「不需要
+# 精確數字/年份/人名/地名」，從沒被做成 chosen/rejected 的對比訓練資料，
+# 訓練訊號比其他規則弱，實測違規率明顯偏高，需要事後防護補強。
+_PRECISE_FACT_RE = re.compile(r"哪一?個?國家|哪些國家|哪一?年|什麼時候|幾點|叫什麼|哪一?位")
+_IMAGE_DESC_RE = re.compile(r"看到什麼|看見什麼|圖案|造型|內容是什麼|寫著什麼|寫什麼|上面寫")
+
+
+def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] | tuple[None, None]:
+    """
+    檢查 question_5w1h.txt 明文規定、但先前沒有對應事後防護的幾條格式/內容規則。
+    回傳 (違規原因代號, retry_feedback文字)；全部通過回傳 (None, None)。
+    """
+    q = question_text or ""
+    combined = f"{scene_text or ''}{q}"
+
+    length = len(_FORMAT_PUNCT_RE.sub("", q))
+    if length > 15:
+        return "too_long", (
+            f"上一次的問題「{q}」共{length}字，超過15字上限。這次請把這句話縮短到15字以內，"
+            "可以拿掉不影響意思的修飾詞。"
+        )
+
+    if len(_DOUBLE_QUESTION_RE.findall(q)) > 1:
+        return "double_question", (
+            f"上一次的問題「{q}」裡有兩個問號，等於一次問兩件事，長者會不知道先回答哪一個。"
+            "這次請只保留一個問題。"
+        )
+
+    if _MEMORY_TEST_RE.match(q):
+        return "memory_test", (
+            f"上一次的問題「{q}」用「你還記得／記不記得」開頭，這是在測長者的記憶力而不是"
+            "邀請他分享。這次請拿掉這個開頭，直接問內容本身。"
+        )
+
+    if _PRECISE_FACT_RE.search(q):
+        return "precise_fact", (
+            f"上一次的問題「{q}」要求長者說出精確的地名/國家/時間/人名，這類問題長者答不出來"
+            "時容易感到挫折。這次請改問過程、感受或互動，不要問需要精確事實性答案的問題。"
+        )
+
+    if _IMAGE_DESC_RE.search(q):
+        return "image_description", (
+            f"上一次的問題「{q}」要長者描述這張AI示意圖裡的畫面內容（例如看到什麼、圖案、"
+            "造型）。長者根本沒看過這張剛生成的圖，這樣問等於逼他編答案。這次請把畫面元素"
+            "當成引子，問長者自己實際經歷過的事，不要問畫面本身有什麼。"
+        )
+
+    if _XIAN_RE.search(combined):
+        return "xian_wording", (
+            "上一次的內容用了「先＋動詞」這種贅字句型（例如「先做什麼」「先準備」）。"
+            "這次請拿掉「先」這個字，改成更口語自然的講法。"
+        )
+    if _ZANMEN_RE.search(combined):
+        return "zanmen_wording", (
+            "上一次的內容用了「咱們／咱」，這是北方/大陸口語用詞，不是台灣長者平常會聽到的"
+            "說法。這次請改用「我們」。"
+        )
+    if _DABASHOU_RE.search(combined):
+        return "dabashou_wording", (
+            "上一次的內容用了「搭把手」，這是北方/大陸口語用詞。這次請改用「幫忙」「幫個忙」"
+            "「來湊一腳」這類台灣長者會用的講法。"
+        )
+    if _SHOUCHANG_RE.search(combined):
+        return "shouchang_wording", (
+            "上一次的內容把「收場」接「回家/下班/下工」，這是誤用——「收場」是抽象語境。"
+            "這次描述收拾東西準備離開的具體動作請改用「收工」「收拾」。"
+        )
+    if _TOUYIJU_RE.search(combined):
+        return "touyiju_wording", (
+            "上一次的內容用了省略「話」字的「頭一句」，這種縮略講法語法不完整。"
+            "這次請寫成完整的「第一句話」。"
+        )
+    if _BOOKISH_VC_RE.search(combined):
+        return "bookish_verb_complement", (
+            "上一次的內容用了「做下來」「說下去」這種讀起來生硬、像書面翻譯腔的動補搭配。"
+            "這次請改用「做出來」「完成」「說出口」這類老朋友聊天真的會用的講法。"
+        )
+
+    return None, None
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Layer 2：LLM 語意檢查（同步，必須在回應送出前完成）
 # ══════════════════════════════════════════════════════════════════════
 
@@ -337,6 +448,18 @@ async def guarded_generate(
                 "沒有根據這次真正的【眼前畫面元素】與長者資料生成。這次請根據這次實際提供的"
                 "資料重新生成全新內容，不要使用範例裡的地點、物件或字句。"
             )
+            attempt += 1
+            continue
+
+        # 格式/內容規則（too_long、double_question、memory_test、精確地名時間、
+        # 要求描述畫面內容、已知用詞瑕疵，詳見 check_format_rules 上方註解）。
+        format_rule, format_feedback = check_format_rules(question_text, scene_text_val)
+        if format_rule:
+            logger.warning(
+                f"[TabooChecker] 格式/內容規則違規({format_rule}): "
+                f"question={question_text!r} scene_text={scene_text_val!r}，重新生成 (attempt={attempt})"
+            )
+            retry_feedback = format_feedback
             attempt += 1
             continue
 
