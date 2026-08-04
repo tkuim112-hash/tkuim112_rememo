@@ -9,6 +9,8 @@ set -eu
 QDRANT_URL="${QDRANT_URL:-http://qdrant:6333}"
 QDRANT_COLLECTION="${QDRANT_COLLECTION:-safe_reminiscence}"
 BACKUP_KEEP_DAYS="${BACKUP_KEEP_DAYS:-7}"
+BACKUP_INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-86400}"
+BACKUP_RETRY_SECONDS="${BACKUP_RETRY_SECONDS:-300}"
 BACKUP_DIR="/backups"
 TMP_DIR="/tmp/qdrant-backup"
 
@@ -63,6 +65,10 @@ do_backup() {
 mkdir -p "$BACKUP_DIR" "$TMP_DIR"
 
 while true; do
-    do_backup || echo "備份失敗，等下一輪重試"
-    sleep 86400
+    if do_backup; then
+        sleep "$BACKUP_INTERVAL_SECONDS"
+    else
+        echo "備份失敗，${BACKUP_RETRY_SECONDS} 秒後重試（不等到下一個整天週期，避免像 Qdrant 剛好還沒就緒這種暫時性失敗漏掉一整天）"
+        sleep "$BACKUP_RETRY_SECONDS"
+    fi
 done
