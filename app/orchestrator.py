@@ -43,7 +43,7 @@ from services.image import StabilityImageService
 from services.rag_client import RealRAGClient
 from services.user_profile_db import DBUserProfileClient
 from privacy.deidentifier import Deidentifier
-from safety.taboo_checker import guarded_generate
+from safety.response_guard import guarded_generate
 from safety.element_filter import filter_scene_elements
 
 # 5W1H 優先順序（由易到難，對齊 問題設計規則.pdf；Why 條件式使用）
@@ -233,7 +233,7 @@ class TherapyOrchestrator:
         if not user:
             raise ValueError(f"找不到使用者: {user_id}")
         if topic_override:
-            user = {**user, "today_topic": topic_override, "topic_category": [topic_override]}
+            user = {**user, "today_topic": topic_override}
         print(f"  → {user['name']}，主題: {user['today_topic']}")
 
         # ── 步驟 1：RAG 最先撈（跟生圖無關，可以最早發出）──
@@ -845,22 +845,24 @@ class TherapyOrchestrator:
         if memories:
             task_instruction = (
                 "這次的每一個畫面元素都只從【長者相關回憶】的內容延伸挑選，完全"
-                "不使用興趣、職業背景或出生地。"
+                "不使用興趣、職業背景或出生地。回憶裡有幾個具體東西就用幾個，"
+                "不用湊到4個，不要新增回憶沒提到的細節。"
             )
         elif anchor == "hometown":
             task_instruction = (
                 "這次主場景以【出生地】為背景，結合【職業背景】的真實生活情境挑選"
-                "元素（想像長者在自己的家鄉從事這份職業的真實一刻），不要用到興趣。"
+                "元素（想像長者在自己的家鄉從事這份職業的真實一刻），不要用到興趣，"
+                "元素彼此都要屬於同一個情境。"
             )
         elif anchor == "interest":
             task_instruction = (
                 "這次主場景以【興趣】的真實生活情境挑選元素（想像長者從事這項興趣"
-                "時的真實一刻），不要用到職業背景。"
+                "時的真實一刻），不要用到職業背景，元素彼此都要屬於同一個情境。"
             )
         else:
             task_instruction = (
                 "這次主場景以【職業背景】的真實生活情境挑選元素（想像長者在職業"
-                "現場的真實一刻），不要用到興趣。"
+                "現場的真實一刻），不要用到興趣，元素彼此都要屬於同一個情境。"
             )
 
         return f"""你是懷舊療法的圖片規劃師。請根據長者資料規劃一張場景圖。
@@ -871,9 +873,7 @@ class TherapyOrchestrator:
 【任務】
 規劃一張水彩風格的回憶場景圖，符合主題，要能引發長者的回憶。
 
-{task_instruction}這次的每一個畫面元素都只從這個情境延伸挑選——四個元素要像
-同一個現場拍出來的照片，彼此都屬於同一個情境，不要把長者資料裡沒被選中的其他
-候選背景資訊也混進來。
+{task_instruction}
 
 不要只憑【今日主題】天馬行空聯想，也不要選跟長者實際生活背景無關的通俗畫面。
 
@@ -984,7 +984,7 @@ class TherapyOrchestrator:
         )
 
         elements_str = "、".join(scene_elements)
-        topic_str    = "、".join(user.get("topic_category", [])) or user["today_topic"]
+        topic_str    = user["today_topic"]
         covered_str  = "、".join(covered_w) if covered_w else "無"
         taboo_str    = "、".join(user["taboos"]) if user["taboos"] else "無"
 
@@ -1050,7 +1050,7 @@ class TherapyOrchestrator:
         )
 
         elements_str = "、".join(scene_elements)
-        topic_str    = "、".join(user.get("topic_category", [])) or user["today_topic"]
+        topic_str    = user["today_topic"]
         covered_str  = "、".join(covered_w) if covered_w else "無"
         taboo_str    = "、".join(user["taboos"]) if user["taboos"] else "無"
 
@@ -1127,7 +1127,7 @@ class TherapyOrchestrator:
         )
 
         elements_str = "、".join(scene_elements)
-        topic_str    = "、".join(user.get("topic_category", [])) or user["today_topic"]
+        topic_str    = user["today_topic"]
         covered_str  = "、".join(covered_w) if covered_w else "無"
         taboo_str    = "、".join(user["taboos"]) if user["taboos"] else "無"
         elder_section = f"\n【長者剛才說的話】\n{elder_response}\n" if elder_response else ""
@@ -1181,17 +1181,29 @@ class TherapyOrchestrator:
         """
         result: dict = {"scene_text": "", "question": "", "covered_w": []}
         thinking = ""
+        # current_field 追蹤「目前正在填哪個欄位」，讓後續沒有標籤的行可以接到
+        # 上一個標籤欄位——本地模型偶爾會把「問題：」單獨放一行、實際問題文字
+        # 放在下一行，原本逐行比對「這行開頭是不是問題：」的寫法抓不到這種格式，
+        # 會讓 result["question"] 停留空字串，觸發下面的「question 欄位是空的」
+        # 保底邏輯，把整段原始輸出（思考+場景文字+問題+W全部黏在一起）誤判成
+        # 問題內容塞進去——2026-08 實測發現這是造成 too_long 重試的常見成因。
+        current_field: str | None = None
         for line in raw.splitlines():
             line = line.strip()
+            if not line:
+                continue
             if line.startswith("思考："):
                 # CoT 草稿行：question_5w1h.txt 的【思考欄位】規則要求模型先在這裡
                 # 判斷主題方向、選錨點，再輸出正式內容。這行故意不進 result、不會
                 # 被念給長者聽，只印出來方便觀察模型的選題邏輯、調整 prompt。
                 thinking = line[len("思考："):].strip()
+                current_field = "thinking"
             elif line.startswith("場景文字："):
                 result["scene_text"] = line[len("場景文字："):].strip()
+                current_field = "scene_text"
             elif line.startswith("問題："):
                 result["question"] = line[len("問題："):].strip()
+                current_field = "question"
             elif line.startswith("本回合已涵蓋的W："):
                 # 先清掉可能洩漏的括號說明（例如模型自己加註「（因...較難...改以...）」），
                 # 不然裡面的中文逗號會被當成 W 之間的分隔符，把整段說明文字拆成好幾個
@@ -1202,6 +1214,15 @@ class TherapyOrchestrator:
                     for w in w_raw.replace("，", "、").split("、")
                     if w.strip()
                 ]
+                current_field = None
+            elif line.startswith("問題類型："):
+                current_field = None  # 這欄不儲存，但要停止把後面的行接到問題/場景文字
+            elif current_field == "scene_text":
+                result["scene_text"] = f"{result['scene_text']} {line}".strip()
+            elif current_field == "question":
+                result["question"] = f"{result['question']} {line}".strip()
+            elif current_field == "thinking":
+                thinking = f"{thinking} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
         for key in ("scene_text", "question"):
@@ -1227,12 +1248,23 @@ class TherapyOrchestrator:
     def _parse_track_c_response(self, raw: str, scene_elements: list[str] | None = None) -> dict:
         """解析 Track C（承接語 + 問題）的輸出。"""
         result: dict = {"scene_text": "", "question": ""}
+        # 同 _parse_question_response：追蹤目前正在填哪個欄位，處理標籤跟內容
+        # 分兩行的情況（見該函式的說明）。
+        current_field: str | None = None
         for line in raw.splitlines():
             line = line.strip()
+            if not line:
+                continue
             if line.startswith("承接語："):
                 result["scene_text"] = line[len("承接語："):].strip()
+                current_field = "scene_text"
             elif line.startswith("問題："):
                 result["question"] = line[len("問題："):].strip()
+                current_field = "question"
+            elif current_field == "scene_text":
+                result["scene_text"] = f"{result['scene_text']} {line}".strip()
+            elif current_field == "question":
+                result["question"] = f"{result['question']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
         for key in ("scene_text", "question"):

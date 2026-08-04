@@ -56,8 +56,7 @@ class DBUserProfileClient:
             "main_occupation": patient.occupation,
             "taboos": taboos,
             "today_topic": today_topic,
-            "topic_category": [today_topic],
-            "preferences": patient.preferences or "",   
+            "preferences": patient.preferences or "",
         }
     
     async def close(self):
