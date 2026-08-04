@@ -245,21 +245,30 @@ class TherapyOrchestrator:
         # 內容，所以送進 _plan_image 的永遠只有一筆。用 round_number 輪流挑
         # 不同筆（見下方 candidate_memories 選取邏輯），三回合各自扣住不同的
         # 真實記憶，比每回合都固定挑最高分那一筆更能避免三張圖內容太相似。
-        candidate_memories = await self.rag.retrieve_memories(
-            user_id=user_id,
-            query=f"{user['today_topic']} {user['main_occupation']}",
-            limit=3,
-        )
-        # RAG 失敗時（Ollama 還沒好）等 3 秒後 retry 一次
-        if not candidate_memories:
-            import asyncio as _asyncio
-            print(f"  → [RAG] 第一次失敗，等 3 秒後 retry...")
-            await _asyncio.sleep(3)
+        # retrieve_memories 現在失敗時會丟例外（見 rag_client.py 說明），這裡
+        # 只在「真的失敗」（例如 Ollama/RAG服務還沒起來）時才等3秒重試一次；
+        # 「這位長者本來就還沒有任何記憶」會正常回傳空list、不會進到這個
+        # except，不會白白多等3秒——這兩種情況之前長得一模一樣，每個全新
+        # 病患開場都要多等3秒，2026-08 修掉這個問題。
+        try:
             candidate_memories = await self.rag.retrieve_memories(
                 user_id=user_id,
                 query=f"{user['today_topic']} {user['main_occupation']}",
                 limit=3,
             )
+        except Exception as e:
+            import asyncio as _asyncio
+            print(f"  → [RAG] 第一次失敗（{e}），等 3 秒後 retry...")
+            await _asyncio.sleep(3)
+            try:
+                candidate_memories = await self.rag.retrieve_memories(
+                    user_id=user_id,
+                    query=f"{user['today_topic']} {user['main_occupation']}",
+                    limit=3,
+                )
+            except Exception as e2:
+                print(f"  → [RAG] 重試仍失敗（{e2}），這回合當作沒有記憶處理")
+                candidate_memories = []
         print(f"  → [計時] RAG 撈回憶: {_time.time()-_t1:.1f}s")
 
         memories = (
