@@ -238,22 +238,34 @@ class TherapyOrchestrator:
 
         # ── 步驟 1：RAG 最先撈（跟生圖無關，可以最早發出）──
         _t1 = _time.time()
-        memories = await self.rag.retrieve_memories(
+        # 撈 limit=3 筆候選（同一場療程3回合的查詢字串都一樣，撈回來的候選
+        # 名單大致相同），但每次只會挑其中一筆單獨餵給 _plan_image——2026-08
+        # 實測發現多筆記憶疊加組成 memory_section 時，就算每筆單獨都在安全
+        # 長度內，疊加起來還是會讓模型完全失焦、退化成「公園野餐」這種通用
+        # 內容，所以送進 _plan_image 的永遠只有一筆。用 round_number 輪流挑
+        # 不同筆（見下方 candidate_memories 選取邏輯），三回合各自扣住不同的
+        # 真實記憶，比每回合都固定挑最高分那一筆更能避免三張圖內容太相似。
+        candidate_memories = await self.rag.retrieve_memories(
             user_id=user_id,
             query=f"{user['today_topic']} {user['main_occupation']}",
             limit=3,
         )
         # RAG 失敗時（Ollama 還沒好）等 3 秒後 retry 一次
-        if not memories:
+        if not candidate_memories:
             import asyncio as _asyncio
             print(f"  → [RAG] 第一次失敗，等 3 秒後 retry...")
             await _asyncio.sleep(3)
-            memories = await self.rag.retrieve_memories(
+            candidate_memories = await self.rag.retrieve_memories(
                 user_id=user_id,
                 query=f"{user['today_topic']} {user['main_occupation']}",
                 limit=3,
             )
         print(f"  → [計時] RAG 撈回憶: {_time.time()-_t1:.1f}s")
+
+        memories = (
+            [candidate_memories[(round_number - 1) % len(candidate_memories)]]
+            if candidate_memories else []
+        )
 
         # ── 步驟 2：把 memories 餵進 _plan_image，讓 LLM 從回憶挑元素 ──
         _t2 = _time.time()

@@ -13,6 +13,23 @@ class MemoryResult(TypedDict):
     timestamp: str
 
 
+def _smart_truncate(text: str, max_len: int = 20) -> str:
+    """
+    截斷到 max_len 字以內，優先在最接近上限的標點符號處切，不要無腦硬砍在
+    字數上——2026-08 實測發現 summary 被硬截斷成「以前在台中第一市場賣菜，
+    天還沒亮就要去批」這種斷頭斷尾的殘句時，會讓 _plan_image 選元素時更容易
+    抓不到重點。只有在截斷範圍內完全找不到標點（找到的標點位置太早，切出來
+    內容會少於一半）時才退回硬截斷，保留內容完整性優先於精準卡在字數上限。
+    """
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    best_idx = max(window.rfind(p) for p in "。！？，、")
+    if best_idx >= max_len // 2:
+        return window[: best_idx + 1]
+    return window
+
+
 class RAGClient(Protocol):
     """RAG 客戶端介面定義"""
     async def retrieve_memories(self, user_id: str, query: str, limit: int = 3) -> list[MemoryResult]: ...
@@ -40,7 +57,7 @@ class RealRAGClient:
             return [
                 {
                     "text": m.get("text", ""),
-                    "summary": m.get("text", "")[:20],
+                    "summary": _smart_truncate(m.get("text", "")),
                     "emotion_tag": m.get("emotion") or "懷念",
                     "importance": m.get("score", 0.5),
                     "timestamp": m.get("created_at", ""),
