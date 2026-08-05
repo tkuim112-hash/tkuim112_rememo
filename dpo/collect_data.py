@@ -2144,10 +2144,22 @@ def build_inference_prompt(
     訓練資料因此從沒讓模型看過帶這兩段內容的輸入——比照 Track D 的修法補上。
     emotion 預設 "happy"（沒有特別標記情緒的情境維持現況），retry_feedback
     留給呼叫端（目前 generate_track_a 不需要）。
+
+    同一輪稽核也發現兩個欄位落差，這次一併處理：
+    - 生產端 user_content 有「興趣：{user.get('preferences') or '無'}」這行
+      （orchestrator.py:986），這裡完全沒有——已補上，用 elder.get('preferences')。
+      scenarios.json 目前每筆長者資料都沒有 preferences 欄位，所以現階段這行
+      在訓練資料裡會固定顯示「無」；要讓內容真的有變化，需要另外幫
+      scenarios.json 的長者資料補上興趣欄位，這裡先只補齊格式對齊。
+    - 「懷舊治療主題類別」原本用人工標注的 topic_category（例如「工作、專長」），
+      但使用者確認今日主題本身是治療師手動輸入或 AI 建議的自由文字，不是固定
+      分類系統——生產端直接重複塞 today_topic（orchestrator.py:975/987）就是
+      正確行為，不是 bug。這裡改成同樣直接使用 elder['today_topic']，
+      topic_category 參數保留（呼叫端仍會傳入，用在別處如哀傷情境判斷／
+      chosen prompt 的主題引導），但不再用來組這一行的內容。
     """
     elements_str = "、".join(scene["elements"])
     covered_str = "、".join(covered_w) if covered_w else "無"
-    topic_str = "、".join(topic_category) if topic_category else "未指定"
     taboo_str = "、".join(taboos) if taboos else "無"
 
     step_instructions = {
@@ -2180,7 +2192,8 @@ def build_inference_prompt(
         f"姓名：{elder['name']}\n"
         f"職業背景：{elder['main_occupation']}\n"
         f"今日主題：{elder['today_topic']}\n"
-        f"懷舊治療主題類別：{topic_str}\n"
+        f"興趣：{elder.get('preferences') or '無'}\n"
+        f"懷舊治療主題類別：{elder['today_topic']}\n"
         f"\n【眼前畫面元素】\n{elements_str}\n"
         f"\n【已涵蓋的W維度】\n{covered_str}\n"
         f"{elder_section}"
