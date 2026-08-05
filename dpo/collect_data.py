@@ -80,6 +80,7 @@ _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
 # orchestrator.py——orchestrator.py 頂層會 import services/DB 等重依賴，collect_data.py
 # 需要維持「不設定 ANTHROPIC_API_KEY 也能被 evaluate_model.py import」的特性）。
 _EMOTION_GUIDANCE = {
+    "sad":     "長者目前情緒低落，請優先給予溫暖同理與正向肯定，語氣放柔，暫緩深入提問，可引導至輕鬆或正向的話題。",
     "angry":   "長者目前情緒焦躁不安，請先安撫情緒、語氣放緩，避免追問敏感或原因類問題。",
     "excited": "長者目前情緒較亢奮，維持溫暖但避免過度刺激。",
     "happy":   "長者情緒穩定，正常延續對話即可。",
@@ -1848,8 +1849,17 @@ def build_track_c_inference_prompt(
     covered_w: list[str] | None = None,
     skipped_w: list[str] | None = None,
     taboos: list[str] | None = None,
+    emotion: str = "happy",
+    retry_feedback: str = "",
 ) -> list[dict]:
-    """推理時的 prompt，包含長者剛才說的話，讓模型知道要承接什麼。"""
+    """
+    推理時的 prompt，包含長者剛才說的話，讓模型知道要承接什麼。
+
+    2026-08 稽核發現這裡漏掉了生產端 orchestrator._generate_open_followup 實際
+    會有的兩個區段（【長者目前情緒】與 retry_feedback，見 orchestrator.py:1054），
+    訓練資料因此從沒讓模型看過帶這兩段內容的輸入——比照 Track D 的修法補上。
+    emotion 預設 "happy"，retry_feedback 留給呼叫端（目前 generate_track_c 不需要）。
+    """
     elements = "、".join(sc["scene_elements"])
     covered_w = covered_w or []
     skipped_w = skipped_w or []
@@ -1868,11 +1878,13 @@ def build_track_c_inference_prompt(
         f"\n【眼前畫面元素】\n{elements}\n"
         f"\n【已涵蓋的W維度】\n{covered_str}\n"
         f"\n【尚未涵蓋的W維度】\n{uncovered_str}\n"
+        f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
         f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
         f"\n請先承接長者的情緒（1-2句，符合他當下的心情，具體呼應他剛才說的內容），"
         f"再順著長者說的話問下一個問題（≤15字，開頭可用長者剛提到的具體人事物，"
         f"也可以用畫面元素，開放式，不必勉強拉回畫面）。\n"
         f"問題要自然跟著對話走，同時盡量帶出【尚未涵蓋的W維度】中的某一個。\n"
+        f"{_retry_feedback_section(retry_feedback)}"
         f"\n【輸出格式】\n"
         f"承接語：（1-2句，30字以內）\n"
         f"問題：（≤15字）"
@@ -2120,10 +2132,18 @@ def build_inference_prompt(
     topic_category: list[str] | None = None,
     elder_response: str = "",
     taboos: list[str] | None = None,
+    emotion: str = "happy",
+    retry_feedback: str = "",
 ) -> list[dict]:
     """
     組出推理時送給 llama3 的 messages 格式（/api/chat）。
     DPO 訓練的 prompt 欄位應與生產端 orchestrator 呼叫格式一致。
+
+    2026-08 稽核發現這裡漏掉了生產端 orchestrator._generate_question 實際會有的
+    兩個區段（【長者目前情緒】與 retry_feedback，見 orchestrator.py:991/1132），
+    訓練資料因此從沒讓模型看過帶這兩段內容的輸入——比照 Track D 的修法補上。
+    emotion 預設 "happy"（沒有特別標記情緒的情境維持現況），retry_feedback
+    留給呼叫端（目前 generate_track_a 不需要）。
     """
     elements_str = "、".join(scene["elements"])
     covered_str = "、".join(covered_w) if covered_w else "無"
@@ -2164,8 +2184,10 @@ def build_inference_prompt(
         f"\n【眼前畫面元素】\n{elements_str}\n"
         f"\n【已涵蓋的W維度】\n{covered_str}\n"
         f"{elder_section}"
+        f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
         f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
         f"\n【任務】\n{step_instructions[step]}\n"
+        f"{_retry_feedback_section(retry_feedback)}"
         f"\n【輸出格式】\n"
         f"{thinking_line}"
         f"場景文字：（30-60字，給長者聽的場景描述）\n"
