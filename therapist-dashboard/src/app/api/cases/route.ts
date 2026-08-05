@@ -21,7 +21,9 @@ function mapPatient(p: Record<string, unknown>) {
     avatarColor: AVATAR_COLORS[id % AVATAR_COLORS.length],
     totalSessions: p.total_sessions ?? 0,
     lastSession: p.last_session ?? "尚未開始",
-    isActive: true,
+    // 目前沒有真正的活動中判斷，先預設 false；真實值由 dashboard 頁面
+    // 另外向後端 /session/active-patients 查詢後蓋過去（見該頁面的 polling effect）。
+    isActive: false,
     age: p.birth_year ? new Date().getFullYear() - (p.birth_year as number) : 0,
     gender: "unknown",
     mode: "輕度模式",

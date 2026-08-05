@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import type { Case } from "@/lib/types";
+import { API_BASE } from "@/lib/api";
 
 export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
@@ -23,6 +24,31 @@ export default function DashboardPage() {
       .then((r) => r.json())
       .then((data) => setCases(Array.isArray(data) ? data : []))
       .catch(() => {});
+  }, []);
+
+  // Unity 選定病患（或治療師開啟開始療程頁）後，後端會把該病患標記活動中，
+  // 這裡每 5 秒 polling 一次，讓「活動中」徽章跟 Unity 端的狀態連動。
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/session/active-patients`, { credentials: "include" });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const activeIds: string[] = Array.isArray(data?.patient_ids) ? data.patient_ids : [];
+        setCases((prev) =>
+          prev.map((c) => ({ ...c, isActive: activeIds.includes(c.id) }))
+        );
+      } catch {
+        // 忽略單次輪詢失敗，5 秒後重試
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   const filtered = cases.filter((c) => c.name.includes(search));

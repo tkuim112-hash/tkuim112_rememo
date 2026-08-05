@@ -29,7 +29,9 @@ public static class SessionService
         Action<string> onSuccess,
         Action<string> onFail)
     {
-        using var req = UnityWebRequest.Get($"{backendUrl}/session/pending?patient_id={patientId}");
+        // source=unity 讓後端只在「Unity 真的選定病患」時才標記該病患活動中，
+        // 治療師網頁自己開啟開始療程頁（不帶這個參數）不會觸發活動中徽章。
+        using var req = UnityWebRequest.Get($"{backendUrl}/session/pending?patient_id={patientId}&source=unity");
         AuthService.AttachAuthHeader(req);
 
         yield return req.SendWebRequest();

@@ -408,6 +408,7 @@ class RespondRequest(BaseModel):
 async def session_pending(
     request: Request,
     patient_id: str,
+    source: str = "web",
     therapist_id: int = Depends(get_current_therapist_id),
 ):
     """
@@ -417,15 +418,33 @@ async def session_pending(
 
     session_id 建立後有 2 小時 TTL；/session/start 成功後會清掉這個 key，
     避免下次同一位病患開新療程時誤用到舊的（已結束的）session_id。
+
+    source：Unity 呼叫時帶 "unity"（見 SessionService.FetchPendingSession），
+    只有這個來源才會標記病患活動中——治療師光是打開「開始療程」頁不代表
+    長者端真的坐上 Kinect 開始被服務，不該顯示活動中。
     """
     r = request.app.state.redis
     key = f"case:{patient_id}:pending_session"
     candidate = str(uuid.uuid4())
     was_set = await r.set(key, candidate, ex=7200, nx=True)
+    if source == "unity":
+        await r.set(f"patient:{patient_id}:active", "1", ex=7200)
     if was_set:
         return {"session_id": candidate}
     existing = await r.get(key)
     return {"session_id": existing or candidate}
+
+
+@router.get("/active-patients", summary="目前活動中（Unity 已選定或療程進行中）的病患 id 清單")
+async def active_patients(
+    request: Request,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """供治療師個案列表的「活動中」徽章 polling 用。TTL 到期（見 /session/pending）
+    或療程結束（見 _compute_and_save_assessment）都會讓病患從這份清單消失。"""
+    r = request.app.state.redis
+    ids = [key.split(":")[1] async for key in r.scan_iter(match="patient:*:active")]
+    return {"patient_ids": ids}
 
 
 @router.get("/{session_id}/status", summary="供治療師網頁 polling Unity 校正狀態")
@@ -816,6 +835,8 @@ async def _compute_and_save_assessment(
             f"session:{session_id}:calibration",
             f"session:{session_id}:round1_result",
         )
+        if meta.get("patient_id"):
+            await r.delete(f"patient:{meta['patient_id']}:active")
     except Exception as e:
         print(f"[DB] 療程寫入失敗 ({session_id}): {e}")
         await db.rollback()
