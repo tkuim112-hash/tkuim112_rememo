@@ -3,9 +3,16 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import type { Case } from "@/lib/types";
+import { API_BASE } from "@/lib/api";
 
 export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
+  // 活動中病患 id 清單獨立成自己的 state，不直接寫回 cases，避免
+  // 這裡跟下面 /api/cases 兩個各自非同步的 fetch 互相用舊資料蓋掉對方
+  // （最後解析完成的那個會贏，先前曾發生 /api/cases 較晚回來時
+  // 把剛合併好的活動中狀態蓋回全部 false）。畫面顯示的 isActive
+  // 一律在渲染當下用這份 id 清單即時算出。
+  const [activePatientIds, setActivePatientIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [displayInstitution, setDisplayInstitution] = useState("");
@@ -25,7 +32,32 @@ export default function DashboardPage() {
       .catch(() => {});
   }, []);
 
-  const filtered = cases.filter((c) => c.name.includes(search));
+  // Unity 選定病患後，後端會把該病患標記活動中，這裡每 5 秒 polling 一次，
+  // 讓「活動中」徽章跟 Unity 端的狀態連動。
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/session/active-patients`, { credentials: "include" });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const activeIds: string[] = Array.isArray(data?.patient_ids) ? data.patient_ids : [];
+        setActivePatientIds(new Set(activeIds));
+      } catch {
+        // 忽略單次輪詢失敗，5 秒後重試
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const filtered = cases
+    .filter((c) => c.name.includes(search))
+    .map((c) => ({ ...c, isActive: activePatientIds.has(c.id) }));
   const isEmpty = cases.length === 0;
 
   return (

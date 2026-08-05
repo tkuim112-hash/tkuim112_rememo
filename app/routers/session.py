@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,6 +24,17 @@ def _to_int(val) -> int | None:
         return None
 
 
+async def _synthesize_safe(tts, **kwargs) -> str | None:
+    """TTS 服務離線/逾時（例如本機 GPU 資源被 Ollama 占用時沒開 TTS）不該擋住整個
+    回合開場/回應流程，跟圖片生成失敗一樣採不影響主流程的降級：長者端這段沒有語音，
+    但場景文字、問題、圖片仍正常運作。"""
+    try:
+        return await tts.synthesize(**kwargs)
+    except Exception as e:
+        print(f"[TTS] 語音合成失敗（不影響主流程，長者端這段沒有語音）: {e}")
+        return None
+
+
 async def _init_session_meta(
     r, session_id: str, patient_id: str, therapist_id: str = "", topic: str = "",
 ) -> None:
@@ -42,6 +54,32 @@ async def _init_session_meta(
             "topic":        topic,
         }
         await r.set(key, json.dumps(meta))
+
+
+async def _get_cached_start_result(r, session_id: str) -> dict | None:
+    """
+    /session/start（第一回合）現在有兩個呼叫者：治療師網頁按下「啟動療程」，
+    以及 Unity 的 GameController 在 WarmupScene 等到治療師啟動後自己也會呼叫一次
+    （見 WarmupController，兩邊已换到同一組 session_id）。
+
+    第二個呼叫者直接重播第一次的結果，避免 orchestrator 重新生成場景/問題、
+    TTS 重新合成、round_exchanges 被寫入兩筆重複的第一題。
+
+    question_asked_at 改成重播當下的時間，因為長者實際看到/聽到這一題的時間點
+    是 Unity 收到回覆的當下，不是治療師端最早呼叫的那一刻，
+    否則 /session/respond 算出的反應時間會被兩者間的等待時間灌水。
+    """
+    raw = await r.get(f"session:{session_id}:round1_result")
+    if not raw:
+        return None
+    result = json.loads(raw)
+    if result.get("state"):
+        result["state"]["question_asked_at"] = int(time.time() * 1000)
+    return result
+
+
+async def _cache_start_result(r, session_id: str, result: dict) -> None:
+    await r.set(f"session:{session_id}:round1_result", json.dumps(result), ex=86400)
 
 
 async def _get_session_topic(r, session_id: str) -> str | None:
@@ -366,6 +404,65 @@ class RespondRequest(BaseModel):
     state: SessionState
 
 
+@router.get("/pending", summary="依 case/patient_id 取得（或建立）尚未啟動的 session_id")
+async def session_pending(
+    request: Request,
+    patient_id: str,
+    source: str = "web",
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    治療師網頁開啟「開始療程」頁與 Unity 選定病患後（WarmupScene 校正開始前）
+    都會呼叫這支，用同一個 patient_id 換到同一組 session_id，
+    讓 Unity 校正資料（/ws/calibration）跟治療師之後啟動的療程綁在同一個 session。
+
+    session_id 建立後有 2 小時 TTL；/session/start 成功後會清掉這個 key，
+    避免下次同一位病患開新療程時誤用到舊的（已結束的）session_id。
+
+    source：Unity 呼叫時帶 "unity"（見 SessionService.FetchPendingSession），
+    只有這個來源才會標記病患活動中——治療師光是打開「開始療程」頁不代表
+    長者端真的坐上 Kinect 開始被服務，不該顯示活動中。
+    """
+    r = request.app.state.redis
+    key = f"case:{patient_id}:pending_session"
+    candidate = str(uuid.uuid4())
+    was_set = await r.set(key, candidate, ex=7200, nx=True)
+    if source == "unity":
+        await r.set(f"patient:{patient_id}:active", "1", ex=7200)
+    if was_set:
+        return {"session_id": candidate}
+    existing = await r.get(key)
+    return {"session_id": existing or candidate}
+
+
+@router.get("/active-patients", summary="目前活動中（Unity 已選定或療程進行中）的病患 id 清單")
+async def active_patients(
+    request: Request,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """供治療師個案列表的「活動中」徽章 polling 用。TTL 到期（見 /session/pending）
+    或療程結束（見 _compute_and_save_assessment）都會讓病患從這份清單消失。"""
+    r = request.app.state.redis
+    ids = [key.split(":")[1] async for key in r.scan_iter(match="patient:*:active")]
+    return {"patient_ids": ids}
+
+
+@router.get("/{session_id}/status", summary="供治療師網頁 polling Unity 校正狀態")
+async def session_status(
+    request: Request,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    calibrated：Unity 是否已把校正基準存進 session:{id}:calibration（見 ws_calibration.py）。
+    started：/session/start 是否已被呼叫過（session:{id}:meta 已建立）。
+    """
+    r = request.app.state.redis
+    calibrated = bool(await r.exists(f"session:{session_id}:calibration"))
+    started = bool(await r.exists(f"session:{session_id}:meta"))
+    return {"calibrated": calibrated, "started": started}
+
+
 @router.post("/start")
 async def session_start(
     request: Request,
@@ -383,6 +480,10 @@ async def session_start(
     """
     orchestrator = request.app.state.orchestrator
     topic = topic.strip()
+    r = request.app.state.redis
+    cached = await _get_cached_start_result(r, session_id)
+    if cached:
+        return cached
     try:
         result = await orchestrator.start_round(
             user_id=user_id,
@@ -395,13 +496,15 @@ async def session_start(
         tts = request.app.state.tts_service
         scene_audio_path = None
         if result.get("scene_text"):
-            scene_audio_path = await tts.synthesize(
+            scene_audio_path = await _synthesize_safe(
+                tts,
                 text=result["scene_text"],
                 session_id=session_id,
                 round_number=1,
                 turn_number=None,
             )
-        question_audio_path = await tts.synthesize(
+        question_audio_path = await _synthesize_safe(
+            tts,
             text=result["question"],
             session_id=session_id,
             round_number=1,
@@ -411,6 +514,7 @@ async def session_start(
         result["question_audio_path"] = question_audio_path
         result["audio_path"] = question_audio_path  # 向下相容
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id), topic=topic)
+        await request.app.state.redis.delete(f"case:{user_id}:pending_session")
         await _update_live_view(
             request.app.state.redis, session_id,
             current_scene=result.get("scene_text", "") + result.get("question", ""),
@@ -435,6 +539,7 @@ async def session_start(
                 db, session_id, 1, question_number=1, question=result["question"],
                 patient_id=_to_int(user_id), therapist_id=therapist_id,
             )
+        await _cache_start_result(r, session_id, result)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -474,13 +579,15 @@ async def session_round(
             tts = request.app.state.tts_service
             scene_audio_path = None
             if result.get("scene_text"):
-                scene_audio_path = await tts.synthesize(
+                scene_audio_path = await _synthesize_safe(
+                    tts,
                     text=result["scene_text"],
                     session_id=session_id,
                     round_number=round_number,
                     turn_number=None,
                 )
-            question_audio_path = await tts.synthesize(
+            question_audio_path = await _synthesize_safe(
+                tts,
                 text=result["question"],
                 session_id=session_id,
                 round_number=round_number,
@@ -726,7 +833,10 @@ async def _compute_and_save_assessment(
             f"session:{session_id}:metrics",
             f"session:{session_id}:ema",
             f"session:{session_id}:calibration",
+            f"session:{session_id}:round1_result",
         )
+        if meta.get("patient_id"):
+            await r.delete(f"patient:{meta['patient_id']}:active")
     except Exception as e:
         print(f"[DB] 療程寫入失敗 ({session_id}): {e}")
         await db.rollback()
@@ -879,14 +989,16 @@ async def session_respond(
             next_qn = body.state.question_number + 1
             tts = request.app.state.tts_service
             if result.get("scene_text"):
-                scene_audio_path = await tts.synthesize(
+                scene_audio_path = await _synthesize_safe(
+                    tts,
                     text=result["scene_text"],
                     session_id=body.state.session_id,
                     round_number=body.state.round,
                     turn_number=None,
                 )
                 result["scene_audio_path"] = scene_audio_path
-            question_audio_path = await tts.synthesize(
+            question_audio_path = await _synthesize_safe(
+                tts,
                 text=result["question"],
                 session_id=body.state.session_id,
                 round_number=body.state.round,

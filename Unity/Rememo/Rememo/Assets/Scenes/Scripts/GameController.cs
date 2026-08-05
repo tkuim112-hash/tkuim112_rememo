@@ -81,6 +81,11 @@ public class GameController : MonoBehaviour
         string selectedPatientId = PlayerPrefs.GetString("SelectedPatientId", "");
         if (!string.IsNullOrEmpty(selectedPatientId)) userId = selectedPatientId;
 
+        // 跟 WarmupScene 的 KinectCalibrationManager 用同一組 session_id（由 SessionService
+        // 在 UserSelectScene 選定病患時換好），校正資料才會跟這次療程的對話記錄綁在一起。
+        string sharedSessionId = PlayerPrefs.GetString("session_id", "");
+        if (!string.IsNullOrEmpty(sharedSessionId)) sessionId = sharedSessionId;
+
         submitButton.onClick.AddListener(OnSubmit);
         if (micButton != null) micButton.onClick.AddListener(OnMicToggle);
         if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);
