@@ -169,6 +169,24 @@ public class UserSelectController : MonoBehaviour
     {
         Debug.Log($"選擇使用者：{userName}（id={id}）");
         PlayerPrefs.SetString("SelectedPatientId", id.ToString());
+        StartCoroutine(PrepareSessionAndProceed(id));
+    }
+
+    /// <summary>
+    /// 換到跟治療師網頁共用的 session_id 後才跳場景，確保 WarmupScene 的
+    /// KinectCalibrationManager.Start() 讀 PlayerPrefs["session_id"] 時已經是正確值
+    /// （若在跳場景後才非同步寫入，WarmupScene 早已讀空值）。
+    /// 換取失敗（例如後端斷線）只印警告照常放行，跟現有離線容錯行為一致。
+    /// </summary>
+    IEnumerator PrepareSessionAndProceed(int patientId)
+    {
+        yield return StartCoroutine(SessionService.FetchPendingSession(
+            backendUrl,
+            patientId.ToString(),
+            sessionId => PlayerPrefs.SetString("session_id", sessionId),
+            error => Debug.LogWarning(error)
+        ));
+
         // 選擇使用者後跳到 LoadingScene 再去 WarmupScene
         PlayerPrefs.SetString("NextScene", "WarmupScene");
         SceneManager.LoadScene("LoadingScene");

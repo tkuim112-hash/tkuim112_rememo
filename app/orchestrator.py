@@ -488,39 +488,6 @@ class TherapyOrchestrator:
                 question_count, supplement_count,
             )
 
-    async def suggest_next_questions(
-        self,
-        user_id: str,
-        covered_w: list[str],
-        skipped_w: list[str],
-        scene_elements: list[str],
-        emotion: str = "happy",
-        limit: int = 3,
-    ) -> list[str]:
-        """給治療師畫面「AI 建議追問語（參考用）」用：依序取接下來 limit 個
-        尚未涵蓋的 W 維度，各生成一題候選追問語。純參考展示，不影響系統
-        實際問長者的邏輯（那條路徑走 process_response，完全不受這裡影響）。"""
-        user = await self.user_profile.get_user(user_id)
-        if not user:
-            return []
-        done = set(covered_w) | set(skipped_w)
-        target_ws = [w for w in _W_ORDER if w not in done][:limit]
-        questions: list[str] = []
-        for target_w in target_ws:
-            try:
-                result = await guarded_generate(
-                    self._generate_supplement_question,
-                    taboo_words=user["taboos"],
-                    llm_service=self.llm,
-                    user=user, scene_elements=scene_elements, covered_w=covered_w,
-                    target_w=target_w, emotion=emotion,
-                )
-                if result.get("question"):
-                    questions.append(result["question"])
-            except Exception as e:
-                print(f"[Orchestrator] 建議追問語生成失敗（{target_w}，不影響主流程）: {e}")
-        return questions
-
     # ══════════════════════════════════════════════════════════════
     # 私有：狀態機輔助
     # ══════════════════════════════════════════════════════════════
@@ -1135,8 +1102,7 @@ class TherapyOrchestrator:
             注意力拉回來，若不知道長者剛才說了什麼，拉回來的方式只能是憑空
             接畫面，答非所問、不像在聊天（2026-07 使用者回饋發現這裡漏了
             elder_response，_next_step_or_end 手上明明有這個值卻沒往下傳）。
-            預設空字串是為了兼容 suggest_next_questions 這個純預覽用途的呼叫
-            （那裡沒有對應到單一長者回應，本來就沒有值可傳）。
+            預設空字串是為了兼容沒有對應到單一長者回應、本來就沒有值可傳的呼叫端。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
