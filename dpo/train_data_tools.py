@@ -31,6 +31,15 @@ train.jsonl 維護工具合集（診斷／報告／格式重算／一次性修�
                   只對這 5 個 scenario_id 重新呼叫 generate_track_a()。
                   會呼叫 Claude API 並寫回 train.jsonl，會重算 stats.json。
 
+  backfill-track-c-rules
+                  補上 TRACK_C_REJECTION_RULES 2026-08 新增的 7 條規則
+                  （too_clinical/over_dramatize/give_advice/compare_suffering/
+                  false_positivity/over_identify/focus_on_loss）在既有 Track C
+                  情境上的訓練對。既有 chosen／inference prompt 不變，只針對
+                  「這個情境還沒生成過這條新規則的 rejected」的組合呼叫 API，
+                  新 pair 附加進 train.jsonl，不動任何既有資料。可重複執行
+                  （已存在的組合會自動跳過）。會呼叫 Claude API，預設預覽模式。
+
 執行範例：
   python dpo/train_data_tools.py diversity
   python dpo/train_data_tools.py review --sample 20 --seed 7
@@ -40,6 +49,8 @@ train.jsonl 維護工具合集（診斷／報告／格式重算／一次性修�
   python dpo/train_data_tools.py fix-no-anchor            # 預覽，不呼叫 API
   python dpo/train_data_tools.py fix-no-anchor --apply    # 實際呼叫 API 並寫回
   python dpo/train_data_tools.py fix-grief-a
+  python dpo/train_data_tools.py backfill-track-c-rules           # 預覽
+  python dpo/train_data_tools.py backfill-track-c-rules --apply   # 實際呼叫 API 並寫回
 """
 
 import argparse
@@ -714,6 +725,112 @@ def cmd_fix_grief_a(args: argparse.Namespace) -> None:
 
 
 # ============================================================
+# backfill-track-c-rules — 補上 TRACK_C_REJECTION_RULES 2026-08 新增的 7 條規則
+# ============================================================
+
+_TRACK_C_NEW_RULES = {
+    "too_clinical", "over_dramatize", "give_advice", "compare_suffering",
+    "false_positivity", "over_identify", "focus_on_loss",
+}
+
+
+def cmd_backfill_track_c_rules(args: argparse.Namespace) -> None:
+    import collect_data as cd
+    from data_quality import load_existing
+
+    existing = load_existing()
+    print(f"現有 train.jsonl：{len(existing)} 筆")
+
+    # 每個 emotion_tone 只需要一筆參考 pair 就能拿到 chosen／prompt／taboos
+    # （同一情境的所有 pair 共用同一個 chosen，只有 rejected 不同）。
+    ref_by_tone: dict[str, dict] = {}
+    for p in existing:
+        meta = p["meta"]
+        if meta["track"] != "C":
+            continue
+        tone = meta.get("emotion_tone")
+        if tone and tone not in ref_by_tone:
+            ref_by_tone[tone] = p
+    print(f"現有 Track C 情境：{len(ref_by_tone)} 組")
+
+    already_have = {
+        (p["meta"].get("emotion_tone"), p["meta"]["rejection_rule"])
+        for p in existing
+        if p["meta"]["track"] == "C"
+    }
+
+    new_rules = {
+        name: desc for name, desc in cd.TRACK_C_REJECTION_RULES.items()
+        if name in _TRACK_C_NEW_RULES
+    }
+    to_generate = [
+        (tone, rule_name)
+        for tone in ref_by_tone
+        for rule_name in new_rules
+        if (tone, rule_name) not in already_have
+    ]
+
+    print(f"需要新生成的 (情境, 規則) 組合：{len(to_generate)} 筆")
+    for tone, rule_name in to_generate[:10]:
+        print(f"  - {tone} / {rule_name}")
+    if len(to_generate) > 10:
+        print(f"  ...共 {len(to_generate)} 筆")
+
+    if not args.apply:
+        print("\n（預覽模式，未呼叫 API、未寫入檔案。加上 --apply 才會實際執行並花費 API 額度。）")
+        return
+
+    new_pairs = []
+    for tone, rule_name in to_generate:
+        ref = ref_by_tone[tone]
+        chosen = ref["chosen"][0]["content"]
+        taboos = ref["meta"].get("taboos", [])
+        rule_desc = new_rules[rule_name]
+
+        print(f"  [{tone}] [{rule_name}] 生成 rejected...")
+        rejection_prompt = cd.build_track_c_rejection_prompt(chosen, rule_name, rule_desc, taboos=taboos)
+        rejected = None
+        for attempt in range(3):
+            try:
+                candidate = cd.call_claude(rejection_prompt, model=cd.MODEL_REJECTED)
+                time.sleep(cd.REQUEST_DELAY)
+            except Exception as e:
+                print(f"    ✗ rejected 失敗（attempt {attempt + 1}）：{e}")
+                continue
+            if candidate == chosen:
+                print(f"    ⚠ rejected==chosen，重試（attempt {attempt + 1}）...")
+                continue
+            rejected = candidate
+            break
+
+        if rejected is None:
+            print(f"    ✗ [{tone}/{rule_name}] 三次均失敗或 chosen==rejected，跳過")
+            continue
+
+        new_pairs.append({
+            "prompt": ref["prompt"],
+            "chosen": [{"role": "assistant", "content": chosen}],
+            "rejected": [{"role": "assistant", "content": rejected}],
+            "meta": {
+                "scenario_id": f"track_c_{tone}",
+                "step": "TRACK_C",
+                "rejection_rule": rule_name,
+                "track": "C",
+                "emotion_tone": tone,
+                "taboos": taboos,
+            },
+        })
+
+    all_pairs = existing + new_pairs
+    with cd.OUTPUT_FILE.open("w", encoding="utf-8") as f:
+        for p in all_pairs:
+            f.write(json.dumps(p, ensure_ascii=False) + "\n")
+
+    print(f"\n完成：新增 {len(new_pairs)} 筆，train.jsonl 總計 {len(all_pairs)} 筆")
+    print(f"輸出：{cd.OUTPUT_FILE}")
+
+
+# ============================================================
 # entry point
 # ============================================================
 
@@ -751,6 +868,13 @@ def main() -> None:
     sub.add_parser(
         "fix-grief-a", help="修補 sc059-063 缺 touches_taboo 訓練訊號（一次性，呼叫 API）"
     ).set_defaults(func=cmd_fix_grief_a)
+
+    p_backfill_c = sub.add_parser(
+        "backfill-track-c-rules",
+        help="補上 TRACK_C_REJECTION_RULES 2026-08 新增的 7 條規則（呼叫 API）",
+    )
+    p_backfill_c.add_argument("--apply", action="store_true", help="實際呼叫 API 並寫回 train.jsonl")
+    p_backfill_c.set_defaults(func=cmd_backfill_track_c_rules)
 
     args = parser.parse_args()
     args.func(args)

@@ -162,11 +162,8 @@ _EMOTION_GUIDANCE = {
 }
 
 
-def _emotion_guidance(emotion: str, slow_response: bool = False) -> str:
-    guidance = _EMOTION_GUIDANCE.get(emotion, _EMOTION_GUIDANCE["neutral"])
-    if slow_response:
-        guidance += "長者這題想了比較久才回答，語氣放慢一點、多一些耐心與肯定，不要催促。"
-    return guidance
+def _emotion_guidance(emotion: str) -> str:
+    return _EMOTION_GUIDANCE.get(emotion, _EMOTION_GUIDANCE["neutral"])
 
 
 def _retry_feedback_section(retry_feedback: str) -> str:
@@ -603,13 +600,24 @@ EMOTIONAL_SCENARIOS = [
 ]
 
 # Track C：正常對話中的承接 + 問題（情緒感知版）
-# 共 11 種違規方式
+# 共 18 種違規方式（2026-08 稽核：_generate_open_followup 處理所有帶情緒色彩的
+# 延續對話，不只是嚴重情緒觸發句才會走到這裡——Track B 的 12 條規則裡有 7 條
+# 描述的失敗模式（給建議、比較式安慰、假正向包裝、AI搶戲、只強調退化）Track C
+# 完全沒教過，這裡照 Track B 的規則精神補上，措辭改成扣著「承接語」這個 Track C
+# 專屬欄位）。
 TRACK_C_REJECTION_RULES: dict[str, str] = {
     "skip_ack": "完全不承接長者說的話，直接問下一個問題，像沒有在聽一樣",
     "wrong_emotion_match": "情緒配對錯誤：長者開心卻給沉重的回應，或長者感傷卻輕描淡寫帶過",
     "generic_formula": "用千篇一律的套語（如「謝謝您的分享，我們繼續」），沒有針對長者說的內容",
     "too_long_ack": "承接超過3句話，反客為主，讓長者忘了後面的問題",
     "no_emotional_lift": "對帶有負面情緒的長者（感傷、疲倦、困惑），只有承接，沒有從他說的話裡發掘一個正面或溫暖的角度再接問題",
+    "too_clinical": "承接語用冷淡、像機器人的語氣回應，沒有任何情感溫度，讓長者感到自己說的話沒有被真正聽進去",
+    "over_dramatize": "承接語反應過度誇張，讓情緒本來就脆弱的長者感到壓力更大或更難為情",
+    "give_advice": "長者情緒脆弱時，承接語直接給建議或解決方案（如「你應該多出去走走」），跳過情緒承接直接想解決問題，讓長者感到不被理解",
+    "compare_suffering": "承接語用比較試圖安慰長者（如「現在的年輕人更辛苦」「比你慘的人多的是」），讓長者感到自己的情緒被否定",
+    "false_positivity": "承接語用強迫式假正向框架包裝長者的話（如「這都是你寶貴的人生經歷！非常珍貴！」），跳過情緒承接直接賦予意義，讓長者感到自己的感受被輕視",
+    "over_identify": "承接語過度代入自己的情感（如「我聽到這個也很難過，真的很心疼」），搶佔長者的情緒舞台，讓長者反過來要擔心或安慰AI，失去表達自己的空間",
+    "focus_on_loss": "承接語只強調長者已經退化、遺忘、做不到的部分（如附和「對啊，年紀大了很多事都做不到了」），沒有肯定長者仍然記得、仍然擁有的能力和價值，讓長者感到更沒用、更沮喪",
     "parrot_repeat": "只是重複長者說的話，沒有任何承接或延伸，讓長者感到AI沒有真正在聆聽，只是照本宣科",
     "unrelated_next_question": "承接完情緒後，問的問題與長者剛說的話完全無關，破壞對話連貫性，讓長者感到自己說的話不重要",
     "premature_next": "長者話還沒說完、情緒還留在剛才的記憶裡，就急著問下一個問題，讓長者感到被催促和打斷",
@@ -2176,10 +2184,13 @@ def build_track_d_inference_prompt(
     retry_feedback: str = "",
 ) -> list[dict]:
     """
-    推理時的 prompt，設計時對齊 orchestrator._generate_closing，但該函式
-    2026-07-31 已改成「收縮期→結果期」兩次獨立呼叫，這裡目前仍是舊版單次
-    組合式 prompt，兩者已經不一致（已知缺口，見上方模組層級註解，這輪先不
-    展開重寫）。
+    推理時的 prompt，設計時對齊 orchestrator._generate_closing。
+
+    2026-08 稽核核實：orchestrator._generate_closing 的 docstring 記錄
+    2026-07-31 曾試過拆成「收縮期→結果期」兩次獨立呼叫，但本地模型看到
+    單一欄位的新任務形狀時會退化成逐字複誦長者的話，已改回單次生成——
+    跟這裡的單次組合式 prompt 一致，不是落差（先前這裡的 docstring 誤寫成
+    兩者不一致，是沒同步更新的舊註解，已訂正）。
 
     2026-07 稽核時發現這裡漏掉了生產環境 user_content 實際會有的兩個區段
     （【長者目前情緒】與 retry_feedback），訓練資料因此從沒讓模型看過帶情緒

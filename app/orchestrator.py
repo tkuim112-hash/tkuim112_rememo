@@ -396,6 +396,52 @@ class TherapyOrchestrator:
               f"last={last_type} covered={covered_w} skipped={skipped_w} "
               f"questions={question_count} supplements={supplement_count}")
 
+        # ── 情緒觸發偵測（Track B，必須跑在 _is_quick_end 之前）─────
+        # _is_quick_end 用「不記得／不知道／忘了」關鍵字判斷放棄話題，但這類字面
+        # 也會出現在自責/沮喪的情緒表達裡（例如「我不記得了，都忘了，腦子越來越
+        # 差了……」），如果先跑 quick_end，這類句子會被誤判成單純放棄話題，
+        # 跳過情緒支持直接進下一題——正好是 Track B 的 ignore_emotion／rush_topic
+        # 規則要懲罰的行為，所以這個判斷必須放在最前面。
+        is_emotional_trigger = await self._detect_emotional_trigger(elder_response)
+        print(f"  → 情緒觸發偵測: {is_emotional_trigger}")
+        if is_emotional_trigger:
+            await self.rag.save_memory(
+                user_id=user_id,
+                session_id=state["session_id"],
+                text=elder_response,
+                emotion=emotion,
+            )
+            result = await guarded_generate(
+                self._generate_emotional_response,
+                taboo_words=user["taboos"],
+                llm_service=self.llm,
+                max_retry=3,
+                text_keys=("emotional_text", "question"),
+                fallback={
+                    "emotional_text": "謝謝你願意說這些，我在這裡陪著你。",
+                    "question": _FALLBACK_QUESTION,
+                },
+                user=user, elder_response=elder_response,
+            )
+            # 情緒支持不受 _MAX_QUESTIONS_PER_ROUND 限制：即使本回合題數已達上限，
+            # 偵測到情緒觸發仍優先回應，不直接跳去收尾——情緒支持優先於節奏控制。
+            # question_count 仍要 +1，下一輪正常判斷時題數已達上限就會照常收尾。
+            new_state = {
+                **state,
+                "covered_w": covered_w,
+                "skipped_w": skipped_w,
+                "last_question_type": "emotional_support",
+                "last_w_asked": "",
+                "question_count": question_count + 1,
+                "supplement_count": supplement_count,
+            }
+            return {
+                "action": "emotional_support",
+                "scene_text": result["emotional_text"],
+                "question": result["question"],
+                "state": new_state,
+            }
+
         # ── 快速結束判斷（不叫 LLM）───────────────────────────────
         quick_end = self._is_quick_end(elder_response)
         print(f"  → 快速結束: {quick_end}")
@@ -628,6 +674,33 @@ class TherapyOrchestrator:
     # 私有：LLM 判斷
     # ══════════════════════════════════════════════════════════════
 
+    async def _detect_emotional_trigger(self, elder_response: str) -> bool:
+        """
+        判斷長者這句話有沒有透露出需要優先安撫的情緒訊號（對齊 dpo/collect_data.py
+        的 Track B／EMOTIONAL_SCENARIOS：提到已故親人、自責記憶力衰退、痛苦往事、
+        突然情緒低落等）。這類情況要先給情緒支持，不能直接當一般話題結束或延續處理。
+
+        必須明確排除「單純不知道/不記得（沒有情緒起伏）」——這種情況本來就該讓
+        _is_quick_end 的關鍵字判斷接手。兩者的判準若混在一起，會漏掉像
+        「我不記得了，我都忘了，我腦子越來越差了……」這種同時包含「不記得/忘了」
+        字面、但其實是自責沮喪而非單純放棄話題的情況（Track B 情境 b002 就是
+        這個模式）。這個判斷必須跑在 _is_quick_end 之前，不然這類句子會先被
+        關鍵字判斷攔截成單純的放棄話題，跳過情緒支持直接進下一題。
+        """
+        prompt = (
+            f"長者剛才說：「{elder_response}」\n\n"
+            "請判斷長者這句話有沒有透露出需要優先安撫的情緒訊號，例如：\n"
+            "- 提到已故的親人或痛苦的死別經驗\n"
+            "- 因為記憶力衰退、做不到某件事而自責、沮喪\n"
+            "- 描述過去的苦難、創傷或不想多談的痛苦經歷\n"
+            "- 情緒突然低落、哽咽、聲音變小、話說到一半停住\n"
+            "YES：有上述情緒訊號，需要先安撫再繼續。\n"
+            "NO：只是正常回答問題、平靜陳述，或單純不知道/不記得（沒有情緒起伏）。\n"
+            "只回 YES 或 NO，不要任何說明。"
+        )
+        raw = await self.llm.ask(prompt)
+        return raw.strip().upper().startswith("Y")
+
     async def _decide_topic_continuation(
         self, elder_response: str, user: dict, scene_elements: list
     ) -> bool:
@@ -775,6 +848,80 @@ class TherapyOrchestrator:
             print(f"[Orchestrator] ⚠ 收尾語（引導語）欄位是空的，退回保底收尾語。"
                   f"原始輸出: {raw[:200]!r}")
             result["closing_text"] = _FALLBACK_CLOSING_TEXT
+        return result
+
+    async def _generate_emotional_response(
+        self,
+        user: dict,
+        elder_response: str,
+        retry_feedback: str = "",
+    ) -> dict:
+        """
+        長者觸發情緒訊號（見 _detect_emotional_trigger）時的專屬回應：先給情緒
+        支持，再輕柔引導回療程。
+
+        system_content／user_content 逐字比照 dpo/collect_data.py 的
+        build_emotional_inference_prompt（Track B），避免又製造一次 Track A/C/D
+        都曾發生過的 train/serve prompt 漂移——那支函式本身就沒有情緒欄位（跟
+        Track A/C/D 不同），這裡故意不加 emotion 參數，維持跟訓練資料一致。
+        """
+        system_content = (
+            "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
+            "長者可能有輕微認知障礙，當他出現負面情緒時，你要先給予情緒支持，再輕柔地引導回療程。"
+        )
+        taboo_str = "、".join(user["taboos"]) if user["taboos"] else "無"
+        user_content = (
+            f"長者剛才說了：\n{elder_response}\n\n"
+            f"【禁忌話題（絕對不可主動提及或追問細節）】\n{taboo_str}\n\n"
+            f"請先給予溫暖的情緒回應，再加上一句輕柔的後續引導。若長者說的內容本身就觸及\n"
+            f"【禁忌話題】，承接要溫和但不深入追問細節，儘快輕柔地轉向安全的方向；\n"
+            f"後續引導也不能引導向【禁忌話題】。\n"
+            f"{_retry_feedback_section(retry_feedback)}"
+            f"\n【輸出格式】\n"
+            f"情緒回應：（溫暖承接情緒，30-50字）\n"
+            f"後續引導：（一句輕柔的問題或肯定，引導回療程）"
+        )
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
+        raw = await self.llm.chat(messages)
+        return self._parse_emotional_response(raw)
+
+    def _parse_emotional_response(self, raw: str) -> dict:
+        """解析 Track B（情緒回應 + 後續引導）的輸出。
+
+        故意不用 scene_text 當 key（見 process_response 呼叫 guarded_generate
+        的說明）：scene_text_addresses_elder 檢查會把任何出現「你」的 scene_text
+        判定成違規，但情緒回應語意上必須用「你」直接安慰長者，用專屬 key 名稱
+        天然繞開這個誤判，比照 closing_text 的既有模式。
+        """
+        result: dict = {"emotional_text": "", "question": ""}
+        current_field: str | None = None
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("情緒回應："):
+                result["emotional_text"] = line[len("情緒回應："):].strip()
+                current_field = "emotional_text"
+            elif line.startswith("後續引導："):
+                result["question"] = line[len("後續引導："):].strip()
+                current_field = "question"
+            elif current_field == "emotional_text":
+                result["emotional_text"] = f"{result['emotional_text']} {line}".strip()
+            elif current_field == "question":
+                result["question"] = f"{result['question']} {line}".strip()
+        if not result["question"]:
+            result["question"] = raw.strip()
+        for key in ("emotional_text", "question"):
+            result[key] = _strip_leaked_brackets(result[key])
+        if not result["question"]:
+            result["question"] = _FALLBACK_QUESTION
+        if not result["emotional_text"]:
+            print(f"[Orchestrator] ⚠ 情緒回應欄位是空的，退回保底安撫語。"
+                  f"原始輸出: {raw[:200]!r}")
+            result["emotional_text"] = "謝謝你願意說這些，我在這裡陪著你。"
         return result
 
     # ══════════════════════════════════════════════════════════════

@@ -426,7 +426,12 @@ async def guarded_generate(
 
         # 格式/內容規則（too_long、double_question、memory_test、精確地名時間、
         # 要求描述畫面內容、已知用詞瑕疵，詳見 check_format_rules 上方註解）。
-        format_rule, format_feedback = check_format_rules(question_text, scene_text_val)
+        # 2026-08 稽核發現這裡原本直接用上面的 scene_text_val（寫死只讀 "scene_text"
+        # 這個 key），導致 closing_text／emotional_text 這類換了 key 名稱的欄位
+        # 從沒被「您/先/咱們/搭把手」等用詞檢查覆蓋到——改成組合 text_keys 裡除了
+        # question 以外的所有欄位，讓每一種 generate_fn 的非問題欄位都受到保護。
+        wording_check_text = "".join(result.get(k, "") for k in text_keys if k != "question")
+        format_rule, format_feedback = check_format_rules(question_text, wording_check_text)
         if format_rule:
             logger.warning(
                 f"[ResponseGuard] 格式/內容規則違規({format_rule}): "
