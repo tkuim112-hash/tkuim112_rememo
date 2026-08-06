@@ -169,12 +169,13 @@ def echoes_prompt_example(text: str) -> bool:
 # 沒有涵蓋，是這次才發現的漏洞，優先補在這裡。
 #
 # too_long/double_question/memory_test 跟幾個已知用詞瑕疵（先/咱們/搭把手/
-# 收場/頭一句/做下來說下去）跟 dpo/fix_xian_wording.py 的規則同源——那支腳本
-# import 了 dpo/collect_data.py（需要 ANTHROPIC_API_KEY 才能匯入），不適合讓
-# 正式環境的 app/ 依賴訓練 pipeline，所以這裡用同樣的 regex 重新定義一份，
-# 兩邊之後如果要調規則要記得同步改。dpo/fix_xian_wording.py 自己的註解也
-# 記錄了一個重要的實測結論：這類格式層級的規則丟給 LLM 判斷不可靠（同一句
-# 明顯的是非題丟給 Haiku 判斷4次只抓到1次），regex 判準反而更穩定。
+# 收場/頭一句/做下來說下去）跟 dpo/data_quality.py 的 fix-wording 子命令
+# （2026-08 前是獨立的 dpo/fix_xian_wording.py，後併入 data_quality.py）規則
+# 同源——那支模組 import 了 dpo/collect_data.py（需要 ANTHROPIC_API_KEY 才能
+# 匯入），不適合讓正式環境的 app/ 依賴訓練 pipeline，所以這裡用同樣的 regex
+# 重新定義一份，兩邊之後如果要調規則要記得同步改。dpo/data_quality.py 自己的
+# 註解也記錄了一個重要的實測結論：這類格式層級的規則丟給 LLM 判斷不可靠
+# （同一句明顯的是非題丟給 Haiku 判斷4次只抓到1次），regex 判準反而更穩定。
 _FORMAT_PUNCT_RE = re.compile(r"[，。、！？!?,.\s「」『』（）()]")
 _DOUBLE_QUESTION_RE = re.compile(r"[？?]")
 _MEMORY_TEST_RE = re.compile(r"^你?(還記得|記不記得)")

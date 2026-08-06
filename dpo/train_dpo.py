@@ -29,7 +29,7 @@ from datasets import Dataset
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from trl import DPOConfig, DPOTrainer
 
-from validate_data import Validator
+from data_quality import Validator
 
 # ─── 設定 ───────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ GRAD_ACCUM = 8
 # epoch3 幾乎只把 margin 從 0.32 推到 0.37（已分開的 pair 被推更開，
 # 邊際價值低，有輕微過擬合風險）。這裡把容量調大、並納入 MLP 層——
 # 語氣/情緒暫存這類「軟性」判斷通常更依賴 MLP，而不只是注意力層。
-# 建議跟舊的 r=8 attn-only 版本用同一套 evaluate_model.py 對照比較，
+# 建議跟舊的 r=8 attn-only 版本用同一套 data_quality.py 的 evaluate 子命令對照比較，
 # 不要預設容量越大越好（訓練資料不到 3000 筆，也可能撐不住太大的 r）。
 LORA_R = 16
 LORA_ALPHA = 32
@@ -165,11 +165,12 @@ def load_model_and_tokenizer():
 
 def _run_validation_gate() -> None:
     """
-    訓練前強制跑一次 dpo/validate_data.py 的檢查邏輯，有 critical failure 就中止。
+    訓練前強制跑一次 dpo/data_quality.py（validate 子命令）的檢查邏輯，有
+    critical failure 就中止。
 
     2026-07 稽核發現：train_dpo.py 原本只檢查 train.jsonl 存不存在，完全不管
     裡面的資料有沒有問題（例如 chosen==rejected、chosen 本身違規、rejected
-    沒有真的違反該筆記錄的規則）。validate_data.py 雖然存在，但沒有任何東西
+    沒有真的違反該筆記錄的規則）。這套檢查雖然存在，但沒有任何東西
     強制要求「訓練前一定要先跑過」，全靠使用者記得手動執行——已知至少一次
     train.jsonl 在有 critical failure 的狀態下仍被拿去訓練（見
     dpo/data/validate_report.txt 的歷史記錄）。這裡直接在訓練腳本裡內建同一套
@@ -212,7 +213,7 @@ def main() -> None:
             "請先執行 python dpo/collect_data.py 生成資料。"
         )
 
-    print("訓練前先驗證 train.jsonl（等同執行一次 python dpo/validate_data.py）...")
+    print("訓練前先驗證 train.jsonl（等同執行一次 python dpo/data_quality.py validate）...")
     _run_validation_gate()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

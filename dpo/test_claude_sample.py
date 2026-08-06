@@ -2,10 +2,9 @@
 """
 Claude（正式版模型）小型試跑腳本。
 
-跟 dpo/test_grok_sample.py 邏輯一樣，四條軌跡各抽幾筆場景印出來看效果，
-但這支直接呼叫 collect_data.py 裡現成的 call_claude()（用正式的
-claude-sonnet-4-6 / claude-haiku-4-5-20251001），不用另外接 client，
-因為 collect_data.py 本身就是設計給 Claude 用的。
+四條軌跡各抽幾筆場景印出來看效果，直接呼叫 collect_data.py 裡現成的
+call_claude()（用正式的 claude-sonnet-4-6 / claude-haiku-4-5-20251001），
+不用另外接 client，因為 collect_data.py 本身就是設計給 Claude 用的。
 
 **不會寫入 dpo/data/train.jsonl**，跑完看終端機印出來的結果就好，
 確認效果沒問題後，再用 python dpo/collect_data.py 跑完整資料生成

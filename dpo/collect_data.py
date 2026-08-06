@@ -27,6 +27,7 @@ DPO 訓練資料收集腳本
 """
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -51,6 +52,79 @@ REQUEST_DELAY = 1.0  # 每次 API 呼叫之間的間隔（秒），避免 rate l
 
 # 5W1H 優先順序（對齊 orchestrator.py _W_ORDER）
 _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
+
+# 對齊 orchestrator.py 的 _W_HINT——_generate_supplement_question 會明確告訴
+# 模型這一題要問哪一個W維度，不是含糊地叫它自己選；2026-08 稽核發現
+# build_inference_prompt/build_step3_user_prompt 的 STEP3 分支原本只寫「探索
+# 還未涵蓋的W維度」，沒有指定具體是哪一個，跟生產端這個明確指定的行為不一致。
+_W_HINT = {
+    "Where": "用 Where 角度問（哪裡、哪個地方）",
+    "Who":   "用 Who 角度問（誰、哪個人）",
+    "What":  "用 What 角度問（什麼事、什麼東西）",
+    "When":  "用 When 角度問（什麼時候）",
+    "How":   "用 How 角度問（怎麼做、如何）",
+    "Why":   "用 Why 角度問（為什麼、原因、動機）——僅在長者狀態良好時使用",
+}
+
+
+def _pick_target_w(covered_w: list[str]) -> str:
+    """
+    對齊 orchestrator._next_uncovered_w：依 _W_ORDER 優先序，挑第一個還沒
+    涵蓋的W維度當這次補問的目標。這裡沒有 skipped_w 的概念（批次生成訓練
+    資料時沒有真實的「長者跳過某個W」狀態機），所有W都視為可選。全部涵蓋時
+    退回 "Why"，不會發生（_W_ORDER 最後一個就是 Why，理論上不會真的用到
+    這個退路，只是避免函式回傳 None 造成後續格式化出錯）。
+    """
+    for w in _W_ORDER:
+        if w not in covered_w:
+            return w
+    return "Why"
+
+
+# 2026-08 Track A 拿掉 STEP2 之後，STEP3 直接接在 STEP1 後面。
+_PREV_STEP = {"STEP3": "STEP1"}
+
+
+def build_chosen_lookup(existing_pairs: list[dict]) -> dict[tuple[str, str], str]:
+    """
+    從既有的 train.jsonl pairs（Track A）建立 (scenario_id, step) → chosen
+    文字的查表，供 train_data_tools.py（refresh-prompts／fix-leaked-a
+    子命令）／data_quality.py（fix-wording 子命令）／semantic_audit.py
+    這類「重新生成/重新渲染單一(scenario, step)」的維護
+    腳本，反推前一步驟真正涵蓋了哪些W維度（見 real_covered_w_from_lookup、
+    _extract_covered_w）。同一個 (scenario_id, step) 會有多筆（配不同
+    rejection rule），chosen 內容都一樣，抓第一筆即可。
+    """
+    lookup: dict[tuple[str, str], str] = {}
+    for p in existing_pairs:
+        meta = p.get("meta", {})
+        if meta.get("track") != "A":
+            continue
+        key = (meta.get("scenario_id"), meta.get("step"))
+        if key in lookup:
+            continue
+        chosen = p.get("chosen")
+        content = chosen[0]["content"] if isinstance(chosen, list) and chosen else (chosen or "")
+        lookup[key] = content
+    return lookup
+
+
+def real_covered_w_from_lookup(
+    chosen_lookup: dict[tuple[str, str], str], scenario_id: str, step: str,
+) -> list[str]:
+    """
+    依 _PREV_STEP 往前查出這一步驟開始前真正累積涵蓋的W——查不到（例如
+    STEP1本身沒有前一步、或前一步驟資料剛好也在這次要被丟棄重新生成）就
+    回傳空清單，交給呼叫端自行決定要不要退回舊的固定假設值。
+    """
+    prev_step = _PREV_STEP.get(step)
+    if prev_step is None:
+        return []
+    prev_chosen = chosen_lookup.get((scenario_id, prev_step))
+    if prev_chosen is None:
+        return []
+    return _extract_covered_w(prev_chosen)
+
 
 # Track A（build_inference_prompt）與 Track C（build_track_c_inference_prompt）
 # 的 system prompt 已改成 _load_production_system_prompt() 直接讀
@@ -78,7 +152,7 @@ _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
 # 與 orchestrator.py 的 _EMOTION_GUIDANCE / _emotion_guidance / _retry_feedback_section
 # 邏輯保持一致（純字串組裝，不依賴任何服務，故意在此複製一份而非跨模組 import
 # orchestrator.py——orchestrator.py 頂層會 import services/DB 等重依賴，collect_data.py
-# 需要維持「不設定 ANTHROPIC_API_KEY 也能被 evaluate_model.py import」的特性）。
+# 需要維持「不設定 ANTHROPIC_API_KEY 也能被 data_quality.py import」的特性）。
 _EMOTION_GUIDANCE = {
     "sad":     "長者目前情緒低落，請優先給予溫暖同理與正向肯定，語氣放柔，暫緩深入提問，可引導至輕鬆或正向的話題。",
     "angry":   "長者目前情緒焦躁不安，請先安撫情緒、語氣放緩，避免追問敏感或原因類問題。",
@@ -99,6 +173,40 @@ def _retry_feedback_section(retry_feedback: str) -> str:
     if not retry_feedback:
         return ""
     return f"\n【上一次輸出有問題，這次務必修正】\n{retry_feedback}\n"
+
+
+_W_SHORT_DESC = {
+    "Where": "哪裡", "Who": "誰", "What": "什麼事", "When": "什麼時候",
+    "How": "怎麼做", "Why": "為什麼",
+}
+
+
+def _extract_covered_w(chosen_text: str) -> list[str]:
+    """
+    從 chosen 回應裡解析「本回合已涵蓋的W：」這一行，取得這一步驟結束後
+    真正累積涵蓋的W維度清單。
+
+    2026-08 稽核發現 generate_track_a 原本用寫死的固定值（STEP2 固定
+    ["Where"]、STEP3 固定 ["Where","Who"]）餵給 build_inference_prompt跟
+    build_step3_user_prompt，完全不管每個情境 STEP1/STEP2 實際生成了什麼，
+    導致同一筆訓練資料裡「已涵蓋的W維度」跟前一步驟的真實輸出對不起來。
+    改用這個函式解析每一步驟 chosen 的真實輸出，取代寫死的假設值。
+    """
+    for line in chosen_text.splitlines():
+        line = line.strip()
+        if line.startswith("本回合已涵蓋的W："):
+            w_raw = line[len("本回合已涵蓋的W："):].strip()
+            # 清掉可能洩漏的括號說明，避免逗號被誤判成W之間的分隔符
+            w_raw = re.sub(r"[（(][^）)]*[）)]", "", w_raw)
+            return [w.strip() for w in w_raw.replace("，", "、").split("、") if w.strip()]
+    return []
+
+
+def _format_covered_w(covered_w: list[str]) -> str:
+    """把 covered_w 清單組成「Where（哪裡）、Who（誰）」這種給 Claude 看的顯示格式。"""
+    if not covered_w:
+        return "無"
+    return "、".join(f"{w}（{_W_SHORT_DESC.get(w, w)}）" for w in covered_w)
 
 
 def _load_production_closing_prompt() -> str:
@@ -1563,12 +1671,36 @@ W 維度。下面 4 個步驟只是給你自己在心裡想清楚的思考順序
 不要加括號說明或理由）"""
 
 
-def build_step3_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
+def build_step3_user_prompt(
+    scenario: dict,
+    retry_feedback: str = "",
+    covered_w: list[str] | None = None,
+    target_w: str | None = None,
+) -> str:
+    """
+    covered_w: STEP1/STEP2 實際累積涵蓋的W維度（由呼叫端從前面步驟的 chosen
+    輸出解析取得，見 _extract_covered_w）。原本這裡寫死「Where（哪裡）、
+    Who（誰）」，跟每個情境 STEP1/STEP2 真正生成的內容脫鉤，2026-08 稽核
+    抽真實訓練資料時發現不一致才修正——沒有值時仍退回這組預設值，保持
+    向後相容（例如舊的呼叫端還沒傳這個參數）。
+
+    target_w: 這一題明確要問哪個W維度（由呼叫端用 _pick_target_w(covered_w)
+    算出，見 generate_track_a）。原本這裡只叫模型自己「鎖定還沒問過的W維度」，
+    含糊帶過，但生產端 _generate_supplement_question 一定會明確指定
+    target_w，不是讓模型自己選——這裡補上，讓標準答案示範「被指定問某個W」
+    這個真實情境；沒有傳值時退回原本含糊的說法，保持向後相容。
+    """
     elder = scenario["elder"]
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
     step2_response = scenario["elder_step2_response"]
     taboo_str = "、".join(elder.get("taboos", [])) or "無"
+    covered_w_str = _format_covered_w(covered_w) if covered_w else "Where（哪裡）、Who（誰）"
+    target_w_instruction = (
+        f"鎖定 {_W_HINT[target_w]}，這一題要能自然帶出這個維度"
+        if target_w else
+        "鎖定還沒問過的W維度（優先 What 或 When，避免 Why），這一題要能自然帶出這個維度"
+    )
     return f"""經過幾輪對話後，請設計一個補充問題，挖掘還沒提到的W維度。
 
 【長者背景】
@@ -1583,7 +1715,7 @@ def build_step3_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
 {step2_response}
 
 【目前已涵蓋的W】
-Where（哪裡）、Who（誰）
+{covered_w_str}
 
 【禁忌話題（絕對不可提及或引導）】
 {taboo_str}
@@ -1600,8 +1732,7 @@ Where（哪裡）、Who（誰）
    拿掉長者最近說的那句話，這個新問題聽起來會不會像是憑空冒出來的？如果會，
    代表跳得太遠了，要換一個仍在同一個當下、同一個畫面裡的角度）。如果長者最近
    說的話沒有這個問題，才進入下面1-4的一般流程。
-1. 定調：確認【目前已涵蓋的W】，鎖定還沒問過的W維度（優先 What 或 When，
-   避免 Why），這一題要能自然帶出這個維度
+1. 定調：確認【目前已涵蓋的W】，{target_w_instruction}
 2. 選錨點：從【眼前畫面的元素】或長者剛才提到的具體人事物挑一個，用下面三種
    寫法之一讓它成為自然口語的句子開頭：加「這樣的／像這樣的／這些」＋物件、
    把物件包進一個動作或地點短語、或放在真的會發生狀態變化的受詞位置（若用這種
@@ -1859,6 +1990,13 @@ def build_track_c_inference_prompt(
     會有的兩個區段（【長者目前情緒】與 retry_feedback，見 orchestrator.py:1054），
     訓練資料因此從沒讓模型看過帶這兩段內容的輸入——比照 Track D 的修法補上。
     emotion 預設 "happy"，retry_feedback 留給呼叫端（目前 generate_track_c 不需要）。
+
+    同一輪稽核也發現這裡缺一整段「⚠️ 觸發條件檢查」規則（教模型分辨長者「已決定
+    換話題」vs「猶豫反問」兩種情境，決定要不要把主導權交還），生產端
+    orchestrator.py:1059-1070 有這段明文指令。這段邏輯其實已經寫進
+    build_track_c_chosen_prompt（用來叫 Claude 生成理想 chosen 回應，訓練資料的
+    「答案」有示範這個行為），但本地模型推理時的「輸入」從沒看過這段指令，只能
+    從少量範例隱含學到——這裡補上，讓輸入跟答案示範的行為對齊。
     """
     elements = "、".join(sc["scene_elements"])
     covered_w = covered_w or []
@@ -1883,6 +2021,18 @@ def build_track_c_inference_prompt(
         f"\n請先承接長者的情緒（1-2句，符合他當下的心情，具體呼應他剛才說的內容），"
         f"再順著長者說的話問下一個問題（≤15字，開頭可用長者剛提到的具體人事物，"
         f"也可以用畫面元素，開放式，不必勉強拉回畫面）。\n"
+        f"⚠️ 觸發條件檢查（每次回應前都要先看一次）：長者剛才的話裡有沒有把決定權"
+        f"丟回來的句子？分兩種，處理方式不同：(a) 像「換一個好不好」「聊點別的吧」"
+        f"這種已經做出決定、明確要求換話題的句子——承接語要溫暖地肯定他這個選擇"
+        f"（例如「不想說的事就不用勉強」），但不用承諾「你想聊什麼，我們就聊什麼」"
+        f"這種空話；「有溫度」跟「不做空頭承諾」要同時做到，不能為了避免空話就把"
+        f"承接語縮成只剩「沒關係」兩三個字，那樣反而顯得冷淡生硬；接著問一個新方向"
+        f"的具體問題就是在尊重他的要求；"
+        f"(b) 像「你真的想知道嗎」「我要跟你說嗎」「你想聽嗎」這種還沒決定、把決定"
+        f"權真的丟回來問你的反問句——這種才需要把主導權完全交還，問題絕對不能硬拉去"
+        f"不相干的話題（那樣會讓「主導權在你」這句話顯得言行不一，是這條規則最容易"
+        f"出錯的地方），而是問一個尊重他步調、讓他自己決定要不要繼續/現在說或晚點說"
+        f"的問題。\n"
         f"問題要自然跟著對話走，同時盡量帶出【尚未涵蓋的W維度】中的某一個。\n"
         f"{_retry_feedback_section(retry_feedback)}"
         f"\n【輸出格式】\n"
@@ -2062,7 +2212,7 @@ def build_track_d_inference_prompt(
 
 # ─── API 呼叫 ────────────────────────────────────────────────────────────────
 
-# 延遲建立 client（而非 import 時就建立），這樣其他腳本（如 evaluate_model.py）
+# 延遲建立 client（而非 import 時就建立），這樣其他腳本（如 data_quality.py）
 # 可以單純 import 本檔案取用情境資料/prompt builder，不需要先設定 ANTHROPIC_API_KEY。
 _client: "anthropic.Anthropic | None" = None
 
@@ -2134,6 +2284,7 @@ def build_inference_prompt(
     taboos: list[str] | None = None,
     emotion: str = "happy",
     retry_feedback: str = "",
+    target_w: str | None = None,
 ) -> list[dict]:
     """
     組出推理時送給 llama3 的 messages 格式（/api/chat）。
@@ -2157,15 +2308,36 @@ def build_inference_prompt(
       正確行為，不是 bug。這裡改成同樣直接使用 elder['today_topic']，
       topic_category 參數保留（呼叫端仍會傳入，用在別處如哀傷情境判斷／
       chosen prompt 的主題引導），但不再用來組這一行的內容。
+
+    2026-08 稽核抽 train.jsonl 實際資料時又發現一個落差：STEP3 這裡原本統一用
+    「場景文字：（30-60字，給長者聽的場景描述）」，但生產端 STEP3 真正對應的函式
+    是 orchestrator._generate_supplement_question，它的場景文字規格其實是
+    「15-30字，幫長者重新聚焦到畫面，若【長者剛才說的話】有內容，盡量從那句話
+    自然接回畫面，不要憑空硬轉」（orchestrator.py:1141-1142）——字數規格不一樣，
+    還少了「從長者剛才的話接回畫面」這個明文指令。更糟的是這個 30-60 字規格跟
+    同一個 Track A 用來寫「標準答案」的 build_step3_user_prompt（15-30字，見該
+    函式）互相矛盾，等於同一筆訓練資料裡，模型看到的輸入指令跟標準答案的長度
+    要求對不起來。這裡改成 STEP3 專用規格，對齊生產端真正的函式。
+
+    2026-08 稽核也發現 STEP3 原本的任務說明只寫「探索還未涵蓋的W維度」，沒有
+    指定具體是哪一個，但生產端 orchestrator._generate_supplement_question
+    一定會透過 target_w 明確指定這一題要問哪個W（{_W_HINT[target_w]} 這種
+    寫法，orchestrator.py:1135），不是讓模型自己含糊選——這裡加上 target_w
+    參數對齊；沒有傳值時退回原本的通用說法，保持向後相容。
     """
     elements_str = "、".join(scene["elements"])
     covered_str = "、".join(covered_w) if covered_w else "無"
     taboo_str = "、".join(taboos) if taboos else "無"
 
+    step3_task = (
+        f"生成一個【補充問題】，探索還未涵蓋的W維度。{_W_HINT[target_w]}"
+        if step == "STEP3" and target_w else
+        "生成一個【補充問題】，探索還未涵蓋的W維度（Why 僅在長者狀態良好時詢問）"
+    )
     step_instructions = {
         "STEP1": "生成第一個【開場問題】，引導長者進入回憶（優先問 Where 或 What）",
         "STEP2": "根據長者剛才說的話，順著內容自然追問，不限制哪個W，完全跟著長者走",
-        "STEP3": "生成一個【補充問題】，探索還未涵蓋的W維度（Why 僅在長者狀態良好時詢問）",
+        "STEP3": step3_task,
     }
 
     step_labels = {
@@ -2187,6 +2359,15 @@ def build_inference_prompt(
         if step in ("STEP1", "STEP3") else ""
     )
 
+    # STEP3 場景文字規格對齊 orchestrator._generate_supplement_question（見上方
+    # docstring 說明），STEP1/STEP2 維持原本的 30-60 字規格。
+    scene_text_spec = (
+        "場景文字：（15-30字，幫長者重新聚焦到畫面，若【長者剛才說的話】有內容，"
+        "盡量從那句話自然接回畫面，不要憑空硬轉）\n"
+        if step == "STEP3" else
+        "場景文字：（30-60字，給長者聽的場景描述）\n"
+    )
+
     user_content = (
         f"【長者資料】\n"
         f"姓名：{elder['name']}\n"
@@ -2203,7 +2384,7 @@ def build_inference_prompt(
         f"{_retry_feedback_section(retry_feedback)}"
         f"\n【輸出格式】\n"
         f"{thinking_line}"
-        f"場景文字：（30-60字，給長者聽的場景描述）\n"
+        f"{scene_text_spec}"
         f"問題：（≤15字，開放式，開頭要有畫面中的具體物件）\n"
         f"問題類型：{step_labels[step]}\n"
         f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個W維度名稱本身，"
@@ -2246,27 +2427,42 @@ def build_emotional_inference_prompt(trigger: str, taboos: list[str] | None = No
 
 def generate_track_a(scenarios: list[dict]) -> list[dict]:
     """
-    Track A：問題品質 DPO 對。
+    Track A：問題品質 DPO 對。只生成 STEP1（開場）與 STEP3（補問）。
+
+    2026-08 拿掉了 STEP2（自由追問）：這個「場景文字＋問題、無承接語」格式，
+    正式環境的對話狀態機根本不會用到——STEP1 之後，正式環境要嘛走
+    orchestrator._generate_open_followup（Track C，承接語＋問題格式，已有
+    專屬訓練資料 TRACK_C_SCENARIOS／build_track_c_chosen_prompt），要嘛走
+    _generate_supplement_question（也就是這裡的 STEP3）。Track A 的 STEP2
+    只是在教一個正式環境永遠不會出現的輸出格式。
+
+    曾評估過把這 128 筆情境的 elder_step1_response 改格式塞進 Track C
+    （複用職業/主題多樣性），試跑 5 筆、三輪調整 prompt 後結論是不划算：
+    Track C 現有情境是特地為了展現情緒、探索方向而寫的，elder_step1_response
+    只是回答 5W1H 開場問題的平鋪直敘內容，本來就沒有情緒鉤子，硬要判斷
+    emotion_desc/next_w 每輪都会冒出新的「硬猜」案例（例如長者只講了聲音、
+    完全沒提到人，也被判斷成要問「旁邊有誰」），三輪都沒有收斂乾淨，代表
+    問題出在素材本身不適合這個用途，不是 prompt 沒寫好。維持 Track C 原本
+    精心設計的小而準，比混入約2成品質不穩的遷移資料更好——因此決定單純
+    刪除 STEP2，不遷移。
 
     scenarios.json 裡有部分場景（topic_category 含「哀傷之事」，例如
     sc059-063、sc107-111）的 elder_step1_response/elder_step2_response
     本身就是喪親、久病、孤獨等高情緒張力的揭露內容（例如「我媽媽走的時候，
-    我在她旁邊……那個聲音我到現在還記得」）。但 build_step2/3_user_prompt
+    我在她旁邊……那個聲音我到現在還記得」）。但 build_step3_user_prompt
     只管視覺錨點、5W1H 優先序這些「問題品質」規則，完全沒有情緒承接的要求
-    ——若照常生成 STEP2/STEP3，會教出「長者才剛描述完媽媽過世的細節，
-    AI 卻直接問下一個錨定問題、不做任何承接」的行為，正好是 Track B
-    rejection rules 裡 ignore_emotion/rush_topic/premature_closure 要懲罰
-    的違規模式，跟 Track B 教的東西自相矛盾。
-    這類高張力揭露的正確反應（先承接情緒、再問下一個問題）已經是 Track C
-    的職責，EMOTIONAL_SCENARIOS 也已涵蓋喪親等對應的危機情境，因此這裡
-    只保留 STEP1（開場問題，不需要反應任何既有揭露），跳過 STEP2/STEP3，
-    避免同一批訓練資料同時教出兩種互相矛盾的行為。
+    ——若照常生成 STEP3，會教出「長者才剛描述完媽媽過世的細節，AI 卻直接
+    問下一個錨定問題、不做任何承接」的行為，正好是 Track B rejection rules
+    裡 ignore_emotion/rush_topic/premature_closure 要懲罰的違規模式，跟
+    Track B 教的東西自相矛盾。這類高張力揭露的正確反應（先承接情緒、再問
+    下一個問題）已經是 Track C 的職責，EMOTIONAL_SCENARIOS 也已涵蓋喪親等
+    對應的危機情境，因此這裡只保留 STEP1（開場問題，不需要反應任何既有
+    揭露），跳過 STEP3，避免同一批訓練資料同時教出兩種互相矛盾的行為。
     """
     pairs = []
-    step_builders = {
-        "STEP1": (build_step1_user_prompt, [], []),
-        "STEP2": (build_step2_user_prompt, ["Where"], ["STEP1"]),
-        "STEP3": (build_step3_user_prompt, ["Where", "Who"], ["STEP1", "STEP2"]),
+    prompt_builders = {
+        "STEP1": build_step1_user_prompt,
+        "STEP3": build_step3_user_prompt,
     }
 
     for sc in scenarios:
@@ -2274,13 +2470,25 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
         scene = sc["scene"]
         is_grief_scenario = "哀傷之事" in sc.get("topic_category", [])
 
-        for step, (prompt_builder, covered_w, _) in step_builders.items():
-            if is_grief_scenario and step in ("STEP2", "STEP3"):
+        # 這一個情境目前累積涵蓋的W維度，取代原本每個STEP寫死的固定假設值
+        # （見 build_step3_user_prompt / _extract_covered_w 的說明）。STEP3
+        # 開始時代表「STEP1結束後」的真實狀態，STEP1的chosen生成完後才更新。
+        covered_w: list[str] = []
+
+        for step in ("STEP1", "STEP3"):
+            if is_grief_scenario and step == "STEP3":
                 print(f"  [{sc['id']}] {step} — 哀傷之事場景，情緒承接已由 Track C/B 涵蓋，跳過")
                 continue
 
             print(f"  [{sc['id']}] {step} — 生成 chosen...")
-            user_prompt = prompt_builder(sc)
+            # target_w 只有 STEP3 需要：明確指定這一題要問哪個W維度，對齊
+            # 生產端 _generate_supplement_question 一定會指定 target_w、
+            # 不讓模型自己含糊選的行為（見 build_step3_user_prompt 說明）。
+            target_w = _pick_target_w(covered_w) if step == "STEP3" else None
+            if step == "STEP3":
+                user_prompt = prompt_builders[step](sc, covered_w=covered_w, target_w=target_w)
+            else:
+                user_prompt = prompt_builders[step](sc)
 
             try:
                 chosen = call_claude(user_prompt)
@@ -2291,16 +2499,25 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
 
             step_responses = {
                 "STEP1": "",
-                "STEP2": sc.get("elder_step1_response", ""),
                 "STEP3": sc.get("elder_step2_response", ""),
             }
             taboos = elder.get("taboos", [])
+            # 這裡的 covered_w 必須是「這一步驟開始之前」的狀態（跟上面組
+            # user_prompt 用的是同一個值）——本步驟結束後才更新，見下方。
             inference_prompt = build_inference_prompt(
                 step, elder, scene, covered_w,
                 topic_category=sc.get("topic_category"),
                 elder_response=step_responses[step],
                 taboos=taboos,
+                target_w=target_w,
             )
+
+            # 用這一步驟 chosen 實際回報的「本回合已涵蓋的W」更新累積狀態，
+            # 給下一個STEP用——解析不到（例如格式不符預期）就保留原本的值，
+            # 不要讓一次解析失敗把已經累積的狀態清空。
+            new_covered = _extract_covered_w(chosen)
+            if new_covered:
+                covered_w = new_covered
 
             for rule_name, rule_desc in QUESTION_REJECTION_RULES.items():
                 if rule_name == "touches_taboo" and not taboos:

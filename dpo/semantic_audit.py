@@ -3,7 +3,8 @@
 
 整合原本散落在暫存資料夾裡好幾支一次性腳本（semantic_audit.py / fix_semantic_128.py /
 fix_track_a_64.py / generate_missing_52.py 等）的邏輯，收斂成單一、可重複執行、吃
-命令列參數的正式工具。regex/格式層級檢查沿用 fix_xian_wording.py 跟 filter_data.py
+命令列參數的正式工具。regex/格式層級檢查沿用 data_quality.py（2026-08 合併自
+validate_data.py／evaluate_model.py／filter_data.py／fix_xian_wording.py）
 既有的規則，這裡只新增「思考跟輸出對不對得上」「是不是一個好問題」這類 regex
 抓不到、需要 LLM 語意判斷的檢查層。
 
@@ -38,8 +39,7 @@ import time
 from pathlib import Path
 
 import collect_data as cd
-import filter_data as fd
-import fix_xian_wording as fx
+import data_quality as dq
 
 DATA_DIR = Path(__file__).parent / "data"
 DEFAULT_FAIL_REPORT = DATA_DIR / "semantic_audit_fail.txt"
@@ -83,7 +83,7 @@ AUDIT_SYSTEM = """你是嚴格的中文語言品質審查員，負責審查懷�
 
 以上第4項刻意排除「是非題（嗎/是不是/有沒有/對不對）」「一問兩題（兩個問號）」
 「超過字數上限」「錨點字面是否出現在畫面元素清單裡」「格式提示原文照抄」
-「禁忌詞字面出現」這六種——這些已經有 fix_xian_wording.py / filter_data.py 的
+「禁忌詞字面出現」這六種——這些已經有 data_quality.py 的
 regex 規則在檢查，這裡看到即使違反也不用重複標記，除非同時合併了上面 a~f 裡的
 語意問題。"""
 
@@ -118,23 +118,22 @@ def semantic_ok(chosen: str, context: str) -> tuple[bool, str]:
 
 
 def regex_checks_fail(content: str) -> str | None:
-    """regex/格式層級檢查，沿用 fix_xian_wording.py / filter_data.py 既有規則，
-    不重複實作。"""
-    if fx.has_xian_wording(content):
+    """regex/格式層級檢查，沿用 data_quality.py 既有規則，不重複實作。"""
+    if dq.has_xian_wording(content):
         return "xian"
-    if fx.has_zanmen_wording(content):
+    if dq.has_zanmen_wording(content):
         return "zanmen"
-    if fx.has_dabashou_wording(content):
+    if dq.has_dabashou_wording(content):
         return "dabashou"
-    if fx.has_shouchang_wording(content):
+    if dq.has_shouchang_wording(content):
         return "shouchang"
-    if fx.has_touyiju_wording(content):
+    if dq.has_touyiju_wording(content):
         return "touyiju"
-    if fx.has_bookish_verb_complement(content):
+    if dq.has_bookish_verb_complement(content):
         return "bookish"
-    if fx.has_scene_text_as_question(content):
+    if dq.has_scene_text_as_question(content):
         return "scene_as_question"
-    if fd.has_leaked_self_check(content):
+    if dq.has_leaked_self_check(content):
         return "self_check_leak"
     return None
 
@@ -143,9 +142,9 @@ def _describe_deterministic_fail(content: str, rule_name: str) -> str:
     """把確定性regex檢查的結果，展開成模型看得懂、能據以修正的具體說明——只回傳
     「FAIL:too_long」這種光禿禿的標籤，模型不知道超了幾個字、原句是什麼，等於
     沒拿到有用的回饋，retry_feedback 機制對這幾條規則就形同虛設。"""
-    q = fx.extract_question(content)
+    q = dq.extract_question(content)
     if rule_name == "too_long":
-        length = len(fx._PUNCT_RE.sub("", q))
+        length = len(dq._PUNCT_RE.sub("", q))
         return f"問題「{q}」共{length}字，超過15字上限{length - 15}字，請把這句話縮短到15字以內，可以拿掉不影響意思的修飾詞或合併語意重複的部分"
     if rule_name == "is_yesno":
         return f"問題「{q}」是是非題（用了「嗎／有沒有／是不是／會不會／要不要／對不對／好不好」這類句型），只能換一種開放式問法，不是刪掉這些字就好"
@@ -159,13 +158,13 @@ def _describe_deterministic_fail(content: str, rule_name: str) -> str:
 def validate_full(chosen: str, taboos: list[str], rules: dict[str, str], context: str) -> str:
     """完整驗證：格式regex → 內容regex → 規則LLM判斷 → 語意/好問題LLM判斷。
     回傳 "PASS" 或 "FAIL:<原因>"。"""
-    det = fx.check_deterministic_rules(chosen)
+    det = dq.check_deterministic_rules(chosen)
     if det and det in rules:
         return f"FAIL:{det}:{_describe_deterministic_fail(chosen, det)}"
     r = regex_checks_fail(chosen)
     if r:
         return f"FAIL:{r}"
-    v = fx.check_chosen_against_rules(chosen, rules, taboos=taboos)
+    v = dq.check_chosen_against_rules(chosen, rules, taboos=taboos)
     if v:
         return f"FAIL:{v}"
     ok, reason = semantic_ok(chosen, context)
@@ -286,7 +285,10 @@ def expected_key_space() -> set[tuple]:
     scenarios = json.loads(cd.SCENARIOS_FILE.read_text(encoding="utf-8"))
     expected = set()
     for s in scenarios:
-        for step in ("STEP1", "STEP2", "STEP3"):
+        # 2026-08 Track A 拿掉 STEP2（見 collect_data.generate_track_a 說明），
+        # 只剩 STEP1/STEP3 是預期會存在的 key，不然 gaps/scan 會永遠把所有
+        # STEP2 都當成「缺失」在報。
+        for step in ("STEP1", "STEP3"):
             expected.add(("A", s["id"], step))
     for sc in cd.TRACK_C_SCENARIOS:
         expected.add(("C", sc["emotion_tone"]))
@@ -306,10 +308,19 @@ _STEP_BUILDERS = {
     "STEP2": cd.build_step2_user_prompt,
     "STEP3": cd.build_step3_user_prompt,
 }
-_STEP_COVERED_W = {"STEP1": [], "STEP2": ["Where"], "STEP3": ["Where", "Who"]}
 
 
-def _regen_track_a(sid: str, step: str, by_id: dict, log) -> list[dict] | None:
+def _regen_track_a(
+    sid: str, step: str, by_id: dict, log, chosen_lookup: dict[tuple[str, str], str] | None = None,
+) -> list[dict] | None:
+    """
+    chosen_lookup: 用 cd.build_chosen_lookup(existing) 建立的
+    (scenario_id, step) → chosen 查表，透過 cd.real_covered_w_from_lookup
+    反推前一步驟真正涵蓋的W維度。2026-08 稽核發現這裡原本用寫死的
+    _STEP_COVERED_W（STEP2固定["Where"]、STEP3固定["Where","Who"]），跟
+    generate_track_a 已修好的動態追蹤方式脫節，改成查表；查不到就退回空
+    清單，不是繼續套用錯誤的固定假設值。
+    """
     sc = by_id.get(sid)
     if sc is None:
         log(f"  ! 找不到 scenario {sid}")
@@ -319,10 +330,20 @@ def _regen_track_a(sid: str, step: str, by_id: dict, log) -> list[dict] | None:
     key = ("A", sid, step)
     context = build_context(key, {}, by_id, {}, {}, {})
 
+    covered_w = (
+        cd.real_covered_w_from_lookup(chosen_lookup, sid, step) if chosen_lookup else []
+    )
+    target_w = cd._pick_target_w(covered_w) if step == "STEP3" else None
+
     chosen, feedback = None, ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            candidate = cd.call_claude(_STEP_BUILDERS[step](sc, retry_feedback=feedback))
+            if step == "STEP3":
+                candidate = cd.call_claude(_STEP_BUILDERS[step](
+                    sc, retry_feedback=feedback, covered_w=covered_w, target_w=target_w,
+                ))
+            else:
+                candidate = cd.call_claude(_STEP_BUILDERS[step](sc, retry_feedback=feedback))
         except Exception as e:
             log(f"  [{sid} {step}] 第{attempt}次：連線錯誤，重試（{e}）")
             time.sleep(3)
@@ -339,8 +360,9 @@ def _regen_track_a(sid: str, step: str, by_id: dict, log) -> list[dict] | None:
 
     step_responses = {"STEP1": "", "STEP2": sc.get("elder_step1_response", ""), "STEP3": sc.get("elder_step2_response", "")}
     inference_prompt = cd.build_inference_prompt(
-        step, elder, scene, _STEP_COVERED_W[step],
+        step, elder, scene, covered_w,
         topic_category=sc.get("topic_category"), elder_response=step_responses[step], taboos=taboos,
+        target_w=target_w,
     )
     return _build_pairs(chosen, inference_prompt, cd.QUESTION_REJECTION_RULES, taboos, log,
                          meta_base={"scenario_id": sid, "step": step, "track": "A", "taboos": taboos},
@@ -475,10 +497,13 @@ def _build_pairs(chosen, inference_prompt, rules, taboos, log, meta_base, reject
     return pairs
 
 
-def regen_one(key: tuple, by_id: dict, track_b_by_id: dict, track_c_by_tone: dict, track_d_by_name: dict, log) -> list[dict] | None:
+def regen_one(
+    key: tuple, by_id: dict, track_b_by_id: dict, track_c_by_tone: dict, track_d_by_name: dict, log,
+    chosen_lookup: dict[tuple[str, str], str] | None = None,
+) -> list[dict] | None:
     track = key[0]
     if track == "A":
-        return _regen_track_a(key[1], key[2], by_id, log)
+        return _regen_track_a(key[1], key[2], by_id, log, chosen_lookup)
     if track == "B":
         return _regen_track_b(key[1], track_b_by_id, log)
     if track == "C":
@@ -493,7 +518,7 @@ def regen_one(key: tuple, by_id: dict, track_b_by_id: dict, track_c_by_tone: dic
 # ---------------------------------------------------------------------------
 
 def cmd_scan(args) -> None:
-    pairs = fx.load_existing()
+    pairs = dq.load_existing()
     by_id, track_b_by_id, track_c_by_tone, track_d_by_name = load_lookup_tables()
     seen = iter_unique_pairs(pairs)
     print(f"待審查：{len(seen)} 筆不重複 chosen", flush=True)
@@ -528,7 +553,7 @@ def cmd_scan(args) -> None:
 
 
 def cmd_gaps(args) -> None:
-    pairs = fx.load_existing()
+    pairs = dq.load_existing()
     seen = iter_unique_pairs(pairs)
     expected = expected_key_space()
     actual = set(seen.keys())
@@ -565,7 +590,11 @@ def cmd_fix(args) -> None:
         return
     print(f"待處理：{len(keys)} 組（{'丟棄後重新生成' if discard else '純新增，不discard'}）")
 
-    existing = fx.load_existing()
+    existing = dq.load_existing()
+    # 供 _regen_track_a 反推前一步驟真正涵蓋的W維度用（見該函式說明）。用
+    # discard 前的完整 existing 建查表——即使前一步驟這次也剛好要被丟棄
+    # 重新生成，至少還是拿它「丟棄前」的真實內容當參考，比套用寫死假設值準確。
+    chosen_lookup = cd.build_chosen_lookup(existing)
     discarded_by_key: dict[tuple, list[dict]] = {}
     if discard:
         to_discard = set(keys)
@@ -588,7 +617,7 @@ def cmd_fix(args) -> None:
     for i, key in enumerate(keys, 1):
         log(f"\n=== [{i}/{len(keys)}] {format_key(key)} ===")
         try:
-            pairs = regen_one(key, by_id, track_b_by_id, track_c_by_tone, track_d_by_name, log)
+            pairs = regen_one(key, by_id, track_b_by_id, track_c_by_tone, track_d_by_name, log, chosen_lookup)
         except Exception as e:
             log(f"  ! 例外：{e}")
             pairs = None
