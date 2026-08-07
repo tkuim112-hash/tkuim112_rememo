@@ -63,6 +63,9 @@ public class GameController : MonoBehaviour
     private bool isPaused = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
+    private Coroutine reactionTimeoutCoroutine;
+    private readonly WaitForSeconds reactionTimeoutWait = new WaitForSeconds(15f);
+    private const string NoResponseMarker = "（長者未回應）";
     private readonly Queue<string> incomingMessages = new Queue<string>();
     private readonly object queueLock = new object();
     private string displayedText = "";
@@ -122,6 +125,7 @@ public class GameController : MonoBehaviour
 
     void StartRecording()
     {
+        CancelReactionTimeout();
         isRecording = true;
         if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         displayedText = "";
@@ -267,6 +271,7 @@ public class GameController : MonoBehaviour
                     break;
                 case "pause":
                     isPaused = true;
+                    CancelReactionTimeout();
                     micButton.interactable = false;
                     submitButton.interactable = false;
                     break;
@@ -274,6 +279,7 @@ public class GameController : MonoBehaviour
                     isPaused = false;
                     RefreshSubmitButton();
                     micButton.interactable = true;
+                    StartReactionTimeout();
                     break;
                 case "end":
                     Application.Quit();
@@ -367,6 +373,8 @@ public class GameController : MonoBehaviour
         StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
         if (!string.IsNullOrEmpty(resp.audio_path))
             StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
+        else
+            StartReactionTimeout();
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -405,14 +413,20 @@ public class GameController : MonoBehaviour
         if (req.result != UnityWebRequest.Result.Success)
         {
             Debug.LogWarning($"[TTS] 語音載入失敗: {req.error}");
+            StartReactionTimeout();  // 語音沒播成也要給長者反應窗口，不能卡死
             yield break;
         }
 
-        if (audioSource == null) yield break;
+        if (audioSource == null) { StartReactionTimeout(); yield break; }
         AudioClip clip = DownloadHandlerAudioClip.GetContent(req);
         audioSource.Stop();
         audioSource.clip = clip;
         audioSource.Play();
+
+        // 長者要聽完整句問題才算「聽到」，反應時間從播放結束才開始算
+        // （問題設計規則.pdf 原訂10秒，考量長者手部動作/認知處理可能較慢，改成15秒）。
+        yield return new WaitForSeconds(clip.length);
+        StartReactionTimeout();
     }
 
     void OnReplayAudio()
@@ -430,6 +444,7 @@ public class GameController : MonoBehaviour
 
     IEnumerator ProcessSubmit()
     {
+        CancelReactionTimeout();
         isSubmitting = true;
         if (isRecording) StopRecording();
         isWaitingForStt = false;
@@ -503,6 +518,48 @@ public class GameController : MonoBehaviour
         kinectSensorSender?.OnQuestionAsked();
         if (!string.IsNullOrEmpty(resp.audio_path))
             StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
+        else
+            StartReactionTimeout();
+    }
+
+    // ─── 反應逾時（長者聽完問題15秒沒按麥克風）────────────────────────
+
+    void CancelReactionTimeout()
+    {
+        if (reactionTimeoutCoroutine != null)
+        {
+            StopCoroutine(reactionTimeoutCoroutine);
+            reactionTimeoutCoroutine = null;
+        }
+    }
+
+    void StartReactionTimeout()
+    {
+        CancelReactionTimeout();
+        reactionTimeoutCoroutine = StartCoroutine(ReactionTimeout());
+    }
+
+    IEnumerator ReactionTimeout()
+    {
+        yield return reactionTimeoutWait;
+        reactionTimeoutCoroutine = null;
+        if (isRecording || isWaitingForStt || isSubmitting || isPaused) yield break;
+        StartCoroutine(AutoSubmitNoResponse());
+    }
+
+    IEnumerator AutoSubmitNoResponse()
+    {
+        isSubmitting = true;
+        RefreshSubmitButton();
+        if (typingCoroutine != null) { StopCoroutine(typingCoroutine); typingCoroutine = null; }
+        ResetInputText();
+        aiText.gameObject.SetActive(false);
+        loadingSpinner.SetActive(true);
+
+        yield return StartCoroutine(SendResponse(NoResponseMarker));
+
+        isSubmitting = false;
+        RefreshSubmitButton();
     }
 
     void UpdateRoundBadge()
@@ -562,5 +619,7 @@ public class GameController : MonoBehaviour
         public string[] skipped_w;
         public string last_question_type;
         public string last_w_asked;
+        public int question_number;
+        public long question_asked_at;
     }
 }

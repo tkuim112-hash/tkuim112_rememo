@@ -123,6 +123,10 @@ _FALLBACK_QUESTION = "還有什麼想說的呢？"
 _FALLBACK_SCENE_TEXT = "我們接著聊聊這個吧。"
 _FALLBACK_CLOSING_TEXT = "謝謝你今天的分享，辛苦了。"
 
+# Unity 端問題撥放完15秒沒按麥克風時送出的合成 marker（GameController.cs
+# AutoSubmitNoResponse），不是長者真的說的話，不該拿去問 LLM 有沒有情緒訊號。
+_NO_RESPONSE_MARKER = "（長者未回應）"
+
 
 def _strip_leaked_brackets(text: str) -> str:
     return _LEAK_BRACKET_RE.sub("", text).strip()
@@ -402,7 +406,10 @@ class TherapyOrchestrator:
         # 差了……」），如果先跑 quick_end，這類句子會被誤判成單純放棄話題，
         # 跳過情緒支持直接進下一題——正好是 Track B 的 ignore_emotion／rush_topic
         # 規則要懲罰的行為，所以這個判斷必須放在最前面。
-        is_emotional_trigger = await self._detect_emotional_trigger(elder_response)
+        is_emotional_trigger = (
+            False if elder_response.strip() == _NO_RESPONSE_MARKER
+            else await self._detect_emotional_trigger(elder_response)
+        )
         print(f"  → 情緒觸發偵測: {is_emotional_trigger}")
         if is_emotional_trigger:
             await self.rag.save_memory(
@@ -731,6 +738,10 @@ class TherapyOrchestrator:
 
     def _is_quick_end(self, elder_response: str) -> bool:
         """短回答或放棄關鍵字 → 直接標記話題結束，不呼叫 LLM。"""
+        # _NO_RESPONSE_MARKER 字數超過5字、也不含放棄關鍵字，要獨立判斷，
+        # 不然接不到問題設計規則.pdf「沉默超過10秒→轉話題」這條。
+        if elder_response.strip() == _NO_RESPONSE_MARKER:
+            return True
         if len(elder_response.strip()) < 5:
             return True
         give_up = ["不記得", "不知道", "忘了", "忘記了", "不清楚", "沒印象"]
