@@ -63,7 +63,9 @@
       "birth_year": 1953,
       "birth_place": "苗栗",
       "main_occupation": "農夫",
-      "taboos": ["颱風或天災造成農作大幅損失的困難年份"],
+      "taboos": [
+        "颱風或天災造成農作大幅損失的困難年份"
+      ],
       "today_topic": "農忙收割的日子"
     },
     "scene": {
@@ -117,7 +119,9 @@
       "birth_year": 1950,
       "birth_place": "高雄",
       "main_occupation": "漁民",
-      "taboos": ["出海時遭遇的危險意外或失去的捕魚夥伴"],
+      "taboos": [
+        "出海時遭遇的危險意外或失去的捕魚夥伴"
+      ],
       "today_topic": "出海捕魚的記憶"
     },
     "scene": {
@@ -250,7 +254,9 @@
       "birth_year": 1957,
       "birth_place": "嘉義",
       "main_occupation": "布行老闆娘",
-      "taboos": ["布行後來的生意困境或被迫歇業的原因"],
+      "taboos": [
+        "布行後來的生意困境或被迫歇業的原因"
+      ],
       "today_topic": "經營布行的故事"
     },
     "scene": {
@@ -330,7 +336,9 @@
       "birth_year": 1950,
       "birth_place": "澎湖",
       "main_occupation": "漁民",
-      "taboos": ["家庭最困難時期的負債或財務危機"],
+      "taboos": [
+        "家庭最困難時期的負債或財務危機"
+      ],
       "today_topic": "在澎湖討海的生活"
     },
     "scene": {
@@ -384,7 +392,9 @@
       "birth_year": 1953,
       "birth_place": "新竹",
       "main_occupation": "玻璃廠工人",
-      "taboos": ["自身目前的病況或身體機能退化的狀況"],
+      "taboos": [
+        "自身目前的病況或身體機能退化的狀況"
+      ],
       "today_topic": "在玻璃廠工作的技藝"
     },
     "scene": {
@@ -411,7 +421,9 @@
       "birth_year": 1952,
       "birth_place": "基隆",
       "main_occupation": "碼頭工人",
-      "taboos": ["工作中受過的嚴重傷害或累積的職業病"],
+      "taboos": [
+        "工作中受過的嚴重傷害或累積的職業病"
+      ],
       "today_topic": "在基隆港搬貨的歲月"
     },
     "scene": {
@@ -545,7 +557,9 @@
       "birth_year": 1952,
       "birth_place": "彰化",
       "main_occupation": "客運車掌小姐",
-      "taboos": ["因婚姻被迫辭職的委屈或職場對女性的不公待遇"],
+      "taboos": [
+        "因婚姻被迫辭職的委屈或職場對女性的不公待遇"
+      ],
       "today_topic": "隨車服務的公路上青春"
     },
     "scene": {
@@ -572,7 +586,9 @@
       "birth_year": 1962,
       "birth_place": "新北",
       "main_occupation": "家庭代工（學生時期）",
-      "taboos": ["沒能繼續讀書的遺憾或童年被迫賺錢的委屈"],
+      "taboos": [
+        "沒能繼續讀書的遺憾或童年被迫賺錢的委屈"
+      ],
       "today_topic": "客廳即工廠的代工童年"
     },
     "scene": {
@@ -599,7 +615,9 @@
       "birth_year": 1952,
       "birth_place": "台北",
       "main_occupation": "工廠工人",
-      "taboos": ["童年玩伴目前的狀況（部分已過世或失去聯繫）"],
+      "taboos": [
+        "童年玩伴目前的狀況（部分已過世或失去聯繫）"
+      ],
       "today_topic": "小時候在巷子裡玩的童年"
     },
     "scene": {
@@ -707,7 +725,9 @@
       "birth_year": 1960,
       "birth_place": "苗栗",
       "main_occupation": "農民",
-      "taboos": ["兄弟姊妹之間目前是否有疏離或衝突"],
+      "taboos": [
+        "兄弟姊妹之間目前是否有疏離或衝突"
+      ],
       "today_topic": "幫媽媽在大灶前燒火的記憶"
     },
     "scene": {
@@ -869,7 +889,9 @@
       "birth_year": 1950,
       "birth_place": "基隆",
       "main_occupation": "礦工",
-      "taboos": [],
+      "taboos": [
+        "礦災意外或工友的死傷"
+      ],
       "today_topic": "在煤礦坑工作的歲月"
     },
     "scene": {
@@ -1247,7 +1269,9 @@
       "birth_year": 1951,
       "birth_place": "台北",
       "main_occupation": "工廠工人",
-      "taboos": [],
+      "taboos": [
+        "戰友的死傷或戰場上的創傷經歷"
+      ],
       "today_topic": "當兵服役的歲月"
     },
     "scene": {
@@ -1273,7 +1297,9 @@
       "birth_year": 1955,
       "birth_place": "高雄",
       "main_occupation": "漁民",
-      "taboos": [],
+      "taboos": [
+        "服役期間家人過世卻不能回家的遺憾"
+      ],
       "today_topic": "在軍中交到的好朋友"
     },
     "scene": {
@@ -1354,6 +1380,7 @@
       "birth_place": "台北",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "種花草、做手工藝",
       "today_topic": "每天聽老歌的習慣"
     },
     "scene": {
@@ -1380,6 +1407,7 @@
       "birth_place": "高雄",
       "main_occupation": "工廠工人",
       "taboos": [],
+      "preferences": "釣魚、下棋",
       "today_topic": "守著電視看少棒比賽的童年記憶"
     },
     "scene": {
@@ -1406,6 +1434,7 @@
       "birth_place": "台中",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "做菜、跳土風舞",
       "today_topic": "在家裡種花的樂趣"
     },
     "scene": {
@@ -1432,6 +1461,7 @@
       "birth_place": "台南",
       "main_occupation": "農民",
       "taboos": [],
+      "preferences": "種蘭花、聽歌仔戲",
       "today_topic": "以前每天聽廣播的習慣"
     },
     "scene": {
@@ -1458,6 +1488,7 @@
       "birth_place": "基隆",
       "main_occupation": "漁民",
       "taboos": [],
+      "preferences": "釣魚、養鳥",
       "today_topic": "週末去溪邊釣魚的快樂"
     },
     "scene": {
@@ -1484,6 +1515,7 @@
       "birth_place": "台北",
       "main_occupation": "退休公務員",
       "taboos": [],
+      "preferences": "書法、下圍棋",
       "today_topic": "在公園和老朋友下棋的日子"
     },
     "scene": {
@@ -1510,6 +1542,7 @@
       "birth_place": "台南",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "編織、聽廣播劇",
       "today_topic": "和鄰居一起打麻將的樂趣"
     },
     "scene": {
@@ -1537,6 +1570,7 @@
       "birth_place": "嘉義",
       "main_occupation": "小學老師",
       "taboos": [],
+      "preferences": "書法、種蘭花",
       "today_topic": "練習書法的多年心得"
     },
     "scene": {
@@ -1814,7 +1848,9 @@
       "birth_year": 1959,
       "birth_place": "台南",
       "main_occupation": "工廠女工",
-      "taboos": ["初戀男生後來的下落或現況"],
+      "taboos": [
+        "初戀男生後來的下落或現況"
+      ],
       "today_topic": "年輕時候的初戀記憶"
     },
     "scene": {
@@ -1867,7 +1903,9 @@
       "birth_year": 1960,
       "birth_place": "台北",
       "main_occupation": "店員",
-      "taboos": ["先生目前的健康狀況或近況"],
+      "taboos": [
+        "先生目前的健康狀況或近況"
+      ],
       "today_topic": "談戀愛時期的甜蜜記憶"
     },
     "scene": {
@@ -1895,7 +1933,9 @@
       "birth_year": 1952,
       "birth_place": "苗栗",
       "main_occupation": "木工",
-      "taboos": ["太太目前的健康狀況或近況"],
+      "taboos": [
+        "太太目前的健康狀況或近況"
+      ],
       "today_topic": "婚後兩個人一起打拼的歲月"
     },
     "scene": {
@@ -1922,7 +1962,10 @@
       "birth_year": 1948,
       "birth_place": "台南",
       "main_occupation": "農民",
-      "taboos": ["二二八事件", "戒嚴與省籍歧視"],
+      "taboos": [
+        "二二八事件",
+        "戒嚴與省籍歧視"
+      ],
       "today_topic": "小時候跑防空洞的記憶"
     },
     "scene": {
@@ -1948,7 +1991,9 @@
       "birth_year": 1954,
       "birth_place": "嘉義",
       "main_occupation": "農民",
-      "taboos": ["父母目前的狀況（父母已離世）"],
+      "taboos": [
+        "父母目前的狀況（父母已離世）"
+      ],
       "today_topic": "當兵時思念家鄉的心情"
     },
     "scene": {
@@ -1975,7 +2020,9 @@
       "birth_year": 1956,
       "birth_place": "台中",
       "main_occupation": "工廠工人",
-      "taboos": ["母親是何時、如何過世的細節（母親已離世，避免深究死因或過世過程，但重逢當下的互動可以談）"],
+      "taboos": [
+        "母親是何時、如何過世的細節（母親已離世，避免深究死因或過世過程，但重逢當下的互動可以談）"
+      ],
       "today_topic": "退伍回家那一天的感受"
     },
     "scene": {
@@ -2029,6 +2076,7 @@
       "birth_place": "台南",
       "main_occupation": "退休工廠主任",
       "taboos": [],
+      "preferences": "種菜、看報紙",
       "today_topic": "那年半夜爬起來聽少棒的記憶"
     },
     "scene": {
@@ -2191,7 +2239,9 @@
       "birth_year": 1950,
       "birth_place": "嘉義",
       "main_occupation": "退休建築工人",
-      "taboos": ["父親目前的狀況（父親已離世）"],
+      "taboos": [
+        "父親目前的狀況（父親已離世）"
+      ],
       "today_topic": "立志要幫家人蓋一棟磚房的夢想"
     },
     "scene": {
@@ -2299,7 +2349,9 @@
       "birth_year": 1952,
       "birth_place": "彰化",
       "main_occupation": "退休農夫",
-      "taboos": ["布袋戲傳統技藝是否已消逝或老師傅的現況"],
+      "taboos": [
+        "布袋戲傳統技藝是否已消逝或老師傅的現況"
+      ],
       "today_topic": "廟埕看布袋戲野台戲的童年"
     },
     "scene": {
@@ -2675,6 +2727,7 @@
       "birth_place": "台南",
       "main_occupation": "水電工",
       "taboos": [],
+      "preferences": "修東西、聽收音機",
       "today_topic": "退休後終於去學毛筆字的故事"
     },
     "scene": {
@@ -2863,7 +2916,9 @@
       "birth_year": 1958,
       "birth_place": "台中",
       "main_occupation": "紡織廠女工",
-      "taboos": ["父親的死因或病情細節"],
+      "taboos": [
+        "父親的死因或病情細節"
+      ],
       "today_topic": "爸爸走了那一年，心裡的遺憾"
     },
     "scene": {
@@ -2889,7 +2944,9 @@
       "birth_year": 1951,
       "birth_place": "高雄",
       "main_occupation": "船廠工人",
-      "taboos": ["已故工友的死因或臨終過程"],
+      "taboos": [
+        "已故工友的死因或臨終過程"
+      ],
       "today_topic": "老工友們一個個都不在了"
     },
     "scene": {
@@ -2916,7 +2973,9 @@
       "birth_year": 1960,
       "birth_place": "雲林",
       "main_occupation": "農婦",
-      "taboos": ["孩子多久沒回來探視或聯繫頻率"],
+      "taboos": [
+        "孩子多久沒回來探視或聯繫頻率"
+      ],
       "today_topic": "孩子離家去外地打拼的那個清晨"
     },
     "scene": {
@@ -2942,7 +3001,9 @@
       "birth_year": 1954,
       "birth_place": "台北",
       "main_occupation": "機械工人",
-      "taboos": ["老家舊址目前的樣貌（已無法承受重提）"],
+      "taboos": [
+        "老家舊址目前的樣貌（已無法承受重提）"
+      ],
       "today_topic": "老家被拆遷那天的心情"
     },
     "scene": {
@@ -2969,7 +3030,9 @@
       "birth_year": 1957,
       "birth_place": "嘉義",
       "main_occupation": "家庭主婦",
-      "taboos": ["大哥的死因或離世過程細節"],
+      "taboos": [
+        "大哥的死因或離世過程細節"
+      ],
       "today_topic": "對已故大哥的思念"
     },
     "scene": {
@@ -3047,7 +3110,9 @@
       "birth_year": 1958,
       "birth_place": "台南",
       "main_occupation": "護士",
-      "taboos": ["老伴目前的健康狀況或近況"],
+      "taboos": [
+        "老伴目前的健康狀況或近況"
+      ],
       "today_topic": "和老伴第一次出遊去日月潭"
     },
     "scene": {
@@ -3100,7 +3165,9 @@
       "birth_year": 1955,
       "birth_place": "台北",
       "main_occupation": "電子廠工人",
-      "taboos": [],
+      "taboos": [
+        "兩岸政治話題"
+      ],
       "today_topic": "新兵訓練第一週又累又怕的記憶"
     },
     "scene": {
@@ -3127,7 +3194,9 @@
       "birth_year": 1952,
       "birth_place": "台中",
       "main_occupation": "司機",
-      "taboos": [],
+      "taboos": [
+        "退伍後求職不順或被歧視的經歷"
+      ],
       "today_topic": "在軍中學開車，讓我謀生一輩子"
     },
     "scene": {
@@ -3153,7 +3222,9 @@
       "birth_year": 1957,
       "birth_place": "嘉義",
       "main_occupation": "農夫",
-      "taboos": [],
+      "taboos": [
+        "戒嚴時期言論審查的恐懼經歷"
+      ],
       "today_topic": "退伍走出軍營大門那一刻"
     },
     "scene": {
@@ -3179,7 +3250,9 @@
       "birth_year": 1951,
       "birth_place": "台南",
       "main_occupation": "水電工",
-      "taboos": ["兩岸政治話題"],
+      "taboos": [
+        "兩岸政治話題"
+      ],
       "today_topic": "在金門當兵、望著對岸的日子"
     },
     "scene": {
@@ -3341,6 +3414,7 @@
       "birth_place": "高雄",
       "main_occupation": "康樂隊歌手",
       "taboos": [],
+      "preferences": "唱歌、聽老歌",
       "today_topic": "在勞軍晚會唱歌表演的歲月"
     },
     "scene": {
@@ -3367,6 +3441,7 @@
       "birth_place": "雲林",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "拜拜、種花",
       "today_topic": "迷戀歌仔戲小生的少女時光"
     },
     "scene": {

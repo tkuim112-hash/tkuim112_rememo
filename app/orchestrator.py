@@ -36,6 +36,7 @@
 主動避開，而不是完全依賴這道事後防護。
 """
 import json
+import random
 import re
 from pathlib import Path
 from services.llm import LLMService
@@ -46,7 +47,9 @@ from privacy.deidentifier import Deidentifier
 from safety.response_guard import guarded_generate
 from safety.element_filter import filter_scene_elements
 
-# 5W1H 優先順序（由易到難，對齊 問題設計規則.pdf；Why 條件式使用）
+# 5W1H 涵蓋清單（Why 條件式使用、優先序最低）。補問時不是永遠照這個順序
+# 掃第一個沒涵蓋的——5W是動態引導技術，不是必須照1到5走完的線性流程，
+# 實際挑選見 _next_step_or_end（非Why維度隨機挑選，Why 仍最後才輪到）。
 _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
 
 _W_DESC = {
@@ -70,7 +73,7 @@ _W_HINT = {
 _STEP_TASKS = {
     "STEP1": "生成第一個【開場問題】，引導長者進入回憶（優先問 Where 或 What）",
     "STEP2": "根據長者剛才說的話，順著內容自然追問，不限制哪個W，完全跟著長者走",
-    "STEP3": "生成一個【補充問題】，探索還未涵蓋的W維度（Why 僅在長者狀態良好時詢問）",
+    "STEP3": "從還沒問到的方向裡挑一個順著長者剛才的話自然深入問下去，不是核對清單（Why 僅在長者狀態良好時詢問）",
 }
 
 _STEP_TYPE_LABEL = {
@@ -177,8 +180,83 @@ def _retry_feedback_section(retry_feedback: str) -> str:
     return f"\n【上一次輸出有問題，這次務必修正】\n{retry_feedback}\n"
 
 
+_STYLE_ONLY_FRAGMENTS_RE = re.compile(
+    r"watercolor painting style|nostalgic warm tones|warm high-contrast palette|"
+    r"warm tones|high-contrast palette|"
+    r"avoid adjacent blue-green-purple tones|no text",
+    re.IGNORECASE,
+)
+
+
+def _strip_style_descriptors(image_prompt: str) -> str:
+    """
+    image_prompt 是 _plan_image 送去 Stability AI 的英文生圖描述，開頭固定是
+    「watercolor painting style」，常常還帶「nostalgic warm tones」「no text」
+    這類畫風/色調指令——這些是給 Stability AI 的生圖技術參數，不是場景內容。
+
+    2026-08：原本讓問題生成的模型自己讀到這整段英文、自行忽略畫風用詞（見
+    _composition_section 的指示），實測不可靠——模型曾把「watercolor painting
+    style, 1970s Taiwan coal mine...」直接翻譯成「一幅水彩畫描繪了1970年代
+    台灣煤礦場景」，用後設視角把畫面講成「這是一幅畫」，跟長者拉開距離。改成
+    在傳給問題生成步驟之前，先用逗號分段濾掉這些已知的畫風/色調片語，只留下
+    真正描述場景內容的部分，不再指望模型自己守住「請忽略」這句提醒——這是
+    從源頭消除誘因，比事後靠一句提示語更可靠。
+    """
+    if not image_prompt:
+        return image_prompt
+    parts = [p.strip() for p in image_prompt.split(",")]
+    kept = [p for p in parts if p and not _STYLE_ONLY_FRAGMENTS_RE.search(p)]
+    return ", ".join(kept)
+
+
+def _composition_section(scene_composition: str) -> str:
+    """
+    scene_composition 這裡放的是 _plan_image 送去 Stability AI 的 image_prompt
+    原文（英文，已經用 _strip_style_descriptors 濾掉畫風/色調片語），不是另外
+    請 LLM 生成一份中文描述——2026-08 原本讓 LLM 在規劃圖片的同一次回應裡多
+    生成一個中文 scene_composition 欄位，實測發現這個欄位常常跟 elements 對
+    不上（同一次回應裡兩個各自生成的欄位，本地弱模型顧不好兩邊一致），還得
+    額外加一致性檢查、重試，仍不保證對齊。image_prompt 才是生圖當下唯一真正
+    決定畫面長相的描述，直接原文轉傳給問題生成步驟，不會有「兩份描述互相
+    打架」的問題，也不用再多一次 LLM 生成。若不提供，模型會把元素清單當成
+    互不相干的詞袋，自己亂兜空間關係（例如「坐在木桌前的腳踏車上」），生出
+    不合理的畫面。
+    """
+    if not scene_composition:
+        return ""
+    return (
+        f"\n【這些元素在畫面裡實際的擺放/動作關係（生圖當下的原始描述，英文）】\n"
+        f"{scene_composition}\n"
+        f"（這段英文是生圖時實際使用的描述，如果場景文字要提到這些元素之間的空間"
+        f"或動作關係，要以這段內容為準，不要自己另外想像一個不同的組合方式）\n"
+    )
+
+
 def _load_prompt(filename: str) -> str:
-    """從 app/prompts/ 讀取 prompt 模板，找不到就回傳空字串。"""
+    """
+    從 app/prompts/ 讀取 prompt 模板，找不到就回傳空字串。
+
+    question_5w1h.txt（_generate_question／_generate_open_followup／
+    _generate_supplement_question 共用）的【承接語／場景文字規則】設計目的，
+    是讓長者透過 AI 生成的圖回想過去，具體運作方式是一個三段式漏斗，之後
+    新增或調整那組規則時，都用這個原則判斷合不合理（2026-08 從 prompt 本文
+    搬到這裡——這段是寫給未來維護 prompt 的人看的設計理念，不是要模型照做的
+    指令，留在 prompt 裡只會佔用模型的注意力額度，不影響它的實際輸出）：
+      1. 圖片本身負責「schema活化」——生成圖片時選的是同年代、同職業背景的人
+         普遍會有印象的通俗元素，不是長者的真實地點，作用是喚起長者腦中對應
+         那個年代／職業／場景的一整套熟悉印象，不是要長者辨認「這張照片」本身
+      2. 場景文字負責「雙重編碼鋪墊＋泛指邀請」——具體描寫畫面元素，讓長者
+         同時看到、聽到同一組具體物件，加深 schema 被活化的強度（dual-coding：
+         視覺＋語音兩個管道疊加，記憶痕跡比單一管道更容易被觸發），同時用
+         泛指語氣暗示「這是一類情境」而不是「這就是你的過去」，避免長者因為
+         畫面細節對不上而卡住
+      3. 問題負責「回想動作本身」——問的不是畫面裡有什麼，而是長者自己那個
+         年代／職業裡「你的版本是怎樣」，長者要主動把被畫面喚起的 schema
+         填進自己真實的細節、事件、情感，這一步才是懷舊治療真正發生的地方
+    場景文字自己不需要、也不應該試圖直接達成「回想」的效果——它的成敗判準是
+    「有沒有做好活化與鋪墊，讓緊接著的問題更容易被回答」，不是這句話本身寫得
+    夠不夠感人、夠不夠有畫面感。
+    """
     path = Path(__file__).parent / "prompts" / filename
     if path.exists():
         return path.read_text(encoding="utf-8")
@@ -285,6 +363,9 @@ class TherapyOrchestrator:
         image_plan = await self._plan_image(user, memories=memories)
         print(f"  → [計時] LLM 規劃圖片: {_time.time()-_t2:.1f}s")
         print(f"  → 圖片元素: {image_plan['elements']}")
+        # 濾掉畫風/色調片語後才傳給問題生成步驟，Stability AI 那邊還是用完整的
+        # image_plan["image_prompt"]（見下面 safe_prompt），兩者用途不同不能共用。
+        clean_composition = _strip_style_descriptors(image_plan["image_prompt"])
 
         safe_prompt = self.deidentifier.desensitize_text(
             image_plan["image_prompt"], taboos=user["taboos"]
@@ -328,6 +409,7 @@ class TherapyOrchestrator:
             step="STEP1",
             user=user,
             scene_elements=image_plan["elements"],
+            scene_composition=clean_composition,
             covered_w=[],
         )
         print(f"  → [計時] LLM 生問題: {_time.time()-_t4:.1f}s")
@@ -339,6 +421,7 @@ class TherapyOrchestrator:
             "session_id": session_id,
             "round": round_number,
             "scene_elements": image_plan["elements"],
+            "scene_composition": clean_composition,
             "covered_w": q["covered_w"],
             "skipped_w": [],
             "last_question_type": "step1",
@@ -393,6 +476,7 @@ class TherapyOrchestrator:
         last_type        = state["last_question_type"]
         last_w           = state.get("last_w_asked", "")
         scene_els        = state["scene_elements"]
+        scene_comp       = state.get("scene_composition", "")
         question_count   = state.get("question_count", 1)
         supplement_count = state.get("supplement_count", 0)
 
@@ -475,7 +559,7 @@ class TherapyOrchestrator:
                 skipped_w.append(last_w)
                 return await self._next_step_or_end(
                     user, scene_els, covered_w, skipped_w, elder_response, state, emotion,
-                    question_count, supplement_count,
+                    question_count, supplement_count, scene_composition=scene_comp,
                 )
 
         # ── STEP2：自由對話中背景追蹤 W 覆蓋 ────────────────────
@@ -516,6 +600,7 @@ class TherapyOrchestrator:
                 fallback=_element_fallback(scene_els, with_covered_w=False),
                 user=user, scene_elements=scene_els, covered_w=covered_w,
                 skipped_w=skipped_w, elder_response=elder_response, emotion=emotion,
+                scene_composition=scene_comp,
             )
             new_state = {
                 **state,
@@ -538,7 +623,7 @@ class TherapyOrchestrator:
             # 會依 _MAX_SUPPLEMENT_PER_ROUND 判斷是否還要補問，還是直接收尾。
             return await self._next_step_or_end(
                 user, scene_els, covered_w, skipped_w, elder_response, state, emotion,
-                question_count, supplement_count,
+                question_count, supplement_count, scene_composition=scene_comp,
             )
 
     # ══════════════════════════════════════════════════════════════
@@ -564,6 +649,7 @@ class TherapyOrchestrator:
         question_count: int = 1,
         supplement_count: int = 0,
         elder_response: str = "",
+        scene_composition: str = "",
     ) -> dict:
         result = await guarded_generate(
             self._generate_supplement_question,
@@ -572,7 +658,7 @@ class TherapyOrchestrator:
             max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
             fallback=_element_fallback(scene_els),
             user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
-            emotion=emotion, elder_response=elder_response,
+            emotion=emotion, elder_response=elder_response, scene_composition=scene_composition,
         )
         print(f"  → 補問 W({target_w}): {result['question']}")
         new_state = {
@@ -642,6 +728,7 @@ class TherapyOrchestrator:
         emotion: str = "happy",
         question_count: int = 1,
         supplement_count: int = 0,
+        scene_composition: str = "",
     ) -> dict:
         """
         話題結束後：最多補問 _MAX_SUPPLEMENT_PER_ROUND 個未涵蓋的W，或結束回合。
@@ -650,9 +737,21 @@ class TherapyOrchestrator:
         5W1H 覆蓋度只用來決定「補問哪一個W」，不是「六個維度都要問過才能結束」——
         補問次數或本回合題數一旦超過上限，就算還有W沒問到，也直接自然收尾，
         避免對話變成連環打勾清單。
+
+        目標W的選擇不是永遠照 _W_ORDER 固定順序掃第一個沒涵蓋的——那樣等於
+        機械化地把5W1H當成必須照1到5走完的線性流程。改成在非Why的未涵蓋
+        維度裡隨機挑一個，Why仍維持最低優先序（只有其他都涵蓋時才輪到，
+        且仍要通過長者狀態良好判斷）。
         """
-        next_w = self._next_uncovered_w(covered_w, skipped_w)
-        if not next_w:
+        uncovered = [w for w in _W_ORDER if w not in covered_w and w not in skipped_w]
+        if not uncovered:
+            return await self._end_action(state, user, elder_response, emotion)
+
+        # 懷舊治療重點是長者的成就感／愉悅感，不是把5W1H打勾湊滿——情緒已經
+        # 正向、且本回合已經補問過至少一次，代表這一輪已經達到效果，優先
+        # 自然收尾，不用為了湊剩下的W硬多問一題。
+        if supplement_count >= 1 and emotion in ("happy", "excited"):
+            print(f"  → 長者情緒{emotion}且已補問過，優先收尾（成就感優先於題數）")
             return await self._end_action(state, user, elder_response, emotion)
 
         if (
@@ -662,19 +761,21 @@ class TherapyOrchestrator:
             print(f"  → 補問已達上限（{supplement_count}/{_MAX_SUPPLEMENT_PER_ROUND}），話題自然結束")
             return await self._end_action(state, user, elder_response, emotion)
 
-        if next_w == "Why":
+        non_why = [w for w in uncovered if w != "Why"]
+        if non_why:
+            next_w = random.choice(non_why)
+        else:
             elder_state_good = await self._check_elder_state_good(elder_response, emotion)
             print(f"  → Why 長者狀態良好: {elder_state_good}")
             if not elder_state_good:
                 skipped_w.append("Why")
-                next_w = self._next_uncovered_w(covered_w, skipped_w)
-                if not next_w:
-                    return await self._end_action(state, user, elder_response, emotion)
+                return await self._end_action(state, user, elder_response, emotion)
+            next_w = "Why"
 
         return await self._ask_supplement(
             user, scene_els, covered_w, skipped_w, next_w, state, emotion,
             question_count, supplement_count,
-            elder_response=elder_response,
+            elder_response=elder_response, scene_composition=scene_composition,
         )
 
     # ══════════════════════════════════════════════════════════════
@@ -1030,18 +1131,23 @@ class TherapyOrchestrator:
    AI 生圖無法穩定畫出清楚可讀的文字，長者也答不出畫面上寫了什麼。
 3. 絕對不要用「需要辨識特定人物身份或表情」的元素（小人物、遠處人臉、某個人的
    表情）——AI 生圖無法穩定畫出清楚的人臉細節，長者無從辨認畫裡的人是誰。
-4. 每個元素必須是「同年代、同職業背景的人普遍會有印象」的常見物件，不要選個人
+4. 絕對不要生成代表「長者本人」的人物元素——如果這次情境是長者自己的職業或
+   興趣，元素只能是這個情境裡的物件、地點，或跟長者互動的其他人（同事、客人、
+   家人等），不能生成一個「正在做這件事的人」當元素（例如長者職業是賣菜，不能
+   生成「賣菜阿嬤」「賣菜的人」這種元素）——問題生成時會把這個元素當成長者以外
+   的第三人來問，變成要長者回答「你最喜歡跟她聊些什麼」這種問長者自己的問題。
+5. 每個元素必須是「同年代、同職業背景的人普遍會有印象」的常見物件，不要選個人
    化程度太高、地域限定太窄或太罕見的物件（例如特定花卉品種、特定小眾嗜好用
    品）——長者答不出自己沒印象的東西，元素越通俗普遍，長者才越可能真的有共鳴。
-5. image_prompt 要指定暖色調、高對比配色，且明確避免藍、綠、紫三色互相鄰接
+6. image_prompt 要指定暖色調、高對比配色，且明確避免藍、綠、紫三色互相鄰接
    （例如寫 "warm high-contrast palette, avoid adjacent blue-green-purple
    tones"）——年長者對藍/綠/紫及其鄰近色的辨識能力較弱，色差不夠大會導致
    長者根本看不清楚畫面裡的錨點物件。
-6. 元素之間、以及元素與長者的職業背景/今日主題之間，必須符合現實邏輯，不能互相
+7. 元素之間、以及元素與長者的職業背景/今日主題之間，必須符合現實邏輯，不能互相
    矛盾（例如：導遊、業務跑外勤這類白天在外活動的職業，畫面不要無故選夜景；適合
-   用夜景的情境是活動本身就發生在晚上，如夜市、廟會、夜校、值夜班等）。第5點要求
+   用夜景的情境是活動本身就發生在晚上，如夜市、廟會、夜校、值夜班等）。第6點要求
    的暖色高對比，白天陽光、黃昏落日一樣能達成，不是只有夜晚才符合。
-7. 回傳一個 JSON 物件，**只回 JSON，不要任何說明文字或 markdown 標記**。
+8. 回傳一個 JSON 物件，**只回 JSON，不要任何說明文字或 markdown 標記**。
 格式：
 {{
   "elements": ["元素1", "元素2", "元素3", "元素4"],
@@ -1102,6 +1208,7 @@ class TherapyOrchestrator:
         user: dict,
         scene_elements: list[str],
         covered_w: list[str],
+        scene_composition: str = "",
         elder_response: str = "",
         emotion: str = "happy",
         retry_feedback: str = "",
@@ -1144,6 +1251,7 @@ class TherapyOrchestrator:
             f"興趣：{user.get('preferences') or '無'}\n"
             f"懷舊治療主題類別：{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
+            f"{_composition_section(scene_composition)}"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"{elder_section}"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
@@ -1175,6 +1283,7 @@ class TherapyOrchestrator:
         covered_w: list[str],
         skipped_w: list[str],
         elder_response: str,
+        scene_composition: str = "",
         emotion: str = "happy",
         retry_feedback: str = "",
     ) -> dict:
@@ -1207,6 +1316,7 @@ class TherapyOrchestrator:
             f"長者剛才說：\n「{elder_response}」\n"
             f"\n【今日主題】\n{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
+            f"{_composition_section(scene_composition)}"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"\n【尚未涵蓋的W維度】\n{uncovered_str}\n"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
@@ -1226,7 +1336,11 @@ class TherapyOrchestrator:
             f"不相干的話題（那樣會讓「主導權在你」這句話顯得言行不一，是這條規則最容易"
             f"出錯的地方），而是問一個尊重他步調、讓他自己決定要不要繼續/現在說或晚點說"
             f"的問題。\n"
-            f"問題要自然跟著對話走，同時盡量帶出【尚未涵蓋的W維度】中的某一個。\n"
+            f"先判斷長者是不是正說得起勁、自己滔滔不絕地敘述——如果是，「問題」改用"
+            f"聊天中真的會脫口而出的簡短延續句（例如「後來呢？」「你們還做了什麼？」），"
+            f"順著他的話往下接就好，不用刻意湊出結構完整、以W維度為目標的問題；只有"
+            f"長者的敘述明顯停下來、需要換方向時，才自然地把問題帶到【尚未涵蓋的W維度】"
+            f"其中一個上。承接語（同理、具體呼應長者剛才說的內容）不受這條影響，維持原本要求。\n"
             f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
             f"承接語：（1-2句，30字以內）\n"
@@ -1246,6 +1360,7 @@ class TherapyOrchestrator:
         scene_elements: list[str],
         covered_w: list[str],
         target_w: str,
+        scene_composition: str = "",
         emotion: str = "happy",
         retry_feedback: str = "",
         elder_response: str = "",
@@ -1285,12 +1400,14 @@ class TherapyOrchestrator:
             f"興趣：{user.get('preferences') or '無'}\n"
             f"懷舊治療主題類別：{topic_str}\n"
             f"\n【眼前畫面元素】\n{elements_str}\n"
+            f"{_composition_section(scene_composition)}"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"{elder_section}"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n"
-            f"生成一個【補充問題】，探索還未涵蓋的W維度。{_W_HINT[target_w]}\n"
+            f"生成一個問題，順著長者剛才的話跟眼前畫面自然地深入問下去，不是在核對清單。"
+            f"{_W_HINT[target_w]}\n"
             f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
             f"思考：（主題判斷：一句話判斷今日主題最貼近哪個核心主題；"

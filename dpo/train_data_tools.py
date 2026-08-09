@@ -40,6 +40,14 @@ train.jsonl 維護工具合集（診斷／報告／格式重算／一次性修�
                   新 pair 附加進 train.jsonl，不動任何既有資料。可重複執行
                   （已存在的組合會自動跳過）。會呼叫 Claude API，預設預覽模式。
 
+  remove-step2-a  移除 Track A STEP2（已棄用格式）的所有 pair。2026-08 確認
+                  正式環境 orchestrator 從不會用到「場景文字＋問題、無承接語」
+                  這個格式，STEP1 之後一律走 Track C（自由追問）或 STEP3
+                  （補問），collect_data.generate_track_a() 早已停止生成新的
+                  STEP2，但 train.jsonl 裡的舊資料一直沒清掉（1310 筆，佔
+                  Track A 總筆數 1/3）。不呼叫 API，執行前會先完整備份
+                  train.jsonl。預設預覽模式。
+
 執行範例：
   python dpo/train_data_tools.py diversity
   python dpo/train_data_tools.py review --sample 20 --seed 7
@@ -51,14 +59,18 @@ train.jsonl 維護工具合集（診斷／報告／格式重算／一次性修�
   python dpo/train_data_tools.py fix-grief-a
   python dpo/train_data_tools.py backfill-track-c-rules           # 預覽
   python dpo/train_data_tools.py backfill-track-c-rules --apply   # 實際呼叫 API 並寫回
+  python dpo/train_data_tools.py remove-step2-a           # 預覽
+  python dpo/train_data_tools.py remove-step2-a --apply   # 先備份，再移除並寫回
 """
 
 import argparse
 import json
 import random
+import shutil
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import date
 from pathlib import Path
 
 DATA_FILE = Path(__file__).parent / "data" / "train.jsonl"
@@ -831,6 +843,44 @@ def cmd_backfill_track_c_rules(args: argparse.Namespace) -> None:
 
 
 # ============================================================
+# remove-step2-a — 移除 Track A STEP2（已棄用格式）的所有 pair
+# ============================================================
+
+def cmd_remove_step2_a(args: argparse.Namespace) -> None:
+    if not DATA_FILE.exists():
+        print(f"找不到 {DATA_FILE}")
+        sys.exit(1)
+
+    lines = [line for line in DATA_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [json.loads(line) for line in lines]
+    print(f"現有 train.jsonl：{len(records)} 筆")
+
+    is_step2_a = lambda r: r["meta"]["track"] == "A" and r["meta"]["step"] == "STEP2"
+    to_remove = [r for r in records if is_step2_a(r)]
+    keep = [r for r in records if not is_step2_a(r)]
+
+    print(f"找到 {len(to_remove)} 筆 Track A STEP2（已棄用格式，正式環境從不會用到）")
+    affected_scenarios = sorted({r["meta"]["scenario_id"] for r in to_remove})
+    print(f"涉及 {len(affected_scenarios)} 個 scenario_id：{affected_scenarios[:10]}"
+          f"{'...' if len(affected_scenarios) > 10 else ''}")
+
+    if not args.apply:
+        print(f"\n（預覽模式，未寫入檔案。移除後將剩餘 {len(keep)} 筆。加上 --apply 才會實際備份並寫回。）")
+        return
+
+    backup_path = DATA_FILE.parent / f"train.jsonl.bak_before_remove_step2a_{date.today().isoformat()}"
+    shutil.copy(DATA_FILE, backup_path)
+    print(f"已備份完整 train.jsonl 至：{backup_path}")
+
+    with DATA_FILE.open("w", encoding="utf-8") as f:
+        for r in keep:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print(f"\n完成：移除 {len(to_remove)} 筆，train.jsonl 剩餘 {len(keep)} 筆")
+    print(f"輸出：{DATA_FILE}")
+
+
+# ============================================================
 # entry point
 # ============================================================
 
@@ -875,6 +925,13 @@ def main() -> None:
     )
     p_backfill_c.add_argument("--apply", action="store_true", help="實際呼叫 API 並寫回 train.jsonl")
     p_backfill_c.set_defaults(func=cmd_backfill_track_c_rules)
+
+    p_remove_step2 = sub.add_parser(
+        "remove-step2-a",
+        help="移除 Track A STEP2（已棄用格式，1310筆）。不呼叫API，會先備份",
+    )
+    p_remove_step2.add_argument("--apply", action="store_true", help="實際備份並寫回 train.jsonl")
+    p_remove_step2.set_defaults(func=cmd_remove_step2_a)
 
     args = parser.parse_args()
     args.func(args)
