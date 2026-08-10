@@ -90,6 +90,7 @@ services:
       - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
       - CFG_VALUE=2.8
       - INFER_STEPS=9
+      - TARGET_RATE=4.5
       # 要用你自己的聲音：
       - SPEAKER_CENTROID_PT=/workspace/references/Peichi_centroid.pt
     volumes:

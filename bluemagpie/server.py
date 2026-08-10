@@ -79,10 +79,37 @@ def count_cjk(text: str) -> int:
     return len(re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf]', text))
 
 
+TARGET_RATE = float(os.environ.get("TARGET_RATE", "3.8"))
+
+
+def rubberband_stretch(audio: np.ndarray, sample_rate: int, n_chars: int) -> np.ndarray:
+    """用 rubberband 把音訊拉慢到目標語速，比 WSOLA 更自然不失真"""
+    try:
+        import pyrubberband as rb
+        duration = len(audio) / sample_rate
+        if duration < 0.5 or n_chars == 0:
+            return audio
+        current_rate = n_chars / duration
+        if abs(current_rate - TARGET_RATE) / TARGET_RATE < 0.15:
+            return audio
+        time_ratio = TARGET_RATE / current_rate  # <1 拉慢，>1 加快（pyrubberband rate 越高越快）
+        time_ratio = max(0.85, min(1.4, time_ratio))
+        logger.info(f"Rubberband: {current_rate:.2f} -> {TARGET_RATE:.2f} 字/秒 (ratio={time_ratio:.2f}x)")
+        stretched = rb.time_stretch(audio.astype(np.float64), sample_rate, time_ratio)
+        return stretched.astype(np.float32)
+    except Exception as e:
+        logger.warning(f"Rubberband 失敗，跳過語速校正: {e}")
+        return audio
+
+
 def to_wav_bytes(audio, sample_rate: int, text: str = "") -> bytes:
     if hasattr(audio, "detach"):
         audio = audio.detach().cpu().numpy()
     audio = audio.squeeze().astype(np.float32)
+    if text:
+        n = count_cjk(text)
+        if n > 0:
+            audio = rubberband_stretch(audio, sample_rate, n)
     audio = np.clip(audio, -1.0, 1.0)
     buf = io.BytesIO()
     sf.write(buf, audio, sample_rate, format="WAV", subtype="PCM_16")

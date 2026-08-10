@@ -39,6 +39,8 @@ WORKDIR /workspace/BlueMagpie-TTS
 RUN pip install -e ".[train]" --no-cache-dir || \
     pip install -e . --no-cache-dir
 RUN pip install soundfile huggingface_hub fastapi uvicorn python-multipart --no-cache-dir
+RUN apt-get update -y && apt-get install -y rubberband-cli && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN pip install pyrubberband --no-cache-dir
 
 # ── 複製 API server ─────────────────────────────────────────
 COPY server.py /workspace/server.py
