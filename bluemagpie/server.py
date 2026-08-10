@@ -66,7 +66,7 @@ def load_speaker_centroid(model_dir: str):
     if os.path.exists(centroid_path):
         centroids = torch.load(centroid_path, map_location="cpu", weights_only=True)
         speaker_ids = centroids["speaker_ids"]
-        target = "female_voice" if "female_voice" in speaker_ids else "hung_yi_lee"
+        target = "hung_yi_lee" if "hung_yi_lee" in speaker_ids else "female_voice"
         vec = centroids["centroids"][speaker_ids.index(target)]
         logger.info(f"載入內建語者向量 ({target})")
         return vec
@@ -155,9 +155,12 @@ def _synthesize(text: str):
 
 
 def _synthesize_with_centroid(text: str, centroid):
+    import numpy as np
     n = count_cjk(text)
     cfg = 3.0 if n <= 25 else CFG_VALUE
-    return bm_model.generate(
+
+    # 暖機：在前面加句號讓模型先穩定，生完後截掉前 0.3 秒的暖機音訊
+    audio = bm_model.generate(
         target_text="。" + text,
         speaker_centroid=centroid,
         cfg_value=cfg,
@@ -165,6 +168,17 @@ def _synthesize_with_centroid(text: str, centroid):
         max_len=2000,
         retry_badcase=True,
     )
+    if hasattr(audio, "detach"):
+        audio_np = audio.detach().cpu().numpy().squeeze()
+    else:
+        audio_np = np.array(audio).squeeze()
+
+    # 截掉前 0.3 秒（暖機音）
+    warmup_samples = int(bm_model.sample_rate * 0.3)
+    if len(audio_np) > warmup_samples * 2:
+        audio_np = audio_np[warmup_samples:]
+
+    return audio_np
 
 
 if __name__ == "__main__":

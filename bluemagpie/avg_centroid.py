@@ -1,18 +1,7 @@
 import torch
 from bluemagpie import extract_speaker_centroid
 
-wav_files = [
-    "/tmp/001.wav",
-    "/tmp/002.wav",
-    "/tmp/003.wav",
-    "/tmp/004.wav",
-    "/tmp/005.wav",
-    "/tmp/006.wav",
-    "/tmp/007.wav",
-    "/tmp/008.wav",
-    "/tmp/009.wav",
-    "/tmp/010.wav",
-]
+wav_files = [f"/tmp/{str(i).zfill(3)}.wav" for i in range(1, 31)]
 
 centroids = []
 for wav in wav_files:
@@ -29,4 +18,5 @@ avg = torch.nn.functional.normalize(avg, dim=0)
 
 torch.save(avg, "/tmp/Peichi_centroid.pt")
 print(f"\n平均語者向量 shape: {avg.shape}")
+print(f"共使用 {len(wav_files)} 段錄音")
 print("已儲存到 /tmp/Peichi_centroid.pt")
