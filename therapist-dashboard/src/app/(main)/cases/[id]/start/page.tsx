@@ -56,8 +56,10 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const router = useRouter();
   const [scene, setScene] = useState("");
   // 目前沒有真正的 Kinect 連線檢查機制，先預設為已連線，避免擋住啟動療程按鈕；
-  // 之後接上真實裝置狀態 API 後，這裡應改成從那個 API 讀初始值。
+  // 「使用真實訊號」開關打開後，這個值會改由下方 polling Unity 校正狀態的 effect 覆蓋。
   const [status, setStatus] = useState<DeviceStatus>("connected");
+  const [useRealSignal, setUseRealSignal] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState("");
@@ -75,7 +77,38 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       .then((data) => setSuggestedTopic(data.topic ?? null))
       .catch(() => setSuggestedTopic(null))
       .finally(() => setSuggestionLoading(false));
+
+    // 跟 Unity 共用同一組 session_id（見 KinectCalibrationManager 校正前的換取邏輯），
+    // 這樣 Unity 回報的校正完成狀態才能對應到這個病患這次要開的療程。
+    fetch(`${API_BASE}/session/pending?patient_id=${encodeURIComponent(caseId)}`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setSessionId(data?.session_id ?? null))
+      .catch(() => setSessionId(null));
   }, [caseId]);
+
+  // 開發者「使用真實訊號」開關：每 2 秒問後端 Unity 是否已完成校正，
+  // 完成就自動切到「連線正常」解鎖啟動療程；開關關閉時維持原本手動三顆按鈕的 demo 行為。
+  useEffect(() => {
+    if (!useRealSignal || !sessionId) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/session/${sessionId}/status`, { credentials: "include" });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        setStatus(data.calibrated ? "connected" : "disconnected");
+      } catch {
+        // 忽略單次輪詢失敗，2 秒後重試
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [useRealSignal, sessionId]);
 
   if (!caseData) return null;
 
@@ -85,7 +118,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
     setIsStarting(true);
     setStartError("");
     try {
-      const newSessionId = crypto.randomUUID();
+      const newSessionId = sessionId || crypto.randomUUID();
       const topic = scene.trim() || suggestedTopic || "";
       const res = await fetch(
         `${API_BASE}/session/start?user_id=${encodeURIComponent(caseId)}&session_id=${encodeURIComponent(newSessionId)}&topic=${encodeURIComponent(topic)}`,
@@ -240,22 +273,36 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
           </>
         )}
 
-        {/* Demo 狀態切換（原型用） */}
-        <div className="flex gap-2 self-center pt-1">
-          {(["connected", "unstable", "disconnected"] as DeviceStatus[]).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setStatus(s)}
-              className={`text-[11px] px-3 py-1 rounded-full border transition-colors ${
-                status === s
-                  ? "bg-[#1a1a1a] text-white border-[#1a1a1a]"
-                  : "bg-white/60 text-[#888] border-[#d0d0d0]"
-              }`}
-            >
-              {{ connected: "連線正常", unstable: "不穩定", disconnected: "未連線" }[s]}
-            </button>
-          ))}
+        {/* Demo 狀態切換（原型用；開啟「使用真實訊號」後改由 Unity 校正狀態驅動，此處僅供檢視、停用點擊） */}
+        <div className="flex flex-col items-center gap-1.5 pt-1">
+          <div className="flex gap-2 self-center">
+            {(["connected", "unstable", "disconnected"] as DeviceStatus[]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                disabled={useRealSignal}
+                onClick={() => setStatus(s)}
+                className={`text-[11px] px-3 py-1 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  status === s
+                    ? "bg-[#1a1a1a] text-white border-[#1a1a1a]"
+                    : "bg-white/60 text-[#888] border-[#d0d0d0]"
+                }`}
+              >
+                {{ connected: "連線正常", unstable: "不穩定", disconnected: "未連線" }[s]}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setUseRealSignal((v) => !v)}
+            className={`text-[11px] px-3 py-1 rounded-full border transition-colors ${
+              useRealSignal
+                ? "bg-[#5b8ac5] text-white border-[#5b8ac5]"
+                : "bg-white/60 text-[#888] border-[#d0d0d0]"
+            }`}
+          >
+            {useRealSignal ? "使用真實訊號（開發者）：開" : "使用真實訊號（開發者）：關"}
+          </button>
         </div>
       </div>
 

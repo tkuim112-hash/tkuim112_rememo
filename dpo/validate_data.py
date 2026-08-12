@@ -131,9 +131,11 @@ def cjk_len(s: str) -> int:
     return sum(1 for c in s if "一" <= c <= "鿿" or "㐀" <= c <= "䶿")
 
 def is_yesno(q: str) -> bool:
-    # 結尾的 嗎？ or 句中有 是不是/有沒有/對不對
+    # 結尾的 嗎？ or 句中有 是不是/有沒有/會不會/要不要/對不對/好不好
+    # 同步自 fix_xian_wording.py 的 _YESNO_PHRASE_RE（2026-08 稽核發現這裡跟
+    # filter_data.py 都少了「會不會／要不要」，跟 fix_xian_wording.py 標準不一致）。
     return (bool(re.search(r"嗎[？?]?\s*$", q)) or
-            bool(re.search(r"(是不是|有沒有|對不對|好不好)", q)))
+            bool(re.search(r"(是不是|有沒有|會不會|要不要|對不對|好不好)", q)))
 
 def is_memory_test(q: str) -> bool:
     return bool(re.search(r"(你|您)(還)?記(得|不記得)", q))
