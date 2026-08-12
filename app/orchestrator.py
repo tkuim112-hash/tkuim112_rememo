@@ -139,8 +139,6 @@ class TherapyOrchestrator:
           image_path, question, memories_used,
           state  ← 傳給下一輪 process_response 用
         """
-        import time as _time
-        _t0 = _time.time()
         print(f"[Orchestrator] ── 回合 {round_number} 開始 ──")
 
         user = await self.user_profile.get_user(user_id)
@@ -151,7 +149,6 @@ class TherapyOrchestrator:
         print(f"  → {user['name']}，主題: {user['today_topic']}")
 
         # ── 步驟 1：RAG 最先撈（跟生圖無關，可以最早發出）──
-        _t1 = _time.time()
         memories = await self.rag.retrieve_memories(
             user_id=user_id,
             query=f"{user['today_topic']} {user['main_occupation']}",
@@ -167,28 +164,22 @@ class TherapyOrchestrator:
                 query=f"{user['today_topic']} {user['main_occupation']}",
                 limit=3,
             )
-        print(f"  → [計時] RAG 撈回憶: {_time.time()-_t1:.1f}s")
 
         # ── 步驟 2：把 memories 餵進 _plan_image，讓 LLM 從回憶挑元素 ──
-        _t2 = _time.time()
         image_plan = await self._plan_image(user, memories=memories)
-        print(f"  → [計時] LLM 規劃圖片: {_time.time()-_t2:.1f}s")
         print(f"  → 圖片元素: {image_plan['elements']}")
 
         safe_prompt = self.deidentifier.desensitize_text(
             image_plan["image_prompt"], taboos=user["taboos"]
         )
 
-        _t3 = _time.time()
         image_path = await self.image.generate(
             prompt=safe_prompt,
             session_id=session_id,
             round_number=round_number,
         )
-        print(f"  → [計時] Stability AI 生圖: {_time.time()-_t3:.1f}s")
         print(f"  → 圖片: {image_path}")
 
-        _t4 = _time.time()
         q = await guarded_generate(
             self._generate_question,
             taboo_words=user["taboos"],
@@ -199,9 +190,7 @@ class TherapyOrchestrator:
             covered_w=[],
             memories=memories,
         )
-        print(f"  → [計時] LLM 生問題: {_time.time()-_t4:.1f}s")
         print(f"  → STEP1 問題: {q['question']}（W: {q['covered_w']}）")
-        print(f"  → [計時] orchestrator 總計: {_time.time()-_t0:.1f}s")
 
         state = {
             "user_id": user_id,
