@@ -63,10 +63,10 @@ export default function RoundDetailPage({
           href={`/activity/${sessionId}`}
           className="text-[#888] hover:text-[#1a1a1a] transition-colors"
         >
-          歷史療程
+          歷史活動
         </Link>
         <span className="text-[#888]">›</span>
-        <span className="text-[#1a1a1a]">第 {session.sessionNumber} 次的療程</span>
+        <span className="text-[#1a1a1a]">第 {session.sessionNumber} 次的活動</span>
       </nav>
 
       {/* 標頭卡片：姓名 + 回合標籤 */}
@@ -74,7 +74,7 @@ export default function RoundDetailPage({
         <div className="flex flex-col gap-0.5">
           <h1 className="text-[22px] font-bold text-[#1a1a1a]">{caseData.name}</h1>
           <p className="text-[14px] text-[#888]">
-            第 {session.sessionNumber} 次療程 {session.date}
+            第 {session.sessionNumber} 次活動 {session.date}
           </p>
         </div>
         <div className="flex gap-2">

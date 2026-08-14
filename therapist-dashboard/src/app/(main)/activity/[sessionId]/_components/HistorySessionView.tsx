@@ -15,9 +15,9 @@ const EMOTION_DOT: Record<string, string> = {
 };
 
 
-// 歷史療程報告元件，接收療程資料、個案資料、各回合紀錄
+// 歷史活動報告元件，接收活動資料、個案資料、各回合紀錄
 export function HistorySessionView({
- session,   // 該次療程的完整資料
+ session,   // 該次活動的完整資料
  caseData,  // 個案基本資料（姓名等）
  rounds,    // 各回合的紀錄列表
 }: {
@@ -50,8 +50,8 @@ export function HistorySessionView({
 
 
      {/* ── 四格統計卡片 ── */}
-     {/* 療程次數與日期，顯示在白框上方 */}
-     <p className="text-[18px] text-[#555] ml-[8.5%]"> {caseData.name}/第 {session.sessionNumber} 次療程 {session.date}</p>
+     {/* 活動次數與日期，顯示在白框上方 */}
+     <p className="text-[18px] text-[#555] ml-[8.5%]"> {caseData.name}/第 {session.sessionNumber} 次活動 {session.date}</p>
      <div className="grid grid-cols-4 gap-8 w-[84.5%] ml-[8.5%]"> {/* 四欄等寬格線，寬度 75%，向右偏移 20% */}
 
 
@@ -187,10 +187,10 @@ export function HistorySessionView({
            </button>
 
 
-           {/* 標籤：姓名·第N次療程 */}
+           {/* 標籤：姓名·第N次活動 */}
            <div className="inline-flex">
              <span className="bg-[#ddeeff] text-[#5b8ac5] text-[13px] font-medium rounded-full px-4 py-1">
-               {caseData.name}·第 {session.sessionNumber} 次療程
+               {caseData.name}·第 {session.sessionNumber} 次活動
              </span>
            </div>
 

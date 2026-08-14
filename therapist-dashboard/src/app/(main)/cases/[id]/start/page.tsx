@@ -55,7 +55,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const { id: caseId } = use(params);
   const router = useRouter();
   const [scene, setScene] = useState("");
-  // 目前沒有真正的 Kinect 連線檢查機制，先預設為已連線，避免擋住啟動療程按鈕；
+  // 目前沒有真正的 Kinect 連線檢查機制，先預設為已連線，避免擋住啟動活動按鈕；
   // 「使用真實訊號」開關打開後，這個值會改由下方 polling Unity 校正狀態的 effect 覆蓋。
   const [status, setStatus] = useState<DeviceStatus>("connected");
   const [useRealSignal, setUseRealSignal] = useState(false);
@@ -79,7 +79,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       .finally(() => setSuggestionLoading(false));
 
     // 跟 Unity 共用同一組 session_id（見 KinectCalibrationManager 校正前的換取邏輯），
-    // 這樣 Unity 回報的校正完成狀態才能對應到這個病患這次要開的療程。
+    // 這樣 Unity 回報的校正完成狀態才能對應到這個病患這次要開的活動。
     fetch(`${API_BASE}/session/pending?patient_id=${encodeURIComponent(caseId)}`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => setSessionId(data?.session_id ?? null))
@@ -87,7 +87,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   }, [caseId]);
 
   // 開發者「使用真實訊號」開關：每 2 秒問後端 Unity 是否已完成校正，
-  // 完成就自動切到「連線正常」解鎖啟動療程；開關關閉時維持原本手動三顆按鈕的 demo 行為。
+  // 完成就自動切到「連線正常」解鎖啟動活動；開關關閉時維持原本手動三顆按鈕的 demo 行為。
   useEffect(() => {
     if (!useRealSignal || !sessionId) return;
 
@@ -126,11 +126,11 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || "啟動療程失敗，請確認長者端裝置與後端服務狀態");
+        throw new Error(body.detail || "啟動活動失敗，請確認長者端裝置與後端服務狀態");
       }
       router.push(`/activity/${newSessionId}?caseId=${caseId}&live=1`);
     } catch (e) {
-      setStartError(e instanceof Error ? e.message : "啟動療程失敗，請稍後再試");
+      setStartError(e instanceof Error ? e.message : "啟動活動失敗，請稍後再試");
       setIsStarting(false);
     }
   };
@@ -152,7 +152,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       <div className="max-w-[680px] w-full mx-auto flex flex-col gap-5">
         {/* 標題 */}
         <div className="flex flex-col gap-1">
-          <h1 className="text-[28px] font-bold text-[#1a1a1a] mt-[0.8%]">開始療程</h1>
+          <h1 className="text-[28px] font-bold text-[#1a1a1a] mt-[0.8%]">開始活動</h1>
         </div>
 
         {/* 長者 */}
@@ -171,7 +171,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
             )}
             <div>
               <p className="text-[17px] font-medium text-[#1a1a1a]">{caseData.name}</p>
-              <p className="text-[13px] text-[#888]">第 {nextSession} 次療程</p>
+              <p className="text-[13px] text-[#888]">第 {nextSession} 次活動</p>
             </div>
           </div>
         </div>
@@ -185,7 +185,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
                 ? "AI 建議：載入中…"
                 : suggestedTopic
                 ? `AI 建議：${suggestedTopic}（上次反應最佳）`
-                : "尚無歷史療程資料，暫無 AI 建議，可手動輸入場景描述"}
+                : "尚無歷史活動資料，暫無 AI 建議，可手動輸入場景描述"}
             </p>
           </div>
           <p className="text-[13px] text-[#888] mt-0.5">或手動輸入場景描述</p>
@@ -205,7 +205,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               <span className="w-3 h-3 rounded-full bg-[#2e9e5b] shrink-0" />
               <div>
                 <p className="text-[15px] font-semibold text-[#2e9e5b]">Kinect 連線正常</p>
-                <p className="text-[13px] text-[#2e9e5b]/80">骨架偵測就緒，可以開始療程</p>
+                <p className="text-[13px] text-[#2e9e5b]/80">骨架偵測就緒，可以開始活動</p>
               </div>
             </div>
           </div>
@@ -322,7 +322,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled={isStarting}
               className="flex-1 bg-[#5b8ac5] text-white text-[17px] font-semibold rounded-2xl py-4 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {isStarting ? "啟動中…" : "啟動療程"}
+              {isStarting ? "啟動中…" : "啟動活動"}
             </button>
           )}
           {status === "unstable" && (
@@ -331,7 +331,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動療程（需解決不穩定問題）
+              啟動活動（需解決不穩定問題）
             </button>
           )}
           {status === "disconnected" && (
@@ -340,7 +340,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動療程（需先解決連線問題）
+              啟動活動（需先解決連線問題）
             </button>
           )}
           <Link

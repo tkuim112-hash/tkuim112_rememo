@@ -290,9 +290,9 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
          </div>
 
 
-         {/* 療程控制 */}
+         {/* 活動控制 */}
          <div className="flex flex-col gap-2 lg:gap-3 xl:gap-4">
-           <h3 className="text-[14px] md:text-[17px] lg:text-[20px] font-medium text-[#0a0a0a]">療程控制</h3>
+           <h3 className="text-[14px] md:text-[17px] lg:text-[20px] font-medium text-[#0a0a0a]">活動控制</h3>
            <div className="grid grid-cols-2 gap-2 lg:gap-3 xl:gap-4">
              <button
                type="button"
@@ -330,7 +330,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
              onClick={() => setShowConfirm(true)}
              className="bg-[#fb2c36] text-white rounded-xl py-2.5 lg:py-4 xl:py-5 text-[14px] md:text-[16px] lg:text-[18px] font-medium text-center hover:bg-[#e0252e] transition-colors"
            >
-             結束療程
+             結束活動
            </button>
          </div>
        </div>
@@ -342,8 +342,8 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
          <div className="bg-white rounded-2xl p-7 md:p-9 xl:p-10 flex flex-col gap-5 w-[300px] md:w-[400px] xl:w-[480px] shadow-xl">
            <div className="flex flex-col gap-2">
-             <h2 className="text-[20px] md:text-[22px] font-bold text-[#1a1a1a]">確定要結束療程？</h2>
-             <p className="text-[13px] md:text-[15px] text-[#888]">結束後將到結束量表，本次療程紀錄將會儲存。</p>
+             <h2 className="text-[20px] md:text-[22px] font-bold text-[#1a1a1a]">確定要結束活動？</h2>
+             <p className="text-[13px] md:text-[15px] text-[#888]">結束後將到結束量表，本次活動紀錄將會儲存。</p>
            </div>
            <div className="flex gap-3">
              <button
@@ -358,7 +358,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
                onClick={handleEnd}
                className="flex-1 bg-[#fb2c36] text-white rounded-xl py-3 xl:py-4 text-[14px] md:text-[16px] font-medium hover:bg-[#e0252e] transition-colors"
              >
-               結束療程
+               結束活動
              </button>
            </div>
          </div>

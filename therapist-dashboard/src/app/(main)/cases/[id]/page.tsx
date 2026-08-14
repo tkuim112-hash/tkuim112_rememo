@@ -153,7 +153,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
           <div className="flex flex-col gap-0.5">
             <h1 className="text-[26px] font-bold text-[#1a1a1a]">{caseData.name}</h1>
             <p className="text-[13px] text-[#888]">
-              共 {caseData.totalSessions} 次療程
+              共 {caseData.totalSessions} 次活動
             </p>
           </div>
 
@@ -182,7 +182,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                     href={`/cases/${id}/start`}
                     className="bg-[#e09540] text-white rounded-xl px-5 py-2 text-[14px] font-medium hover:bg-[#c07a20] transition-colors"
                   >
-                    開始療程
+                    開始活動
                   </Link>
                 )}
                 <button
@@ -210,7 +210,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                   : "border-transparent text-[#888] hover:text-[#1a1a1a]"
               }`}
             >
-              {t === "info" ? "基本資料" : "歷次療程"}
+              {t === "info" ? "基本資料" : "歷次活動"}
             </button>
           ))}
         </div>
@@ -233,7 +233,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                     <input value={editCareer} onChange={(e) => setEditCareer(e.target.value)} className={inputClass} />
                   </div>
                   <div className="bg-white rounded-xl px-6 py-4 flex flex-col gap-2">
-                    <p className="text-[13px] text-[#aaa]">家人</p>
+                    <p className="text-[13px] text-[#aaa]">緊急聯絡人</p>
                     <input value={editFamily} onChange={(e) => setEditFamily(e.target.value)} className={inputClass} />
                   </div>
                 </div>
@@ -275,10 +275,10 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
               </>
             )}
 
-            {/* 最近療程 */}
+            {/* 最近活動 */}
             {!isEditing && recentSessions.length > 0 && (
               <div className="flex flex-col gap-3 mt-2">
-                <h2 className="text-[22px] font-bold text-[#e05c3a]">最近療程</h2>
+                <h2 className="text-[22px] font-bold text-[#e05c3a]">最近活動</h2>
                 {recentSessions.map((s, idx) => {
                   const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
                   const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
@@ -312,7 +312,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
         {tab === "history" && (
           <div className="flex flex-col gap-3">
             {sessions.length === 0 ? (
-              <div className="bg-white rounded-xl px-6 py-10 text-center text-[#888] text-[15px]">尚無療程記錄</div>
+              <div className="bg-white rounded-xl px-6 py-10 text-center text-[#888] text-[15px]">尚無活動記錄</div>
             ) : (
               sessions.map((s, idx) => {
                 const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;

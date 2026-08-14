@@ -112,9 +112,9 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
      {/* 頁首：標題 + 編輯按鈕 */}
      <div className="flex items-start justify-between">
        <div className="flex flex-col gap-0.5 md:gap-1">
-         <h1 className="text-[20px] md:text-[26px] lg:text-[28px] xl:text-[32px] 2xl:text-[38px] font-bold text-[#1a1a1a] ml-1 md:ml-2">療程結束 填寫觀察量表</h1>
+         <h1 className="text-[20px] md:text-[26px] lg:text-[28px] xl:text-[32px] 2xl:text-[38px] font-bold text-[#1a1a1a] ml-1 md:ml-2">活動結束 填寫觀察量表</h1>
          <p className="text-[12px] md:text-[13px] lg:text-[15px] 2xl:text-[17px] text-[#888] ml-1 md:ml-2">
-           {caseName}{sessionNumber != null ? ` 第 ${sessionNumber} 次療程` : ""} {sessionDate}
+           {caseName}{sessionNumber != null ? ` 第 ${sessionNumber} 次活動` : ""} {sessionDate}
          </p>
        </div>
        <button
