@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import type { Case } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
 
-type DeviceStatus = "connected" | "unstable" | "disconnected";
+type DeviceStatus = "connected" | "calibrating" | "disconnected";
 
 function IconRefresh({ color }: { color: string }) {
   return (
@@ -55,10 +55,10 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
   const { id: caseId } = use(params);
   const router = useRouter();
   const [scene, setScene] = useState("");
-  // 目前沒有真正的 Kinect 連線檢查機制，先預設為已連線，避免擋住啟動療程按鈕；
-  // 「使用真實訊號」開關打開後，這個值會改由下方 polling Unity 校正狀態的 effect 覆蓋。
-  const [status, setStatus] = useState<DeviceStatus>("connected");
-  const [useRealSignal, setUseRealSignal] = useState(false);
+  // 頁面剛載入、還沒拿到第一次 polling 結果前，先假設「校正進行中」——這是實務上
+  // 最常見的起始狀態（長者剛坐上 Kinect、校正還要跑滿 15 秒），比預設「已連線」更準確；
+  // 拿到 session_id 後下方 effect 會立刻開始 poll Unity 真實狀態並覆蓋這裡。
+  const [status, setStatus] = useState<DeviceStatus>("calibrating");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [isStarting, setIsStarting] = useState(false);
@@ -86,10 +86,10 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       .catch(() => setSessionId(null));
   }, [caseId]);
 
-  // 開發者「使用真實訊號」開關：每 2 秒問後端 Unity 是否已完成校正，
-  // 完成就自動切到「連線正常」解鎖啟動療程；開關關閉時維持原本手動三顆按鈕的 demo 行為。
+  // 每 2 秒問後端 Unity 校正狀態，完成就切到「連線正常」解鎖啟動療程按鈕；
+  // 還在跑但已連線就顯示「校正進行中」，兩者都沒有才是真的未連線。
   useEffect(() => {
-    if (!useRealSignal || !sessionId) return;
+    if (!sessionId) return;
 
     let cancelled = false;
     const poll = async () => {
@@ -97,7 +97,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
         const res = await fetch(`${API_BASE}/session/${sessionId}/status`, { credentials: "include" });
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        setStatus(data.calibrated ? "connected" : "disconnected");
+        setStatus(data.calibrated ? "connected" : data.calibrating ? "calibrating" : "disconnected");
       } catch {
         // 忽略單次輪詢失敗，2 秒後重試
       }
@@ -108,7 +108,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       cancelled = true;
       clearInterval(interval);
     };
-  }, [useRealSignal, sessionId]);
+  }, [sessionId]);
 
   if (!caseData) return null;
 
@@ -211,32 +211,26 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
           </div>
         )}
 
-        {/* 裝置狀態：骨架不穩定 */}
-        {status === "unstable" && (
+        {/* 裝置狀態：校正進行中 */}
+        {status === "calibrating" && (
           <>
             <div className="bg-[#fff8ee] rounded-2xl px-5 py-4 flex items-center justify-between border border-[#f5d999]">
               <div className="flex items-center gap-3">
                 <span className="w-3 h-3 rounded-full bg-[#e09540] shrink-0" />
                 <div>
-                  <p className="text-[15px] font-semibold text-[#c07a20]">骨架偵測不穩定</p>
-                  <p className="text-[13px] text-[#c07a20]/80">可能影響手勢辨識，建議重新校正後再開始</p>
+                  <p className="text-[15px] font-semibold text-[#c07a20]">Kinect 校正進行中</p>
+                  <p className="text-[13px] text-[#c07a20]/80">正在偵測長者骨架、建立個人化基準，請稍候（約需 15 秒）</p>
                 </div>
               </div>
-              <button
-                type="button"
-                className="bg-[#e09540] text-white text-[14px] font-medium rounded-full px-4 py-2 whitespace-nowrap"
-              >
-                重新校正
-              </button>
             </div>
             <div className="flex flex-col gap-2">
               <SuggestionCard
                 icon={<IconRefresh color="#e09540" />}
-                text="重新偵測骨架（讓長者移動一下再試）"
+                text="請長者留在鏡頭前不要移動，加快校正完成"
               />
               <SuggestionCard
                 icon={<IconSun color="#e09540" />}
-                text="調整環境光線後重試"
+                text="光線太暗可能影響偵測，可適度調整環境光線"
               />
             </div>
           </>
@@ -273,37 +267,6 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
           </>
         )}
 
-        {/* Demo 狀態切換（原型用；開啟「使用真實訊號」後改由 Unity 校正狀態驅動，此處僅供檢視、停用點擊） */}
-        <div className="flex flex-col items-center gap-1.5 pt-1">
-          <div className="flex gap-2 self-center">
-            {(["connected", "unstable", "disconnected"] as DeviceStatus[]).map((s) => (
-              <button
-                key={s}
-                type="button"
-                disabled={useRealSignal}
-                onClick={() => setStatus(s)}
-                className={`text-[11px] px-3 py-1 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                  status === s
-                    ? "bg-[#1a1a1a] text-white border-[#1a1a1a]"
-                    : "bg-white/60 text-[#888] border-[#d0d0d0]"
-                }`}
-              >
-                {{ connected: "連線正常", unstable: "不穩定", disconnected: "未連線" }[s]}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => setUseRealSignal((v) => !v)}
-            className={`text-[11px] px-3 py-1 rounded-full border transition-colors ${
-              useRealSignal
-                ? "bg-[#5b8ac5] text-white border-[#5b8ac5]"
-                : "bg-white/60 text-[#888] border-[#d0d0d0]"
-            }`}
-          >
-            {useRealSignal ? "使用真實訊號（開發者）：開" : "使用真實訊號（開發者）：關"}
-          </button>
-        </div>
       </div>
 
       {/* 固定底部按鈕 */}
@@ -325,13 +288,13 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               {isStarting ? "啟動中…" : "啟動療程"}
             </button>
           )}
-          {status === "unstable" && (
+          {status === "calibrating" && (
             <button
               type="button"
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動療程（需解決不穩定問題）
+              啟動療程（校正進行中，請稍候）
             </button>
           )}
           {status === "disconnected" && (

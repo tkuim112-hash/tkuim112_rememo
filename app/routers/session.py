@@ -13,6 +13,7 @@ from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
 from db.models import TherapySession, TherapyRound, RoundExchange
+import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -486,12 +487,15 @@ async def session_status(
 ):
     """
     calibrated：Unity 是否已把校正基準存進 session:{id}:calibration（見 ws_calibration.py）。
+    calibrating：Unity 目前是否連著 /ws/calibration、正在跑校正流程但還沒完成
+      （見 ws_registry.py）；跟 calibrated 互斥，一旦 calibrated 為 true 就不算 calibrating。
     started：/session/start 是否已被呼叫過（session:{id}:meta 已建立）。
     """
     r = request.app.state.redis
     calibrated = bool(await r.exists(f"session:{session_id}:calibration"))
+    calibrating = (not calibrated) and ws_registry.is_calibrating(session_id)
     started = bool(await r.exists(f"session:{session_id}:meta"))
-    return {"calibrated": calibrated, "started": started}
+    return {"calibrated": calibrated, "calibrating": calibrating, "started": started}
 
 
 @router.post("/start")
@@ -651,6 +655,35 @@ async def session_round(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"回合開場失敗: {str(e)}")
+
+
+_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume"}
+
+
+class ControlPayload(BaseModel):
+    action: str
+
+
+@router.post("/{session_id}/control", summary="治療師網頁即時控制療程（重播/跳過/暫停/繼續）")
+async def session_control(
+    session_id: str,
+    body: ControlPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    轉發給長者端 Unity 目前開著的 /ws/stt 連線（見 ws_registry.py）。
+    action 對應 Unity GameController.HandleSTTMessage 的 control 分支：
+      replay_audio → 重播目前這一題的語音
+      skip_scene   → 跳過目前這一題（不是跳過整個回合），視同長者未回應直接進下一步
+      pause/resume → 暫停/繼續本回合（暫停時取消反應逾時、鎖住麥克風與送出鈕）
+
+    長者端如果目前沒有連線（例如療程還沒進到 GameScene），delivered 會是 false，
+    不當錯誤處理——網頁不需要特別跳錯誤訊息給治療師。
+    """
+    if body.action not in _CONTROL_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"不支援的控制動作: {body.action}")
+    delivered = await ws_registry.send_control(session_id, body.action)
+    return {"ok": True, "delivered": delivered}
 
 
 @router.get("/{session_id}/metrics", summary="取得即時檢測回饋（供治療師頁面 polling）")

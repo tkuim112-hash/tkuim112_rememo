@@ -395,6 +395,7 @@ GameObject:
   - component: {fileID: 763903581}
   - component: {fileID: 763903580}
   - component: {fileID: 763903579}
+  - component: {fileID: 763903583}
   m_Layer: 5
   m_Name: Canvas
   m_TagString: Untagged
@@ -487,6 +488,26 @@ RectTransform:
   m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 0, y: 0}
   m_Pivot: {x: 0, y: 0}
+--- !u!114 &763903583
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 763903578}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 84bbb7e8b2ea4bdf9bad1223186a647e, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::InstructionController
+  backendUrl: https://api.re-memo.com
+  userId: user_001
+  sessionId: sess_001
+  therapistPollInterval: 2
+  progressBar: {fileID: 2097008895}
+  waitingCeiling: 0.5
+  waitingRiseTime: 8
+  minHoldTime: 0.4
 --- !u!1 &1023319695
 GameObject:
   m_ObjectHideFlags: 0

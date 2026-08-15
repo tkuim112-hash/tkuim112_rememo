@@ -96,17 +96,33 @@ public class GameController : MonoBehaviour
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
 
-        if (!UseKinect)
+        if (UseKinect)
+            // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/跳過/重播指令
+            // 隨時可能在長者第一次按麥克風之前就送到，這裡要先掛好才不會漏接。
+            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
+        else
             ConnectWebSocket();
 
-        StartCoroutine(StartRound(currentRound));
+        if (currentRound == 1 && PendingSessionStart.Response != null)
+        {
+            var resp = PendingSessionStart.Response;
+            PendingSessionStart.Response = null;
+            ApplyRoundResponse(resp);
+        }
+        else
+        {
+            StartCoroutine(StartRound(currentRound));
+        }
     }
 
     // ─── STT ──────────────────────────────────────────────────────
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(AuthService.AppendToken(sttServerUrl));
+        // session_id 讓後端 /session/{id}/control 知道要把治療師的重播/跳過/暫停/繼續
+        // 指令轉發到哪一條連線（見 app/ws_registry.py）。
+        string url = string.IsNullOrEmpty(sessionId) ? sttServerUrl : $"{sttServerUrl}?session_id={sessionId}";
+        ws = new WebSocket(AuthService.AppendToken(url));
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
@@ -136,7 +152,6 @@ public class GameController : MonoBehaviour
 
         if (UseKinect)
         {
-            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
             kinectAudioSender.StartSTT();
         }
         else
@@ -260,14 +275,14 @@ public class GameController : MonoBehaviour
             switch (msg.action)
             {
                 case "replay_audio":
-                    if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-                    typingCoroutine = StartCoroutine(TypeCharByChar(aiText.text));
+                    OnReplayAudio();
                     break;
                 case "skip_scene":
-                    if (currentRound >= totalRounds)
-                        SceneManager.LoadScene("ShareScene");
-                    else
-                        StartCoroutine(StartRound(currentRound + 1));
+                    // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
+                    // 沿用 ReactionTimeout 逾時時同樣的忙碌判斷，避免跟錄音/送出中互撞。
+                    CancelReactionTimeout();
+                    if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused)
+                        StartCoroutine(AutoSubmitNoResponse());
                     break;
                 case "pause":
                     isPaused = true;
@@ -363,9 +378,13 @@ public class GameController : MonoBehaviour
         }
 
         var resp = JsonUtility.FromJson<StartRoundResponse>(req.downloadHandler.text);
-        currentState = resp.state;
-
         loadingSpinner.SetActive(false);
+        ApplyRoundResponse(resp);
+    }
+
+    void ApplyRoundResponse(StartRoundResponse resp)
+    {
+        currentState = resp.state;
         aiText.text = resp.question;
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
@@ -577,18 +596,8 @@ public class GameController : MonoBehaviour
     }
 
     // ─── JSON 資料結構 ─────────────────────────────────────────────
-
-    [System.Serializable]
-    class StartRoundResponse
-    {
-        public string user_name;
-        public string today_topic;
-        public string scene_text;
-        public string image_path;
-        public string question;
-        public string audio_path;
-        public SessionStateData state;
-    }
+    // StartRoundResponse / SessionStateData 定義在 SessionModels.cs，
+    // 供 InstructionController 預抓第一回合資料時共用同一組型別。
 
     [System.Serializable]
     class RespondResponse
@@ -606,20 +615,5 @@ public class GameController : MonoBehaviour
     {
         public string elder_response;
         public SessionStateData state;
-    }
-
-    [System.Serializable]
-    class SessionStateData
-    {
-        public string user_id;
-        public string session_id;
-        public int round;
-        public string[] scene_elements;
-        public string[] covered_w;
-        public string[] skipped_w;
-        public string last_question_type;
-        public string last_w_asked;
-        public int question_number;
-        public long question_asked_at;
     }
 }

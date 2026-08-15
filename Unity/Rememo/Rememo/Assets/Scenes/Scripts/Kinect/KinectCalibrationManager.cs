@@ -114,10 +114,10 @@ public class KinectCalibrationManager : MonoBehaviour
             SetStatus(true);
             ApplyCursorRemapping(); // ── 新增
             SendCalibrationData();
-            Debug.Log("[Calibration] 校正完成，等待治療師端按下「啟動療程」（見 WarmupController）");
-            // 場景切換交給 WarmupController：它會在校正完成後繼續 poll 後端，
-            // 確認治療師端已呼叫 /session/start 才解鎖開始按鈕、切去 GameScene-1，
-            // 這裡不再自行 sleep 後跳場景，避免長者端搶先於治療師開始。
+            Debug.Log("[Calibration] 校正完成（見 WarmupController）");
+            // 場景切換交給 WarmupController：校正一完成就直接切去 InstructionScene，
+            // 「等治療師端按下啟動療程、後端生成第一回合內容」這段改由 InstructionScene
+            // 自己 poll 後端狀態並顯示進度條動畫，這裡不再自行 sleep 後跳場景。
         }
         else
         {

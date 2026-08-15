@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from auth import get_therapist_id_from_ws_token
+import ws_registry
 
 router = APIRouter()
 
@@ -38,6 +39,10 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
         return
 
     await websocket.accept()
+    # 從這裡到收到最終校正資料為止，這條連線會一直卡在下面的 receive_json()——
+    # 掛著沒斷代表 Unity 正在跑校正流程，供 /session/{id}/status 回報「校正進行中」
+    # 給治療師網頁（見 ws_registry.py）。
+    ws_registry.mark_calibrating(session_id)
     try:
         data = await websocket.receive_json()
         if data.get("type") != "calibration":
@@ -57,3 +62,5 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
         pass
     except Exception as e:
         print(f"[WS/Calibration] {e}")
+    finally:
+        ws_registry.unmark_calibrating(session_id)
