@@ -391,12 +391,43 @@ class SessionState(BaseModel):
     session_id: str
     round: int
     scene_elements: list[str]
+    scene_composition: str = ""  # 生圖時的英文構圖描述，供追問維持畫面一致性
     covered_w: list[str] = []
     skipped_w: list[str] = []
     last_question_type: str = "step1"
     last_w_asked: str = ""
     question_number: int = 1  # 本回合目前問到第幾題，供 round_exchanges 配對與 TTS 檔名編號
     question_asked_at: int = 0  # 目前這一題送出的時間（epoch ms），供計算 rounds.response_time
+    # question_count / supplement_count 是 orchestrator 的回合題數上限/補問上限
+    # 計數器（見 orchestrator.py _MAX_QUESTIONS_PER_ROUND）。這兩個欄位先前沒有
+    # 宣告在這個 pydantic model 裡，導致長者每答一次話、前端把 state 傳回來時
+    # 都被 FastAPI 的請求驗證直接丟棄、重置回預設值——單回合題數/補問上限
+    # 因此透過正式 API 從未真正生效過（每次呼叫都從預設值重新起算）。2026-08
+    # 修復：補上這兩個欄位讓它們能正常透過 API 往返存活。
+    question_count: int = 1
+    supplement_count: int = 0
+    # 生圖前 Q1 開場時就分類過 today_topic 屬於16大主題分類的哪一類（見
+    # orchestrator.py _classify_topic_category），供之後若需要問 Q2 縮小
+    # 範圍時直接複用，不用重複分類。同樣需要宣告在這裡才能透過 API 往返存活，
+    # 理由同上面 question_count/supplement_count 的說明。
+    topic_category: str | None = None
+    # start_round 一開始就撈好的 RAG 候選記憶（見 orchestrator.py
+    # _retrieve_candidate_memories），供 _start_scene_after_detail 需要
+    # RAG fallback 時直接讀，不用重新查一次。同樣需要宣告在這裡才能透過
+    # API 往返存活，理由同上面 question_count/supplement_count 的說明。
+    cached_rag_memories: list[dict] = []
+    # 生圖前 Q1 的回答，供 pre_image_q2 階段跟 Q2 合併當生圖記憶來源（見
+    # orchestrator.py process_response 的 pre_image_q1/pre_image_q2 分支）。
+    # 2026-08 發現：這個欄位原本沒宣告在這裡，導致每次長者答完Q1、前端把
+    # state 傳回來問Q2時就已經被 FastAPI 驗證丟棄——Q1+Q2合併生圖實際上
+    # 從未真正生效過，Q2階段只會拿到Q2單獨那句。理由同上面 question_count
+    # 等欄位的說明，這裡補上宣告修復。
+    pre_image_q1_answer: str = ""
+    # 生圖前 Q1(+Q2) 的完整內容，供長者看完圖後若沒有真正反應（quick_end）
+    # 時，STEP1問題前面能接一句具體呼應這段內容的話，而不是完全通用的固定
+    # 過渡句（見 orchestrator.py _start_scene_after_detail、
+    # _generate_quick_end_recap）。同樣需要宣告在這裡才能透過 API 往返存活。
+    pre_image_detail: str = ""
 
 
 class RespondRequest(BaseModel):
@@ -801,6 +832,7 @@ async def _compute_and_save_assessment(
                 total_score=total,
                 emotional_status=emotional_status,
                 story_summary=story_summary or None,
+                status="completed",
             )
             .on_conflict_do_update(
                 index_elements=["session_uuid"],
@@ -812,6 +844,7 @@ async def _compute_and_save_assessment(
                     "score_interaction": scores["互動頻率"],
                     "total_score": total,
                     "emotional_status": emotional_status,
+                    "status": "completed",
                     # story_summary 若這次沒生成成功（例如 LLM 逾時），保留舊值，不要用空字串蓋掉
                     **({"story_summary": story_summary} if story_summary else {}),
                 },
@@ -967,6 +1000,18 @@ async def session_respond(
             state=body.state.model_dump(),
             emotion=emotion,
         )
+
+        if result.get("image_path"):
+            # action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次
+            # 真的生出圖片（見 orchestrator.py _start_scene_after_detail）。
+            # /session/start、/session/round 那兩支端點呼叫 start_round 時還
+            # 沒有圖，寫進 DB 的 scene_image 會是空字串，要等這裡才補上真正的
+            # 圖片路徑與場景文字。
+            await _save_round_image(
+                db, body.state.session_id, body.state.round, result["image_path"],
+                scene_text=result.get("scene_text", ""),
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
 
         if result.get("state") is None:
             # 回合結束（end_round / end_session），把這回合累積的平均反應時間寫進 rounds.response_time
