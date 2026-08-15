@@ -64,7 +64,7 @@ public class GameController : MonoBehaviour
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
     private Coroutine reactionTimeoutCoroutine;
-    private readonly WaitForSeconds reactionTimeoutWait = new WaitForSeconds(15f);
+    private readonly WaitForSeconds reactionTimeoutWait = new WaitForSeconds(30f);
     private const string NoResponseMarker = "（長者未回應）";
     private readonly Queue<string> incomingMessages = new Queue<string>();
     private readonly object queueLock = new object();
@@ -424,7 +424,7 @@ public class GameController : MonoBehaviour
         audioSource.Play();
 
         // 長者要聽完整句問題才算「聽到」，反應時間從播放結束才開始算
-        // （問題設計規則.pdf 原訂10秒，考量長者手部動作/認知處理可能較慢，改成15秒）。
+        // （問題設計規則.pdf 原訂10秒，考量長者手部動作/認知處理可能較慢，改成30秒）。
         yield return new WaitForSeconds(clip.length);
         StartReactionTimeout();
     }
@@ -522,7 +522,7 @@ public class GameController : MonoBehaviour
             StartReactionTimeout();
     }
 
-    // ─── 反應逾時（長者聽完問題15秒沒按麥克風）────────────────────────
+    // ─── 反應逾時（長者聽完問題30秒沒按麥克風）────────────────────────
 
     void CancelReactionTimeout()
     {
