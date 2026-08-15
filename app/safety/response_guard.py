@@ -174,6 +174,17 @@ _KNOWN_PROMPT_EXAMPLES = {
     "紡織廠的大門在黃昏的光線下顯得格外寧靜，工人們陸續走出廠門，往各自的方向散去。",
     "聽起來那段跟阿珠姐一起做工的日子很熱鬧呢。",
     "廟口的攤販剛擺出來，香氣混著人聲，好不熱鬧。",
+    # 2026-08稽核：_generate_image_reveal_reaction 自己的4類反應分類範例句
+    # （orchestrator.py，不是從question_5w1h.txt讀出來的，這裡原本沒涵蓋到）
+    # ——實測發現長者反應是「我覺得有像，但還是有點不一樣」（沒講具體哪裡
+    # 不一樣，照分類規則該是分類2）時，模型直接把分類3的範例句一字不漏
+    # 背出來當承接語，不是真的判斷內容後生成。這4句都是「用對應原則寫一句
+    # 承接語」任務裡給的範例，原理跟上面question_5w1h.txt那組完全一樣，
+    # 一併加進這份完全比對清單。
+    "對，就是這種感覺對不對，聽你這樣說，我更能懂當時的畫面了。",
+    "喔？哪裡不一樣呢，我很想知道你記憶中的樣子，可以多說一點。",
+    "這張圖確實沒辦法把每個細節都畫得剛剛好，聽你這樣說，你記得的畫面比圖裡的還要豐富。",
+    "這段回憶對你來說真的很重要，謝謝你願意跟我分享。",
 }
 
 
@@ -259,6 +270,19 @@ _BOOKISH_VC_RE = re.compile(r"做下來|說下去")
 # 說原因、說故事，不是答一個詞就結束；就算這次答得簡短，STEP2 自由追問也會
 # 順著往下接，不會卡住。2026-08 決定只保留下面這組更明確、幾乎不可能展開成
 # 敘事的字面（年份/時間/人名這類答了就結束的死板事實）。
+# check_format_rules 回傳的違規代號裡，只會檢查 question_text（q）本身、
+# 不會檢查 scene_text/reaction_text 等其他欄位的規則——guarded_generate 的
+# question_only_retry_fn 機制（見該函式說明）靠這份清單判斷「這個違規原因
+# 是不是保證跟其他欄位無關」，安全地只重新生成 question、不用讓已經驗證過的
+# 承接語跟著陪葬重生。double_question/memory_test/precise_fact/image_
+# description/comparison_trap/vague_association 都跟 too_long 一樣只查 q
+# （見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
+# scene_text+q 的 combined，不在此列——沒辦法排除是 scene_text 那邊的問題。
+_QUESTION_ONLY_FORMAT_RULES = frozenset({
+    "too_long", "double_question", "memory_test", "precise_fact",
+    "image_description", "comparison_trap", "vague_association",
+})
+
 _PRECISE_FACT_RE = re.compile(r"哪一?年|什麼時候|幾點|叫什麼|哪一?位")
 # 「看到什麼/圖案/造型」這組字面漏掉了實測最常見的變形：「X裡/上/旁邊有什麼」
 # （例如「菜籃子裡有什麼？」「秤砣上有什麼？」「菜攤旁邊有什麼？」）——這種
@@ -402,6 +426,7 @@ async def guarded_generate(
     max_retry: int = 1,
     text_keys: tuple[str, ...] = ("scene_text", "question"),
     fallback: dict | None = None,
+    question_only_retry_fn=None,
     **generate_kwargs,
 ) -> dict:
     """
@@ -422,6 +447,20 @@ async def guarded_generate(
         fallback:    違規重試後仍失敗時的保底回傳值，須包含與 generate_fn
                      相同的 key。未指定時預設使用 scene_text/question 保底，
                      若 text_keys 有換過，務必也提供對應的 fallback。
+        question_only_retry_fn: 選用。2026-08稽核發現：generate_fn 一次生成
+                     承接語＋問題兩個欄位，只要問題那半段違規（例如too_long），
+                     整包就會被丟掉重新生成——即使承接語當次已經通過所有檢查
+                     （例如已經正確判斷出4類反應之一、寫出很好的承接語），也會
+                     被迫陪著重生一次，實測發現這種「問題違規、承接語其實沒問題」
+                     的情況並不少見。提供這個參數後，一旦違規原因確定只跟
+                     question有關（treats_image_as_real_place／is_yesno_question／
+                     format_rule 屬於 _QUESTION_ONLY_FORMAT_RULES），就鎖住當次
+                     其餘欄位、之後只呼叫這支函式重新生成 question，不用讓
+                     generate_fn 的其他欄位跟著重新賭一次；一旦遇到任何無法排除
+                     是其他欄位問題的違規，立刻解鎖、退回原本整包重新生成。
+                     這支函式必須接受跟 generate_fn 相同的呼叫參數（含
+                     retry_feedback），回傳至少含 "question" 的 dict（有
+                     "covered_w" 就一併採用，沒有則視為空清單）。
         **generate_kwargs: 原封不動轉給 generate_fn 的參數
 
     Returns:
@@ -435,6 +474,10 @@ async def guarded_generate(
 
     attempt = 0
     retry_feedback = ""
+    # 見 question_only_retry_fn 參數說明：非 None 代表「這次違規確定只跟
+    # question 有關」，下一輪改呼叫 question_only_retry_fn 只重生 question，
+    # 其餘欄位沿用這份鎖住的值；None 代表沒有鎖定，走原本整包重新生成。
+    locked_fields: dict | None = None
     while attempt <= max_retry:
         call_kwargs = dict(generate_kwargs)
         if retry_feedback:
@@ -445,7 +488,15 @@ async def guarded_generate(
             # _generate_supplement_question / _generate_closing）都必須支援
             # retry_feedback 這個參數，否則這裡會 TypeError。
             call_kwargs["retry_feedback"] = retry_feedback
-        result = await generate_fn(**call_kwargs)
+        if locked_fields is not None:
+            q_result = await question_only_retry_fn(**call_kwargs)
+            result = {
+                **locked_fields,
+                "question": q_result.get("question", ""),
+                "covered_w": q_result.get("covered_w", []),
+            }
+        else:
+            result = await generate_fn(**call_kwargs)
         retry_feedback = ""
 
         # 不論這位長者有沒有設禁忌詞，都要擋「把AI示意圖當成長者真的去過/
@@ -464,6 +515,11 @@ async def guarded_generate(
                 "這樣問只會讓他困惑。這次請把畫面元素當成某一類經驗、某一種場景的引子，"
                 "改問這一類經驗的普遍情形，不要問長者對眼前這個特定畫面熟不熟悉、認不認得。"
             )
+            # 這條規則只檢查 question_text，跟其他欄位（例如承接語）無關，
+            # 可以安全鎖定其餘欄位、下一輪只重生 question（見 question_only_
+            # retry_fn 參數說明）。
+            if question_only_retry_fn is not None:
+                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
             attempt += 1
             continue
 
@@ -480,6 +536,9 @@ async def guarded_generate(
                 "這次請改成真正開放式的問題，不要用「嗎」結尾，也不要用「有沒有」「是不是」"
                 "「會不會」「認不認得」「熟不熟悉」這類詞（「A還是B」的二選一問法除外）。"
             )
+            # 理由同上：只檢查 question_text，可以安全鎖定其餘欄位。
+            if question_only_retry_fn is not None:
+                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
             attempt += 1
             continue
 
@@ -499,6 +558,9 @@ async def guarded_generate(
                 "畫面本身，這段文字完全不要出現「你」這個字或長者的名字，把「你」留到問題"
                 "那一句再用。"
             )
+            # 這條規則查的是承接語／場景文字欄位，不能排除是被鎖定的欄位造成
+            # 違規，解鎖、退回整包重新生成（見 question_only_retry_fn 參數說明）。
+            locked_fields = None
             attempt += 1
             continue
 
@@ -516,6 +578,8 @@ async def guarded_generate(
                 "畫面裡的場景本身（例如直接寫「礦坑入口處，煤炭散落一地」），不要提到"
                 "「畫」「畫作」「插畫」「示意圖」這類詞。"
             )
+            # 理由同上：查的是承接語／場景文字欄位，解鎖退回整包重新生成。
+            locked_fields = None
             attempt += 1
             continue
 
@@ -534,23 +598,40 @@ async def guarded_generate(
                 "沒有根據這次真正的【眼前畫面元素】與長者資料生成。這次請根據這次實際提供的"
                 "資料重新生成全新內容，不要使用範例裡的地點、物件或字句。"
             )
+            # echoed_field 可能是 question 以外的欄位（例如承接語），不能排除
+            # 是被鎖定的欄位照抄範例，解鎖退回整包重新生成。
+            locked_fields = None
             attempt += 1
             continue
 
         # 承接語／場景文字不能是空泛套語，沒有具體呼應長者剛才說的內容
-        # （見 is_generic_acknowledgment 上方註解）。只查 scene_text_val，
-        # STEP1 場景文字實務上不會剛好等於這些對話式短句，天然不受影響。
-        if is_generic_acknowledgment(scene_text_val):
+        # （見 is_generic_acknowledgment 上方註解）。
+        #
+        # 2026-08稽核：這裡原本只查 scene_text_val（寫死 "scene_text" 這個
+        # key），導致 _generate_image_reveal_reaction／_generate_quick_end_recap
+        # 用的 "reaction_text" key完全沒被這條規則覆蓋到——那兩支函式的任務
+        # 說明明明也要求「不能只是空泛的稱讚」（例如 _generate_quick_end_recap
+        # 明講「不能只是空泛的稱讚（例如不寫「謝謝你告訴我這些」...」），卻沒有
+        # 對應的事後防護，是漏放。改成 scene_text_val 為空時退回讀 reaction_text
+        # ——不用像 check_format_rules 那樣完整迭代整個 text_keys，因為
+        # closing_text／emotional_text 的核心內容本來就常常合理包含「謝謝你的
+        # 分享」這類語意（收尾語、情緒支持的本質就是要感謝/肯定），套用這條
+        # 規則會造成大量誤判，只有 reaction_text 跟 scene_text 一樣是「呼應
+        # 長者剛才說的內容」性質的承接語，才適合共用同一條檢查。
+        ack_check_text = scene_text_val or result.get("reaction_text", "")
+        if is_generic_acknowledgment(ack_check_text):
             logger.warning(
-                f"[ResponseGuard] 承接語是空泛套語: {scene_text_val!r}，"
+                f"[ResponseGuard] 承接語是空泛套語: {ack_check_text!r}，"
                 f"重新生成 (attempt={attempt})"
             )
             retry_feedback = (
-                f"上一次的承接語「{scene_text_val}」是千篇一律的空泛套語，沒有具體"
+                f"上一次的承接語「{ack_check_text}」是千篇一律的空泛套語，沒有具體"
                 "呼應長者剛才說的內容（提到誰、提到什麼事）。這次請具體引用長者剛才"
                 "說的話裡提到的人事物，例如「聽起來那段跟○○一起做工的日子很熱鬧呢」"
                 "這種寫法，不要用套語帶過。"
             )
+            # 這條規則查的正是承接語欄位本身，解鎖退回整包重新生成。
+            locked_fields = None
             attempt += 1
             continue
 
@@ -567,6 +648,14 @@ async def guarded_generate(
                 f"[ResponseGuard] 格式/內容規則違規({format_rule}): "
                 f"question={question_text!r} scene_text={scene_text_val!r}，重新生成 (attempt={attempt})"
             )
+            # 只有 _QUESTION_ONLY_FORMAT_RULES 裡的規則保證只查 question_text
+            # 本身（見該常數說明），其餘規則（nin/xian/zanmen等）查的是
+            # scene_text_val+question 的 combined，沒辦法排除是被鎖定的欄位
+            # 造成違規，一律解鎖。
+            if question_only_retry_fn is not None and format_rule in _QUESTION_ONLY_FORMAT_RULES:
+                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
+            else:
+                locked_fields = None
             retry_feedback = format_feedback
             attempt += 1
             continue
@@ -582,6 +671,9 @@ async def guarded_generate(
                     f"上一次的輸出談到了長者的禁忌話題（{'、'.join(hits)}）。"
                     "這次請完全避開這個方向，不要提及或暗示相關內容。"
                 )
+                # 禁忌話題查的是所有欄位合併後的 combined，沒辦法排除是被鎖定
+                # 的欄位造成違規，解鎖。
+                locked_fields = None
                 attempt += 1
                 continue
 
@@ -593,6 +685,7 @@ async def guarded_generate(
                     "上一次的輸出在語意上涉及了長者的禁忌話題，即使沒有直接用到禁忌詞字面。"
                     "這次請完全避開那個方向，不要往那個主題引導長者。"
                 )
+                locked_fields = None
                 attempt += 1
                 continue
 
