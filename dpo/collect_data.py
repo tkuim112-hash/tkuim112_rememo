@@ -647,6 +647,9 @@ TRACK_C_REJECTION_RULES: dict[str, str] = {
     "over_explain": "承接語超過3句且語氣像在分析或演講（如「您說的這段經歷展現了您那個年代的…」），節奏過重，讓長者困惑且忘了後面的問題",
     "cold_transition": "承接後用過於正式或套路化的語氣切入問題（如「好，那麼我再請問您…」），打斷了對話應有的溫度與連貫感",
     "touches_taboo": "承接語或下一個問題刻意引導長者談論【禁忌話題】，忽視家屬事先設定的地雷，即使沒有直接說出禁忌詞本身",
+    "dwell_on_taboo": "長者自己主動提到的內容剛好觸及【禁忌話題】邊緣時，承接語或下一個問題沒有"
+        "溫和地不深入、把焦點換成長者自己的感受，反而順著長者剛才說的方向繼續追問更多細節，讓長者"
+        "被迫陷入更深的禁忌回憶——跟 touches_taboo 不同，這裡是長者自己先帶出來的，不是AI主動引導",
     "treats_image_as_real": "把AI生成的示意畫面當成長者本人真的去過、認得的特定地方，問「你有沒有來過這裡」"
         "「你認不認得這個地方」一類問題——長者不可能認得剛生成的示意圖，這樣問只會讓他困惑，"
         "甚至被迫附和一個根本不存在的地方",
@@ -654,11 +657,16 @@ TRACK_C_REJECTION_RULES: dict[str, str] = {
     # 專屬情境（見 generate_track_c() 的過濾邏輯），不對其他跟畫面糾正無關的
     # 情境生成，避免湊出語意牽強的違規範例。
     "argues_image_accuracy": "長者主動糾正眼前畫面跟他記憶不符時，長者更正的內容本身就是更具體"
-        "真實的記憶，應該把它當成新的錨點延伸問下去（例：長者說「這裡以前是空地，沒有種樹」，"
-        "好的接法是「原來當時是一片空地啊，那片空地平常都用來做什麼呢？」——順著長者更正的版本問）；"
-        "不好的接法是堅持原本畫面的說法（例：「我們就當作真的有種樹好了，你記得樹上有什麼嗎？」）、"
-        "或過度為AI畫面道歉解釋（例：「抱歉，這是AI生成的示意圖，跟真實場景可能有出入」——這種"
-        "技術性解釋長者聽不懂也沒有意義）、或忽略更正直接問跟原畫面相關的問題",
+        "真實的記憶，應該把它當成新的錨點延伸問下去，承接語裡還要帶一句簡短的肯定，讓長者"
+        "感覺被稱讚記得清楚、觀察力好，不是單純平淡附和更正內容（例：長者說「這裡以前是"
+        "空地，沒有種樹」，好的接法是「原來當時是一片空地啊，你記得真清楚，那片空地平常"
+        "都用來做什麼呢？」——順著長者更正的版本問，還帶了肯定）；不好的接法是堅持原本"
+        "畫面的說法（例：「我們就當作真的有種樹好了，你記得樹上有什麼嗎？」）、或過度為"
+        "AI畫面道歉解釋（例：「抱歉，這是AI生成的示意圖，跟真實場景可能有出入」——這種"
+        "技術性解釋長者聽不懂也沒有意義）、或忽略更正直接問跟原畫面相關的問題、或雖然順著"
+        "更正的內容問了但語氣平淡、完全沒有肯定長者觀察力敏銳（例：「原來當時是一片空地"
+        "啊，那片空地平常都用來做什麼呢？」——內容正確但少了肯定這一步，讓長者感覺不到"
+        "自己被稱讚）",
     "template_echo": "問題這一行不要真的設計問題，而是直接把輸出格式的括號提示原封不動照抄貼上，"
         "讓整句「問題」看起來像格式說明本身（例如「（≤15字）」這類提示語），完全不是真正要"
         "對長者說出口的一句問話——這是本地小模型實際推理時常出現的格式錯亂",
@@ -1589,11 +1597,16 @@ def build_step1_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
     elements = "、".join(scene["elements"])
     topic_cats = "、".join(scenario.get("topic_category", []))
     taboo_str = "、".join(elder.get("taboos", [])) or "無"
+    # 2026-08-09 補上：生產端 _generate_question／build_inference_prompt（這裡
+    # 訓練資料存進 train.jsonl 的 prompt 欄位）都有「興趣」這行，這裡原本沒有，
+    # 導致模型訓練時輸入看得到興趣欄位，但示範答案（chosen）卻是在 Claude完全
+    # 不知道長者興趣的情況下寫出來的，等於答案沒機會示範怎麼用這個資訊。
     return f"""請根據以下資料，設計一個懷舊療法的「開場問題」。
 
 【長者背景】
 姓名：{elder['name']}
 職業背景：{elder['main_occupation']}
+興趣：{elder.get('preferences') or '無'}
 今日主題：{elder['today_topic']}
 主題類別：{topic_cats}
 
@@ -1660,6 +1673,10 @@ def build_step1_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
    - 不預設長者「做錯了」或「出了差錯」（例如「裁到哪裡出了差錯？」）——這樣問
      等於要長者交代失誤，跟「傾聽大於糾正、肯定生命韌性」的精神相反，長者也
      不一定真的犯過這個錯
+   - 不預設某件長者沒說過的具體事已經發生（例如長者只說「看到某個東西會想起
+     某個人」，不能就問「你們後來怎麼聯絡上彼此的」——這樣問等於AI自己幻覺出
+     一段長者從沒提過的重逢或聯絡，長者沒有這段經歷也會被迫附和；只能圍繞
+     長者已經親口說過的內容延伸，不能把AI想像的後續發展當成問題成立的前提）
    - 不把畫面當成長者真的去過的特定地方（絕對不問「你有沒有來過這裡」「你認不
      認得這個地方」「這是不是你以前工作的地方」），要把畫面當成某一類場景的
      引子，問這類經驗的普遍情形（例：不問「你以前是不是常來這個廟口」，而是
@@ -1678,6 +1695,79 @@ def build_step1_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
 問題：（≤15字的開放式問題，念起來要像真人在說話）
 問題類型：STEP1開場
 本回合已涵蓋的W：（只填W維度名稱本身，例：Where，不要加括號說明或理由）"""
+
+
+def build_simulate_elder_response_prompt(scenario: dict, question: str, scene_text: str) -> str:
+    """
+    根據「這次實際生成」的STEP1問題模擬長者會怎麼回答，取代 scenarios.json 裡
+    固定寫死的 elder_step1_response/elder_step2_response。
+
+    2026-08稽核發現：固定劇本是獨立寫的，沒有對應到任何一次真正生成的STEP1
+    問題，容易兜不上（sc048的固定回應完全沒提到畫面裡的撲克牌場景，STEP3卻
+    拿它當「長者剛才說的話」的依據，生出答非所問的資料）。這裡改成STEP1問題
+    生成後，立刻用這個真正問出來的問題去模擬長者的回答，STEP3就一定接得上，
+    不用再靠人工劇本猜中每一次生成的問題方向，也不用在每個消費端各自補救。
+    """
+    elder = scenario["elder"]
+    scene = scenario["scene"]
+    elements = "、".join(scene["elements"])
+    return f"""你正在扮演一位參加懷舊治療的長者本人，請用第一人稱、口語、符合
+這位長者背景的方式，回答剛才被問到的問題。
+
+【你的背景】
+姓名：{elder['name']}
+出生年：{elder.get('birth_year', '不詳')}
+出生地：{elder.get('birth_place', '不詳')}
+職業背景：{elder['main_occupation']}
+今日主題：{elder['today_topic']}
+
+【眼前的畫面】
+{scene_text}
+畫面元素：{elements}
+
+【剛才被問到的問題】
+{question}
+
+請直接用長者的口吻回答這個問題，1-3句話，內容要具體（提到真實可信的人、事、
+物、細節），不要空泛帶過、不要只回答一兩個字，也不要在回答裡加任何前綴說明
+（例如「長者回答：」），直接輸出回答內容本身。"""
+
+
+def simulate_elder_response(scenario: dict, question: str, scene_text: str) -> str:
+    prompt = build_simulate_elder_response_prompt(scenario, question, scene_text)
+    reply = call_claude(prompt)
+    time.sleep(REQUEST_DELAY)
+    return reply.strip()
+
+
+def get_dynamic_elder_response_for_step3(
+    chosen_lookup: dict[tuple[str, str], str], scenario_id: str, sc: dict,
+) -> str:
+    """
+    給「重新生成/重新渲染單一(scenario, step)」的維護腳本用（data_quality.py
+    的 regenerate_track_a_scenario_step／semantic_audit.py 的 _regen_track_a／
+    train_data_tools.py 的 _fix_leaked_regenerate_scenario_step）：從
+    chosen_lookup 撈這個情境「真正生成過」的STEP1 chosen，模擬長者對那個
+    實際問題的回答，取代 scenarios.json 裡固定寫死的 elder_step2_response
+    （詳見 simulate_elder_response 的說明——固定劇本沒有對應到任何一次真正
+    生成的STEP1問題，容易兜不上）。查不到STEP1資料（例如STEP1本身也要被
+    丟棄重新生成）就回傳空字串，交給 build_step3_user_prompt 的選錨點備援
+    邏輯處理（退回畫面元素）。
+    """
+    from data_quality import extract_question, extract_scene_text
+
+    step1_chosen = chosen_lookup.get((scenario_id, "STEP1"))
+    if not step1_chosen:
+        return ""
+    question = extract_question(step1_chosen)
+    scene_text = extract_scene_text(step1_chosen)
+    if not question or not scene_text:
+        return ""
+    try:
+        return simulate_elder_response(sc, question, scene_text)
+    except Exception as e:
+        print(f"    ⚠ 模擬長者回答失敗（{e}），STEP3將退回無長者回應")
+        return ""
 
 
 def build_step2_user_prompt(scenario: dict, retry_feedback: str = "") -> str:
@@ -1761,6 +1851,7 @@ def build_step3_user_prompt(
     retry_feedback: str = "",
     covered_w: list[str] | None = None,
     target_w: str | None = None,
+    elder_response: str | None = None,
 ) -> str:
     """
     covered_w: STEP1/STEP2 實際累積涵蓋的W維度（由呼叫端從前面步驟的 chosen
@@ -1774,11 +1865,23 @@ def build_step3_user_prompt(
     含糊帶過，但生產端 _generate_supplement_question 一定會明確指定
     target_w，不是讓模型自己選——這裡補上，讓標準答案示範「被指定問某個W」
     這個真實情境；沒有傳值時退回原本含糊的說法，保持向後相容。
+
+    elder_response: 長者「最近說的話」，2026-08稽核發現舊版固定讀
+    scenario["elder_step2_response"]（scenarios.json裡人工寫死的劇本），
+    跟這個情境STEP1這次實際生成的問題完全無關，容易兜不上（sc048的固定
+    回應完全沒提到畫面裡的撲克牌場景）。改成呼叫端用
+    simulate_elder_response() 根據這次真正生成的STEP1問題現場模擬，再傳
+    進來；沒有傳值時才退回scenario裡的舊欄位，保持向後相容（給還沒更新的
+    呼叫端用，例如data_quality.py/semantic_audit.py/train_data_tools.py
+    裡的重生成/稽核工具，這些之後也要跟進更新）。
     """
     elder = scenario["elder"]
     scene = scenario["scene"]
     elements = "、".join(scene["elements"])
-    step2_response = scenario["elder_step2_response"]
+    step2_response = (
+        elder_response if elder_response is not None
+        else scenario.get("elder_step2_response", "")
+    )
     taboo_str = "、".join(elder.get("taboos", [])) or "無"
     covered_w_str = _format_covered_w(covered_w) if covered_w else "Where（哪裡）、Who（誰）"
     target_w_instruction = (
@@ -1786,12 +1889,14 @@ def build_step3_user_prompt(
         if target_w else
         "鎖定還沒問過的W維度（優先 What 或 When，避免 Why），這一題要能自然帶出這個維度"
     )
+    # 2026-08-09 補上「興趣」這行，理由同 build_step1_user_prompt 上方註解。
     return f"""經過幾輪對話後，請設計一個補充問題，順著長者剛才的話跟眼前畫面自然地
 深入問下去，不是在核對清單，同時要能自然帶出還沒提到的那個W維度。
 
 【長者背景】
 姓名：{elder['name']}
 職業背景：{elder['main_occupation']}
+興趣：{elder.get('preferences') or '無'}
 今日主題：{elder['today_topic']}
 
 【眼前畫面的元素】
@@ -1820,7 +1925,9 @@ def build_step3_user_prompt(
    代表跳得太遠了，要換一個仍在同一個當下、同一個畫面裡的角度）。如果長者最近
    說的話沒有這個問題，才進入下面1-4的一般流程。
 1. 定調：確認【目前已涵蓋的W】，{target_w_instruction}
-2. 選錨點：從【眼前畫面的元素】或長者剛才提到的具體人事物挑一個，用下面三種
+2. 選錨點：優先看【長者最近說的話】裡有沒有具體人事物可以直接當錨點，不必勉強
+   拉回畫面——順著長者的故事走，比守住畫面元素更重要；只有長者最近說的話沒有
+   提供可用的具體人事物時，才退回【眼前畫面的元素】挑一個。選定後用下面三種
    寫法之一讓它成為自然口語的句子開頭：加「這樣的／像這樣的／這些」＋物件、
    把物件包進一個動作或地點短語、或放在真的會發生狀態變化的受詞位置（若用這種
    「已經完成」的狀態句當錨點，後面的問題只能問「發生這個變化之後」的事，不能
@@ -1843,13 +1950,21 @@ def build_step3_user_prompt(
    怎麼組裝、怎麼助跑）；用「你」
    稱呼、加自然口語語尾詞，整句不超過15字；確認不是是非題（不用「嗎」「有沒有」
    「是不是」「會不會」「A不A」）、不用「你還記得嗎」開頭、不需要精確數字/
-   年份/人名/地名/數量、不預設長者「做錯了」、不把畫面當長者真的去過的地方、
+   年份/人名/地名/數量、不預設長者「做錯了」、不預設某件長者沒說過的具體事已經
+   發生（例如長者只說「看到某個東西會想起某個人」，不能問「你們後來怎麼聯絡上
+   彼此的」——這是AI自己幻覺出一段長者沒提過的重逢，只能圍繞長者已經說過的
+   內容延伸，不能把AI想像的後續發展當成問題的前提）、不把畫面當長者真的去過的地方、
    「用久了會有什麼變化」只用在真的有明顯痕跡的動作上、物件情境設定要合理、
    問題要具體微觀不抽象、絕對不引導向【禁忌話題】
 {_retry_feedback_section(retry_feedback)}
 【輸出格式】（嚴格按照以下格式）
 思考：（主題判斷：一句話判斷今日主題最貼近哪個核心主題；切入角度：一到兩句話決定這題要用什麼當錨點、往哪個方向問——兩段都要寫、都要留在同一行，不會念給長者聽）
-場景文字：（15-30字，幫長者重新聚焦到新的W）
+承接語：（1-2句，30字以內，若【長者最近說的話】有內容，具體呼應那句話裡的人事物，
+不要空泛帶過；若長者最近說的話很短或沒有可延伸的內容，就溫和地收一下、自然轉場，
+不要硬接一句跟長者的話無關的話；提到物件時，物件不能變成「記得」「想起」「思念」
+這類人類感受動詞的主詞——例如不能寫「一顆新港飴還記得他」，糖果不會記得人，記得
+的是長者，要把長者或故事裡的人放回主詞位置，物件只能當觸發回憶的引子，例如
+「新港飴的味道，讓人想起那位老戰友」）
 問題：（≤15字，開放式，開頭要有畫面中的具體物件）
 問題類型：STEP3補問
 本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個W維度名稱本身，
@@ -1983,14 +2098,18 @@ def build_track_c_chosen_prompt(sc: dict, retry_feedback: str = "") -> str:
    - 【糾正畫面內容】像「這個不太像欸」「不是這樣，我記得是……」——長者主動
      指出眼前畫面跟他記憶中的樣子不符，這不是負面情緒也不是要放棄話題，是
      一段更具體真實的記憶被說出來了，比原本的畫面元素更值得追問。承接語要
-     順著長者更正的內容回應（例如「原來當時是這樣啊」），不要堅持原本畫面的
+     順著長者更正的內容回應，而且要帶一句簡短的肯定，讓長者感覺到自己記得
+     清楚、觀察力好，不是單純平淡地附和更正內容（例如不只寫「原來當時是
+     這樣啊」，改寫「原來當時是這樣啊，你記得真清楚」「你眼睛真尖，一下就
+     發現不一樣」這類——肯定要放在同一句承接語裡，不要另外多加一整句稱讚，
+     每次挑不同的講法，不要每次都用同一句肯定語）；不要堅持原本畫面的
      說法、也不要為AI生成的畫面過度道歉解釋（長者聽不懂「這是AI生成的示意圖」
      這種技術性說明，也沒有意義）；步驟2選錨點時，改用長者剛剛更正後說出的
      新詞（例如長者說「是空地」，錨點就用「空地」，不要繼續用原本畫面元素
-     清單裡被更正掉的舊說法）。承接語要簡短、一句話帶過就轉向新問題，不要
-     在畫面對不對這件事上多做停留或反覆確認——文獻對重度失智長者的實測發現，
-     這類情境失真容忍度低，拖越久越可能讓長者直接失去參與意願，快速順著
-     長者的真實記憶往下走，比糾結畫面本身更重要
+     清單裡被更正掉的舊說法）。承接語（含肯定）要簡短、一句話帶過就轉向新
+     問題，不要在畫面對不對這件事上多做停留或反覆確認——文獻對重度失智
+     長者的實測發現，這類情境失真容忍度低，拖越久越可能讓長者直接失去
+     參與意願，快速順著長者的真實記憶往下走，比糾結畫面本身更重要
    若沒有上述句子，依一般情緒對照表定調：開心/驕傲/幽默→呼應正面情緒，帶著
    真誠的溫度；感傷/懷念→輕柔同理，從他說的話裡找一個溫暖或有價值的角度；
    疲倦/意興闌珊→先讓他放鬆（「沒關係，慢慢來」），再用輕鬆的問題邀請他繼續；
@@ -2005,7 +2124,9 @@ def build_track_c_chosen_prompt(sc: dict, retry_feedback: str = "") -> str:
      （例：長者提到已故父親的嚴格與正直，不寫「你爸這份正直真的讓人佩服」——這還是在
      談父親；而是寫「你到現在還這麼佩服他教你的道理，這份心意很珍貴」，焦點放回長者
      身上）
-2. 選錨點：從【眼前畫面元素】或長者剛提到的具體人事物挑一個，用下面三種寫法
+2. 選錨點：優先看【長者剛才說的話】裡有沒有具體人事物可以直接當錨點，不必勉強
+   拉回畫面——順著長者的故事走，比守住畫面元素更重要；只有長者剛才說的話沒有
+   提供可用的具體人事物時，才退回【眼前畫面元素】挑一個。選定後用下面三種寫法
    之一讓它成為自然口語的句子開頭：加「這樣的／像這樣的／這些」＋物件、把
    物件包進一個動作或地點短語、或放在真的會發生狀態變化的受詞位置（若用這種
    「已經完成」的狀態句當錨點，後面的問題只能問「發生這個變化之後」的事，不能
@@ -2037,7 +2158,11 @@ def build_track_c_chosen_prompt(sc: dict, retry_feedback: str = "") -> str:
    列舉/挑一個/一兩個字帶過的問法；排除操作技巧類問法（怎麼握、怎麼用、怎麼壓、
    怎麼組裝）；排除預設長者
    「做錯了」或「出了差錯」的問法（例如「裁到哪裡出了差錯？」）——跟「傾聽
-   大於糾正、肯定生命韌性」的精神相反，改問中性的過程或感受
+   大於糾正、肯定生命韌性」的精神相反，改問中性的過程或感受；也排除預設某件
+   長者沒說過的具體事已經發生的問法（例如長者只說「看到某個東西會想起某個
+   人」，不能問「你們後來怎麼聯絡上彼此的」——這是AI自己幻覺出一段長者沒
+   提過的重逢，只能圍繞長者已經說過的內容延伸，不能把AI想像的後續發展當成
+   問題的前提）
 5. 收尾包裝：問題整句≤15字、開放式、開頭有具體錨點，且不能引導向【禁忌話題】；
    整體念起來要像有溫度的真人在說話，避免「頂...的」這類偏書面語氣，改用
    「真的很...」「非常...」；問句裡如果用「手感」「口感」這類感受詞，動詞
@@ -2061,6 +2186,12 @@ def build_track_c_rejection_prompt(
     if rule_name == "touches_taboo" and taboos:
         taboo_section = (
             f"\n【這位長者的禁忌話題（此範例要故意讓問題引導向這個方向）】\n"
+            f"{'、'.join(taboos)}\n"
+        )
+    elif rule_name == "dwell_on_taboo" and taboos:
+        taboo_section = (
+            f"\n【這位長者的禁忌話題（此範例要示範：長者剛才說的話已經貼近這個方向的"
+            f"邊緣，AI 沒有溫和退開，反而繼續追問這個方向的細節）】\n"
             f"{'、'.join(taboos)}\n"
         )
     return f"""以下是治療師理想的「承接 + 問題」回應（chosen）：
@@ -2412,9 +2543,11 @@ def build_inference_prompt(
     同一輪稽核也發現兩個欄位落差，這次一併處理：
     - 生產端 user_content 有「興趣：{user.get('preferences') or '無'}」這行
       （orchestrator.py:986），這裡完全沒有——已補上，用 elder.get('preferences')。
-      scenarios.json 目前每筆長者資料都沒有 preferences 欄位，所以現階段這行
-      在訓練資料裡會固定顯示「無」；要讓內容真的有變化，需要另外幫
-      scenarios.json 的長者資料補上興趣欄位，這裡先只補齊格式對齊。
+      2026-08-09 已幫 scenarios.json 128 筆長者資料全部補上 preferences（原本
+      116 筆是空的、另外 3 筆同名長者在不同情境間欄位值還互相矛盾，一併修正
+      為一致值）；同一輪也發現 build_step1_user_prompt／build_step3_user_prompt
+      （生成 chosen 用的prompt）完全沒有這行，導致訓練資料的「輸入」看得到
+      興趣、但示範答案卻是在 Claude 不知道長者興趣的情況下寫的，已一併補上。
     - 「懷舊治療主題類別」原本用人工標注的 topic_category（例如「工作、專長」），
       但使用者確認今日主題本身是治療師手動輸入或 AI 建議的自由文字，不是固定
       分類系統——生產端直接重複塞 today_topic（orchestrator.py:975/987）就是
@@ -2474,11 +2607,13 @@ def build_inference_prompt(
         if step in ("STEP1", "STEP3") else ""
     )
 
-    # STEP3 場景文字規格對齊 orchestrator._generate_supplement_question（見上方
-    # docstring 說明），STEP1/STEP2 維持原本的 30-60 字規格。
+    # STEP3改用「承接語」標籤，對齊 orchestrator._generate_supplement_question
+    # 2026-08改版（見上方docstring說明）——STEP3要做的是接話+收一下再換方向，
+    # 跟STEP1單純描述畫面的「場景文字」功能不同。STEP1/STEP2維持原本規格。
     scene_text_spec = (
-        "場景文字：（15-30字，幫長者重新聚焦到畫面，若【長者剛才說的話】有內容，"
-        "盡量從那句話自然接回畫面，不要憑空硬轉）\n"
+        "承接語：（1-2句，30字以內，若【長者剛才說的話】有內容，具體呼應那句話，"
+        "不要空泛帶過；若長者剛才的話很短或沒有可延伸的內容，就溫和地收一下、"
+        "自然轉場，不要硬接一句跟長者的話無關的話）\n"
         if step == "STEP3" else
         "場景文字：（30-60字，給長者聽的場景描述）\n"
     )
@@ -2589,6 +2724,9 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
         # （見 build_step3_user_prompt / _extract_covered_w 的說明）。STEP3
         # 開始時代表「STEP1結束後」的真實狀態，STEP1的chosen生成完後才更新。
         covered_w: list[str] = []
+        # 長者對STEP1的模擬回答，取代scenarios.json裡寫死的elder_step2_response
+        # ——STEP1的chosen生成後才會有值，見下方迴圈內 simulate_elder_response()。
+        dynamic_elder_reply = ""
 
         for step in ("STEP1", "STEP3"):
             if is_grief_scenario and step == "STEP3":
@@ -2601,20 +2739,58 @@ def generate_track_a(scenarios: list[dict]) -> list[dict]:
             # 不讓模型自己含糊選的行為（見 build_step3_user_prompt 說明）。
             target_w = _pick_target_w(covered_w) if step == "STEP3" else None
             if step == "STEP3":
-                user_prompt = prompt_builders[step](sc, covered_w=covered_w, target_w=target_w)
+                user_prompt = prompt_builders[step](
+                    sc, covered_w=covered_w, target_w=target_w,
+                    elder_response=dynamic_elder_reply,
+                )
             else:
                 user_prompt = prompt_builders[step](sc)
 
-            try:
-                chosen = call_claude(user_prompt)
-                time.sleep(REQUEST_DELAY)
-            except Exception as e:
-                print(f"    ✗ chosen 失敗：{e}")
+            # 2026-08-10 補上重試：2026-07 稽核發現過 Track A 有 273 筆 chosen
+            # 混進「等等，我需要重新檢查...」這類自我修正旁白、或同一欄位重複
+            # 出現兩次（has_leaked_self_check，見 data_quality.py），當時是靠
+            # dpo/train_data_tools.py 的 fix-leaked-a 事後補救。這裡在生成當下
+            # 就重試，從源頭減少這類壞資料，而不是每次都要事後才發現、事後修。
+            from data_quality import has_leaked_self_check, extract_question, extract_scene_text
+
+            chosen = None
+            for attempt in range(3):
+                try:
+                    candidate = call_claude(user_prompt)
+                    time.sleep(REQUEST_DELAY)
+                except Exception as e:
+                    print(f"    ✗ chosen 失敗（attempt {attempt+1}）：{e}")
+                    continue
+                if has_leaked_self_check(candidate):
+                    print(f"    ⚠ chosen 混入自我修正旁白，重試（attempt {attempt+1}）...")
+                    continue
+                chosen = candidate
+                break
+
+            if chosen is None:
+                print(f"    ✗ [{step}] 三次都失敗或洩漏自我修正旁白，跳過此步驟")
                 continue
+
+            # STEP1的chosen生成完後，立刻用這次「真正問出來」的問題模擬長者會
+            # 怎麼回答，取代scenarios.json裡固定寫死的elder_step2_response——
+            # 這樣STEP3拿到的「長者剛才說的話」保證跟這次實際生成的STEP1問題
+            # 對得上，不會有sc048那種答非所問的落差（詳見simulate_elder_response
+            # docstring）。模擬失敗（例如API暫時出錯）就退回空字串，STEP3的
+            # 選錨點步驟本來就有「長者沒提供可用素材就退回畫面元素」的備援。
+            if step == "STEP1":
+                q = extract_question(chosen)
+                st = extract_scene_text(chosen)
+                if q and st:
+                    try:
+                        dynamic_elder_reply = simulate_elder_response(sc, q, st)
+                        print(f"    → 模擬長者回答: {dynamic_elder_reply[:40]}...")
+                    except Exception as e:
+                        print(f"    ⚠ 模擬長者回答失敗（{e}），STEP3將退回無長者回應")
+                        dynamic_elder_reply = ""
 
             step_responses = {
                 "STEP1": "",
-                "STEP3": sc.get("elder_step2_response", ""),
+                "STEP3": dynamic_elder_reply,
             }
             taboos = elder.get("taboos", [])
             # 這裡的 covered_w 必須是「這一步驟開始之前」的狀態（跟上面組
