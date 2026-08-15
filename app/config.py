@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # === Stability AI ===
     stability_api_key: str = ""
 
+    # === OpenAI（gpt-image-2 生圖，見 services/image.py OpenAIImageService）===
+    openai_api_key: str = ""
+
     # === Redis ===
     redis_host: str = "redis"
     redis_port: int = 6379
