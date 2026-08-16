@@ -13,6 +13,7 @@ from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
 from db.models import TherapySession, TherapyRound, RoundExchange
+from services.closing_templates import build_closing_invitation, build_closing_message
 import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -105,6 +106,23 @@ async def _cache_round_carryover(r, session_id: str, round_number: int, data: di
 async def _get_round_carryover(r, session_id: str, round_number: int) -> dict | None:
     raw = await r.get(f"session:{session_id}:round{round_number}_carryover")
     return json.loads(raw) if raw else None
+
+
+async def _append_session_topic(r, session_id: str, topic_category: str | None) -> None:
+    """記錄這場療程實際分類到的16大主題（見 orchestrator.py
+    _classify_topic_category），供三回合結束後心得環節的 build_closing_
+    affirmation 判斷要用「撐過來」還是「美好時光」的收尾語氣。round 2 沿用
+    round 1 的分類（round 2 本身不重新分類），round 3 是 closing 沒有分類，
+    所以只有 round 1/2 結束時會呼叫這裡。"""
+    if not topic_category:
+        return
+    key = f"session:{session_id}:topics"
+    await r.rpush(key, topic_category)
+    await r.expire(key, 86400)
+
+
+async def _get_session_topics(r, session_id: str) -> list[str]:
+    return await r.lrange(f"session:{session_id}:topics", 0, -1)
 
 
 async def _update_live_view(r, session_id: str, **fields) -> None:
@@ -934,6 +952,9 @@ async def _compute_and_save_assessment(
             f"session:{session_id}:ema",
             f"session:{session_id}:calibration",
             f"session:{session_id}:round1_result",
+            f"session:{session_id}:round1_carryover",
+            f"session:{session_id}:round2_carryover",
+            f"session:{session_id}:topics",
         )
         if meta.get("patient_id"):
             await r.delete(f"patient:{meta['patient_id']}:active")
@@ -1009,13 +1030,24 @@ async def session_closing(
             await db.rollback()
     await r.delete(f"session:{session_id}:closing_asked_at")
 
+    # 心得環節步驟2+3：長者回答完開場邀請語後，組出承接語＋收尾語（一般
+    # 分類接「撐過來/美好時光」核心語，抱怨系統/AI本身則只接感謝語，見
+    # app/services/closing_templates.py build_closing_message 說明）。
+    # 長者看完這則訊息後療程直接結束，不用再回應（見 ShareController.cs
+    # 顯示完就轉場）。
+    emotion = metrics.get("emotion_raw", "")
+    topics = await _get_session_topics(r, session_id)
+    closing_message = await build_closing_message(
+        body.text, emotion, topics, request.app.state.llm_service,
+    )
+
     try:
         scores = await _compute_and_save_assessment(request, session_id, db, therapist_id)
     except HTTPException as e:
         print(f"[Closing] 自動評估略過: {e.detail}")
         scores = None
 
-    return {"ok": True, "assessment": scores}
+    return {"ok": True, "closing_message": closing_message, "assessment": scores}
 
 
 @router.post("/respond")
@@ -1092,6 +1124,13 @@ async def session_respond(
                     f"session:{body.state.session_id}:closing_asked_at",
                     str(int(time.time() * 1000)), ex=3600,
                 )
+                # 心得環節開場邀請語是純規則模板（見 app/services/closing_
+                # templates.py），orchestrator._end_action 對 end_session 只回
+                # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
+                # 實際分類到的16大主題（見 _append_session_topic）。
+                topics = await _get_session_topics(r, body.state.session_id)
+                result["scene_text"] = ""
+                result["question"] = build_closing_invitation(topics)
             if result.get("action") == "end_round" and body.state.round in (1, 2):
                 # round 2/3 開場需要承接這裡：round 1 結束時記畫面元素／話題／
                 # 生圖前訪談內容＋這句話，round 2 結束時只需要這句話（round 3
@@ -1105,6 +1144,7 @@ async def session_respond(
                         "topic_category": body.state.topic_category,
                     })
                 await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
+                await _append_session_topic(r, body.state.session_id, body.state.topic_category)
 
         if result.get("question"):
             # state 不是 None 代表回合還在繼續（open_followup / ask_supplement_w），

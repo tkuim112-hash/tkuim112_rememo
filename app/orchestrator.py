@@ -2252,6 +2252,12 @@ class TherapyOrchestrator:
                     "state": new_state,
                 }
             pre_image_detail = state.get("pre_image_detail", "")
+            # was_deferred 要在呼叫LLM之前就先算好——代表長者這句話是不是在
+            # 回答分類2追問的「哪裡不一樣」，除了下面決定要不要接
+            # _IMAGE_REVEAL_TRANSITION，也要傳給 _generate_image_reveal_
+            # reaction 讓它知道「這是追問過一次之後的回答」（見下面2026-08-17
+            # 稽核說明），必須在呼叫前算好才能當參數傳入。
+            was_deferred = bool(state.get("image_reveal_deferred"))
             result = await guarded_generate(
                 self._generate_image_reveal_reaction,
                 taboo_words=user["taboos"],
@@ -2280,14 +2286,23 @@ class TherapyOrchestrator:
                 user=user, scene_elements=scene_els, elder_response=elder_response,
                 scene_composition=scene_comp, covered_w=covered_w,
                 pre_image_detail=pre_image_detail, emotion=emotion,
+                already_deferred=was_deferred,
             )
             print(f"  → 出示圖片反應分類: {result.get('classification', '')!r}"
                   f"（依據: {result.get('judgment_evidence', '')!r}）")
-            # was_deferred 要在下面覆蓋 state["image_reveal_deferred"] 之前先
-            # 記錄——代表長者這句話是不是在回答分類2追問的「哪裡不一樣」，
-            # 用來決定要不要接 _IMAGE_REVEAL_TRANSITION（見下面2026-08-16
-            # 第二次稽核說明）。
-            was_deferred = bool(state.get("image_reveal_deferred"))
+            # 2026-08-17稽核：這個分支（生圖後第一反應／哪裡不一樣追問）先前
+            # 完全沒呼叫 _detect_covered_w——長者這裡如果講出具體的地點/時間/
+            # 人物（例如分類3的例句「烤肉的地方是在前面」，或分類4提到已故的
+            # 阿嬤），這些內容不會被記進covered_w，之後的STEP3補問還可能問到
+            # 同一個W維度，讓長者覺得AI沒在聽。跟STEP2背景追蹤（見下方「STEP2：
+            # 自由對話中背景追蹤W覆蓋」區塊）用同一支函式補上，兩個分支
+            # （分類2首次追問、正常進STEP1）都要看得到更新後的 covered_w。
+            newly_covered = await self._detect_covered_w(elder_response, covered_w)
+            for w in newly_covered:
+                if w not in covered_w:
+                    covered_w.append(w)
+            if newly_covered:
+                print(f"  → 出示圖片反應自然涵蓋 W: {newly_covered}，covered={covered_w}")
             # 2026-08-16稽核：分類2（有差異但長者還沒具體講出哪裡不一樣）的
             # 承接語原則是「好奇追問哪裡不一樣」——承接語本身就是一句要長者
             # 回答的問題。但下面的正常流程固定會在承接語後面接一句過渡句
@@ -2317,6 +2332,11 @@ class TherapyOrchestrator:
                       f"暫不接STEP1問題: {result['reaction_text']!r}")
                 new_state = {
                     **state,
+                    # 2026-08-17稽核：這裡先前沒有更新 covered_w，上面新加的
+                    # _detect_covered_w 偵測結果會直接遺失（**state 展開的是
+                    # 呼叫前的舊值，不是這裡的區域變數）——長者這句被追問前的
+                    # 反應如果剛好帶到W內容，會在這裡憑空消失。
+                    "covered_w": covered_w,
                     "last_question_type": "image_reveal",
                     "image_reveal_deferred": True,
                 }
@@ -2325,6 +2345,27 @@ class TherapyOrchestrator:
                     "scene_text": "",
                     "question": result["reaction_text"],
                     "state": new_state,
+                }
+            if result.get("classification") == "2" and was_deferred:
+                # 2026-08-17稽核：長者已經被追問過一次「哪裡不一樣」，這次
+                # 分類仍然是2——依「只擋一次」設計（見上方說明）不能再追問
+                # 一次，必須往下走進STEP1。但分類2的承接語本質上是一句要
+                # 長者回答的問題（例如「哪裡不一樣呢，可以多說一點嗎」），
+                # 如果直接沿用，下面會變成「[問句]謝謝你跟我說這麼多...
+                # [新的STEP1問題]」——問完馬上道謝、又問下一題，長者根本沒
+                # 機會回答第一個問題，語意完全不通，這是實測發現的真實bug。
+                # 不能只靠加提示詞讓模型自己避開——本函式其他稽核筆記已經
+                # 多次證實本地8B量化基底模型對這類細節指示不穩定，改用跟
+                # 分類3同一種語氣的固定句子（下方【任務】分類3的官方例句），
+                # 保證這裡一定不是問句，不賭這次LLM會不會照做。
+                print(f"  → 已追問過一次仍是分類2，改用固定的分類3語氣承接語"
+                      f"（原始: {result['reaction_text']!r}）")
+                result = {
+                    **result,
+                    "reaction_text": (
+                        "這張圖確實沒辦法把每個細節都畫得剛剛好，"
+                        "聽你這樣說，你記得的畫面比圖裡的還要豐富。"
+                    ),
                 }
             # 2026-08-16稽核：上面那層連續3次都違規（例如照抄範例、編造判斷
             # 依據）會退回完全通用的固定保底句，跟長者剛才說的話完全無關——
@@ -2367,7 +2408,10 @@ class TherapyOrchestrator:
             # was_deferred，不接這句話；只有透過分類2追問後才「說了這麼多」
             # 的情況才接，跟上面 was_deferred 的判斷是同一件事。
             transition = _IMAGE_REVEAL_TRANSITION if was_deferred else ""
-            # covered_w 刻意維持不變——理由同上面兩條STEP1路徑。
+            # covered_w 這裡帶的是上面 _detect_covered_w 更新過的版本（長者
+            # 這句反應／哪裡不一樣追問裡自然涵蓋的W），不是LLM自報的那份
+            # ——LLM在result["covered_w"]裡自己標記的是「它剛寫的STEP1問題
+            # 涵蓋哪些W」，那份仍然不採信，理由同上面兩條STEP1路徑。
             new_state = {
                 **state,
                 "covered_w": covered_w,
@@ -2535,25 +2579,15 @@ class TherapyOrchestrator:
         current_round = state["round"]
         if current_round >= 3:
             print("  → 三回合完成，療程結束")
-            closing = (
-                await guarded_generate(
-                    self._generate_closing,
-                    taboo_words=user["taboos"],
-                    llm_service=self.llm,
-                    max_retry=3,  # 理由同 STEP1 呼叫處：多幾次嘗試換更高機率避開保底句
-                    text_keys=("closing_text", "question"),
-                    fallback={
-                        "closing_text": "謝謝你今天的分享，辛苦了。",
-                        "question": "現在心裡在想些什麼呢？",
-                    },
-                    user=user, elder_response=elder_response, emotion=emotion,
-                )
-                if user else {"closing_text": "", "question": ""}
-            )
+            # 心得環節（開場邀請語／承接語／收尾肯定語）2026-08-17起改成純規則
+            # 模板（app/services/closing_templates.py），不再叫LLM，也不需要
+            # user/taboo——scene_text/question 留空，由 app/routers/session.py
+            # 讀 Redis 存的本場療程主題分類後，用 build_closing_invitation 填入，
+            # 見該檔 session_respond 對 action=="end_session" 的處理。
             return {
                 "action": "end_session",
-                "scene_text": closing["closing_text"],
-                "question": closing["question"],
+                "scene_text": "",
+                "question": "",
                 "state": None,
             }
         print(f"  → 回合 {current_round} 結束，進入回合 {current_round + 1}")
@@ -3788,7 +3822,7 @@ class TherapyOrchestrator:
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
-            "問題必須念起來自然、溫和、不超過18個字，且開頭要包含畫面中看得到的具體物件。"
+            "問題必須念起來自然、溫和、不超過25個字，且開頭要包含畫面中看得到的具體物件。"
             "絕對不在輸出中加任何括號說明或格式標記，也不用任何 markdown 語法。"
             "絕對不用是非題，也不問需要精確數字、年份、人名或地名的問題。"
         )
@@ -3889,6 +3923,7 @@ class TherapyOrchestrator:
         pre_image_detail: str = "",
         emotion: str = "happy",
         retry_feedback: str = "",
+        already_deferred: bool = False,
     ) -> dict:
         """
         長者看完剛生成的圖、說出第一反應（回答 _IMAGE_REVEAL_QUESTION）後：
@@ -4007,12 +4042,33 @@ class TherapyOrchestrator:
         原句複述回去，聽起來像鸚鵡學舌，不是真的在往下接話——長者都已經
         自己確認過了，不需要AI再附和一次同樣的話。改成不開頭複述肯定詞，
         直接用自己的話表達溫暖呼應。
+
+        2026-08-17稽核（實測後補）：長者已經被分類2追問過一次「哪裡不一樣」，
+        這次回答如果模型還是判成分類2，process_response 那邊依「只擋一次」
+        設計會強制往下走進STEP1，不會再追問——但這支函式當時完全不知道
+        「這是追問過一次之後的回答」，寫出的承接語還是「哪裡不一樣呢，可以
+        多說一點嗎」這種要長者回答的問句，接到後面的過渡句＋新STEP1問題，
+        變成「問完馬上道謝、又問下一題」，長者根本沒機會回答，語意不通
+        （這是使用者實測抓到的bug）。新增 already_deferred 參數，讓提示詞
+        知道這個情境、引導模型直接寫分類3語氣的承接語；但呼叫端
+        process_response 不完全相信這裡的輸出——如果分類仍回傳2，會用固定
+        句子覆蓋承接語，不賭這次LLM有沒有照做（見該分支說明），這裡的提示詞
+        只是讓分類本身更準確、盡量讓LLM自己就選對分類3，不是唯一防線。
         """
+        already_deferred_note = (
+            "\n【重要】長者已經被追問過一次「哪裡不一樣」了，這是他這次的"
+            "回答——不管這次的差異講得夠不夠具體，都不能再判成分類2、不能"
+            "再寫一句要長者回答「哪裡不一樣」的問句，一律比照分類3的原則："
+            "誠實承認AI示意圖本來就有畫不出來的限制，肯定長者記得的畫面比"
+            "圖裡的還要豐富（除非長者這次的反應明顯是分類4的情緒觸動，才"
+            "判成4）。\n"
+            if already_deferred else ""
+        )
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
-            "問題必須念起來自然、溫和、不超過18個字，開頭要有具體錨點（畫面中看"
+            "問題必須念起來自然、溫和、不超過25個字，開頭要有具體錨點（畫面中看"
             "得到的物件、長者提到的具體人事物皆可）。"
             "絕對不在輸出中加任何括號說明或格式標記，也不用任何 markdown 語法。"
             "絕對不用是非題，也不問需要精確數字、年份、人名或地名的問題。"
@@ -4031,6 +4087,7 @@ class TherapyOrchestrator:
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
             f"\n【長者目前情緒】\n{_emotion_guidance(emotion)}\n"
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
+            f"{already_deferred_note}"
             f"\n【任務】\n"
             f"長者剛看完AI依據他先前說的內容生成的一張示意圖，說出了他的第一"
             f"反應。請先具體列出這句反應裡有哪些線索（例如：出現「對/沒錯/"
@@ -4131,6 +4188,7 @@ class TherapyOrchestrator:
         pre_image_detail: str = "",
         emotion: str = "happy",
         retry_feedback: str = "",
+        already_deferred: bool = False,
     ) -> dict:
         """
         guarded_generate 的 question_only_retry_fn（見該參數說明），專供
@@ -4144,13 +4202,14 @@ class TherapyOrchestrator:
 
         參數跟 _generate_image_reveal_reaction 對齊（guarded_generate 用
         同一份 call_kwargs 呼叫兩者，簽名必須相容，否則會 TypeError）——
-        elder_response 這裡雖然不再用來分類，仍保留參數位置，不使用。
+        elder_response、already_deferred 這裡雖然不再用來分類，仍保留參數
+        位置，不使用。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
-            "問題必須念起來自然、溫和、不超過18個字，開頭要有具體錨點（畫面中看"
+            "問題必須念起來自然、溫和、不超過25個字，開頭要有具體錨點（畫面中看"
             "得到的物件、長者提到的具體人事物皆可）。"
             "絕對不在輸出中加任何括號說明或格式標記，也不用任何 markdown 語法。"
             "絕對不用是非題，也不問需要精確數字、年份、人名或地名的問題。"
@@ -4264,7 +4323,7 @@ class TherapyOrchestrator:
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
-            "問題必須念起來自然、溫和、不超過18個字，開頭要有具體錨點（畫面中看"
+            "問題必須念起來自然、溫和、不超過25個字，開頭要有具體錨點（畫面中看"
             "得到的物件、長者提到的具體人事物皆可）。"
             "絕對不在輸出中加任何括號說明或格式標記，也不用任何 markdown 語法。"
             "絕對不用是非題，也不問需要精確數字、年份、人名或地名的問題。"
@@ -4538,7 +4597,7 @@ class TherapyOrchestrator:
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
-            "問題必須念起來自然、溫和、不超過18個字，開頭要有具體錨點（畫面中看"
+            "問題必須念起來自然、溫和、不超過25個字，開頭要有具體錨點（畫面中看"
             "得到的物件、長者提到的具體人事物、或「那個時候」回指情境皆可）。"
             "絕對不在輸出中加任何括號說明或格式標記，也不用任何 markdown 語法。"
             "絕對不用是非題，也不問需要精確數字、年份、人名或地名的問題。"
