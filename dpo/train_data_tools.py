@@ -781,7 +781,6 @@ def cmd_fix_grief_a(args: argparse.Namespace) -> None:
 _TRACK_C_NEW_RULES = {
     "too_clinical", "over_dramatize", "give_advice", "compare_suffering",
     "false_positivity", "over_identify", "focus_on_loss", "dwell_on_taboo",
-    "argues_image_accuracy", "fabricates_elder_facts",
 }
 
 
@@ -818,21 +817,15 @@ def cmd_backfill_track_c_rules(args: argparse.Namespace) -> None:
     # taboos 就沒有禁忌可以示範追問，比照 Track B（generate_track_b）的
     # 同名判斷跳過，不要生出語意牽強的範例。
     #
-    # argues_image_accuracy 示範「長者主動糾正畫面跟記憶不符」，只有
-    # _IMAGE_MISMATCH_TONES（image_mismatch／image_mismatch_food／
-    # image_mismatch_era）這幾個情境的 chosen 內容本來就有畫面糾正的橋段可以
-    # 對照，其他情境的 chosen 裡沒有這段，硬生成會變成憑空編造糾正情節、
-    # 跟該情境原本的 chosen 對不上——比照 generate_track_c() 既有的同名過濾
-    # （collect_data.py:2783）。
-    #
-    # fabricates_elder_facts 沒有情境限制，任何 Track C 情境都適用，不用過濾。
+    # 2026-08-17：範圍收斂成「承接情緒」核心規則，只留這8條，不含
+    # argues_image_accuracy／fabricates_elder_facts（事實正確性/畫面糾正，
+    # 跟承接情緒是不同性質，已從 _TRACK_C_NEW_RULES 移除）。
     to_generate = [
         (tone, rule_name)
         for tone in ref_by_tone
         for rule_name in new_rules
         if (tone, rule_name) not in already_have
         and not (rule_name == "dwell_on_taboo" and not ref_by_tone[tone]["meta"].get("taboos"))
-        and not (rule_name == "argues_image_accuracy" and tone not in cd._IMAGE_MISMATCH_TONES)
     ]
 
     print(f"需要新生成的 (情境, 規則) 組合：{len(to_generate)} 筆")
