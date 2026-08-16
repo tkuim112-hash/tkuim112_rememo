@@ -174,17 +174,14 @@ _KNOWN_PROMPT_EXAMPLES = {
     "紡織廠的大門在黃昏的光線下顯得格外寧靜，工人們陸續走出廠門，往各自的方向散去。",
     "聽起來那段跟阿珠姐一起做工的日子很熱鬧呢。",
     "廟口的攤販剛擺出來，香氣混著人聲，好不熱鬧。",
-    # 2026-08稽核：_generate_image_reveal_reaction 自己的4類反應分類範例句
-    # （orchestrator.py，不是從question_5w1h.txt讀出來的，這裡原本沒涵蓋到）
-    # ——實測發現長者反應是「我覺得有像，但還是有點不一樣」（沒講具體哪裡
-    # 不一樣，照分類規則該是分類2）時，模型直接把分類3的範例句一字不漏
-    # 背出來當承接語，不是真的判斷內容後生成。這4句都是「用對應原則寫一句
-    # 承接語」任務裡給的範例，原理跟上面question_5w1h.txt那組完全一樣，
-    # 一併加進這份完全比對清單。
-    "對，就是這種感覺對不對，聽你這樣說，我更能懂當時的畫面了。",
-    "喔？哪裡不一樣呢，我很想知道你記憶中的樣子，可以多說一點。",
-    "這張圖確實沒辦法把每個細節都畫得剛剛好，聽你這樣說，你記得的畫面比圖裡的還要豐富。",
-    "這段回憶對你來說真的很重要，謝謝你願意跟我分享。",
+    # 2026-08-16稽核：_generate_image_reveal_reaction 自己的4類反應分類範例句
+    # （orchestrator.py）2026-08一度加進這份清單，但實測發現這條檢查會跟新
+    # 加的 judgment_evidence_unsupported 檢查搶同一份重試額度——長者反應
+    # 訊號很弱時，模型常常同時撞到「編造判斷依據」跟「照抄分類範例」兩條
+    # 規則，3次重試很容易被兩條規則輪流吃光，反而更常掉到完全通用的保底句。
+    # 使用者判斷「照抄範例」本身不是問題（承接語內容跟範例像，只要分類跟
+    # 判斷依據是根據長者這次實際說的話推出來的就好），比起「編造依據」是
+    # 更值得攔的問題，決定把這4句從清單移除，把重試額度留給後者。
 }
 
 
@@ -223,6 +220,42 @@ def is_generic_acknowledgment(scene_text: str) -> bool:
     if not scene_text:
         return False
     return any(p in scene_text for p in _GENERIC_ACK_PATTERNS)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 「判斷依據」欄位引用了長者沒說過的話
+# ══════════════════════════════════════════════════════════════════════
+#
+# _generate_image_reveal_reaction（orchestrator.py，2026-08-16稽核）要求LLM
+# 先在「判斷依據」欄位列出長者這句反應裡的具體線索，再據此分類、寫承接語
+# ——但實測發現本地弱模型在長者反應訊號很弱/很簡短時（例如長者只說「喔...
+# 嗯...是喔」這種語助詞），會直接編一句長者沒說過的話當依據（例如寫「長者
+# 只籠統說『不太一樣』」，但長者根本沒講過這幾個字），看起來像有在推理，
+# 實際上是套用範例模板／幻覺。這比原本「分類判斷不準」更隱蔽，因為分類
+# 欄位看起來有憑有據，容易被忽略。
+#
+# 判準：只檢查「判斷依據」裡有沒有用「」／『』引號直接引用的片段——沒加
+# 引號的依據可能是合理的語意摘要/改寫（例如「長者語氣中帶著想念」），不
+# 強制逐字比對，避免誤傷正常的改寫式依據；引號代表模型在宣稱「長者說過
+# 這句話」，這種宣稱才需要跟長者原話核對是否存在。
+_QUOTED_RE = re.compile(r"[「『][^」』]{2,}[」』]")
+_PUNCT_STRIP_RE = re.compile(r"[，。！？、\s「」『』]")
+
+
+def judgment_evidence_unsupported(evidence: str, elder_response: str) -> bool:
+    """True 代表「判斷依據」裡用引號引用的內容，長者這次的原話裡實際上
+    沒有出現，是編造出來的，需要重新生成。"""
+    if not evidence or not elder_response:
+        return False
+    quotes = _QUOTED_RE.findall(evidence)
+    if not quotes:
+        return False
+    normalized_response = _PUNCT_STRIP_RE.sub("", elder_response)
+    for quote in quotes:
+        normalized_quote = _PUNCT_STRIP_RE.sub("", quote)
+        if normalized_quote and normalized_quote not in normalized_response:
+            return True
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -631,6 +664,31 @@ async def guarded_generate(
                 "這種寫法，不要用套語帶過。"
             )
             # 這條規則查的正是承接語欄位本身，解鎖退回整包重新生成。
+            locked_fields = None
+            attempt += 1
+            continue
+
+        # 「判斷依據」欄位編造了長者沒說過的話（見 judgment_evidence_unsupported
+        # 上方註解）。只有 _generate_image_reveal_reaction 這類有「判斷依據」
+        # 欄位的 generate_fn 會觸發——其餘沒有這個 key，result.get 拿到空字串，
+        # 函式本身直接回 False，不受影響。
+        evidence_val = result.get("judgment_evidence", "")
+        elder_response_val = generate_kwargs.get("elder_response", "")
+        if judgment_evidence_unsupported(evidence_val, elder_response_val):
+            logger.warning(
+                f"[ResponseGuard] 判斷依據引用了長者沒說過的話: {evidence_val!r}"
+                f"（長者原話: {elder_response_val!r}），重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的「判斷依據」欄位寫「{evidence_val}」，但長者這次的原話是"
+                f"「{elder_response_val}」，裡面根本沒有這些內容——不能引用長者沒"
+                "說過的話當依據。這次請只根據長者這次實際說出的字詞判斷；如果長者"
+                "的反應內容很簡短、看不出明確的差異或情緒線索（例如只有語助詞、"
+                "簡短回應），判斷依據就老實寫「反應內容簡短，看不出明確線索」，"
+                "不要編造長者沒說過的話。"
+            )
+            # 判斷依據影響後面分類跟承接語的推理，不能排除是被鎖定的欄位造成，
+            # 解鎖退回整包重新生成。
             locked_fields = None
             attempt += 1
             continue

@@ -429,6 +429,14 @@ class SessionState(BaseModel):
     # 過渡句（見 orchestrator.py _start_scene_after_detail、
     # _generate_quick_end_recap）。同樣需要宣告在這裡才能透過 API 往返存活。
     pre_image_detail: str = ""
+    # 長者看完圖後反應被分類成「有差異但還沒具體講出哪裡不一樣」（分類2）
+    # 時，承接語本身就是追問「哪裡不一樣」的問題，這輪不接STEP1問題，
+    # state 留在 image_reveal 等長者先回答；這個欄位標記「已經追問過一次」，
+    # 避免長者第二次還是講得很籠統時無限追問下去（見 orchestrator.py
+    # process_response 的 image_reveal 分支）。跟上面其他欄位一樣，必須
+    # 宣告在這裡才能透過 API 往返存活，否則會被 FastAPI 驗證丟棄，導致
+    # 每次都判斷成「沒追問過」而無限循環。
+    image_reveal_deferred: bool = False
 
 
 class RespondRequest(BaseModel):

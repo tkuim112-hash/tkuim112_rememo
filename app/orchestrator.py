@@ -1869,6 +1869,7 @@ class TherapyOrchestrator:
                         "last_w_asked": "",
                         "question_count": 1,
                         "supplement_count": 0,
+                        "image_reveal_deferred": False,  # 見下面分類2分支的說明
                     }
                     return {
                         "action": "scene_ready",
@@ -1913,6 +1914,7 @@ class TherapyOrchestrator:
                     "last_w_asked": "",
                     "question_count": 1,
                     "supplement_count": 0,
+                    "image_reveal_deferred": False,  # 見下面分類2分支的說明
                 }
                 return {
                     "action": "scene_ready",
@@ -1920,6 +1922,7 @@ class TherapyOrchestrator:
                     "question": q["question"],
                     "state": new_state,
                 }
+            pre_image_detail = state.get("pre_image_detail", "")
             result = await guarded_generate(
                 self._generate_image_reveal_reaction,
                 taboo_words=user["taboos"],
@@ -1946,8 +1949,77 @@ class TherapyOrchestrator:
                 },
                 user=user, scene_elements=scene_els, elder_response=elder_response,
                 scene_composition=scene_comp, covered_w=covered_w,
-                pre_image_detail=state.get("pre_image_detail", ""), emotion=emotion,
+                pre_image_detail=pre_image_detail, emotion=emotion,
             )
+            print(f"  → 出示圖片反應分類: {result.get('classification', '')!r}"
+                  f"（依據: {result.get('judgment_evidence', '')!r}）")
+            # 2026-08-16稽核：分類2（有差異但長者還沒具體講出哪裡不一樣）的
+            # 承接語原則是「好奇追問哪裡不一樣」——承接語本身就是一句要長者
+            # 回答的問題。但下面的正常流程固定會在承接語後面接一句過渡句
+            # 「謝謝你跟我說這麼多」＋另一個完全不相關的STEP1新問題，導致
+            # 長者根本沒機會回答「哪裡不一樣」，就先被提前道謝、又被問了
+            # 別的問題（實測案例：長者說「還好」，AI回「可以多說說看嗎。
+            # 謝謝你跟我說這麼多...你們家阿公負責什麼？」）。
+            #
+            # 分類2這一輪改成只問「哪裡不一樣」，不接過渡句、不接STEP1問題，
+            # state 留在 image_reveal（不轉去 step1），下一輪長者回答「哪裡
+            # 不一樣」時會重新進到這個分支、用他的回答再分類一次——通常會
+            # 變成分類3（已經具體講出差異）或4（講出來變得有情緒），到那時
+            # 才真正接過渡句＋STEP1問題，順序就對了：長者先回答「哪裡不
+            # 一樣」→ 謝謝你跟我說這麼多 → STEP1問題（使用者2026-08-16確認
+            # 要的順序）。
+            #
+            # image_reveal_deferred 只擋一次：避免長者第二次還是講得很籠統
+            # （分類又是2）時無限追問下去——第二次不管分類結果是什麼，都
+            # 一律往下走正常流程，把這輪當作已經問過一次「哪裡不一樣」結束。
+            # 這個欄位必須宣告在 routers/session.py 的 SessionState pydantic
+            # model 裡才能透過 API 往返存活，否則會被 FastAPI 驗證silently
+            # 丟棄，導致每次都判斷成「沒追問過」而無限循環（session.py 裡
+            # question_count/pre_image_q1_answer 等欄位都因為漏宣告踩過同一個
+            # 坑，見那些欄位上方的說明）。
+            if result.get("classification") == "2" and not state.get("image_reveal_deferred"):
+                print(f"  → 分類2：承接語本身是問題，先問「哪裡不一樣」，"
+                      f"暫不接STEP1問題: {result['reaction_text']!r}")
+                new_state = {
+                    **state,
+                    "last_question_type": "image_reveal",
+                    "image_reveal_deferred": True,
+                }
+                return {
+                    "action": "image_reveal_followup",
+                    "scene_text": "",
+                    "question": result["reaction_text"],
+                    "state": new_state,
+                }
+            # 2026-08-16稽核：上面那層連續3次都違規（例如照抄範例、編造判斷
+            # 依據）會退回完全通用的固定保底句，跟長者剛才說的話完全無關——
+            # 但如果生圖前的Q1/Q2（pre_image_detail）其實有實質內容，不該就
+            # 這樣浪費掉。這裡改用跟上面 quick_end 分支同一支
+            # _generate_quick_end_recap 當第二層保底：那支函式任務更單純
+            # （只呼應pre_image_detail+問STEP1，不用再賭一次4類分類），成功
+            # 機率比再重試一次完整的分類任務高，退回的內容至少還貼著長者剛才
+            # 講過的東西，好過完全通用的「{畫面元素}，讓你想到什麼？」。
+            # reaction_text 判斷式空字串只有 guarded_generate 真的退回上面那組
+            # fallback 才會發生（_parse_image_reveal_response 保證正常解析出
+            # 的 reaction_text 一定非空，見該函式保底句說明），可以用來判斷
+            # 第一層是否真的落到保底。
+            if not result["reaction_text"] and pre_image_detail:
+                print("  → 出示圖片承接連續違規、已退回第一層保底，"
+                      "改用pre_image_detail呼應當第二層保底")
+                result = await guarded_generate(
+                    self._generate_quick_end_recap,
+                    taboo_words=user["taboos"],
+                    llm_service=self.llm,
+                    max_retry=3,
+                    text_keys=("reaction_text", "question"),
+                    fallback={
+                        "reaction_text": _IMAGE_REVEAL_QUICK_END_ACK,
+                        "question": f"{scene_els[0]}，讓你想到什麼？" if scene_els else _FALLBACK_QUESTION,
+                        "covered_w": [],
+                    },
+                    user=user, scene_elements=scene_els, pre_image_detail=pre_image_detail,
+                    scene_composition=scene_comp, covered_w=covered_w, emotion=emotion,
+                )
             print(f"  → 出示圖片承接: {result['reaction_text']}｜STEP1問題: {result['question']}"
                   f"（自報W: {result.get('covered_w', [])}，不採信，見上方covered_w說明）")
             # covered_w 刻意維持不變——理由同上面兩條STEP1路徑。
@@ -1959,6 +2031,11 @@ class TherapyOrchestrator:
                 "last_w_asked": "",
                 "question_count": 1,  # STEP1 開場問題算本回合第 1 題（出示圖片那題不算）
                 "supplement_count": 0,
+                # 重置回 False：不管這輪是分類2追問過一次後走到這裡、還是
+                # 一開始就不是分類2，進了STEP1都代表這次image_reveal已經
+                # 結束，下次（下一回合）重新出示圖片時不該繼承這次的追問
+                # 記錄，見上面 image_reveal_deferred 的說明。
+                "image_reveal_deferred": False,
             }
             return {
                 "action": "scene_ready",
@@ -3440,7 +3517,12 @@ class TherapyOrchestrator:
           4. 長者明顯被觸動、感動 → 直接承接這份情緒，不急著轉開話題
 
         承接語之後固定接 _IMAGE_REVEAL_TRANSITION（見該常數說明，不是 LLM
-        生成，呼叫端組裝），再由這裡生成的 question 帶進 STEP1 開場問題。
+        生成，呼叫端組裝），再由這裡生成的 question 帶進 STEP1 開場問題——
+        但只有分類1/3/4適用這個順序。分類2（好奇追問哪裡不一樣）的承接語
+        本身就是要長者回答的問題，呼叫端（process_response 的 image_reveal
+        分支）會攔下來，這一輪只問承接語本身、不接過渡句也不接這裡生成的
+        question，等長者回答完「哪裡不一樣」才真正接過渡句＋STEP1問題，
+        見該分支 2026-08-16 稽核說明與 image_reveal_deferred 欄位。
 
         故意不用 scene_text 當 key（沿用 closing_text/emotional_text 的既有
         模式）：承接語本來就要直接對長者說話、會用到「你」，用專屬 key 名稱
@@ -3476,6 +3558,36 @@ class TherapyOrchestrator:
         可行：檔案本身描述的是STEP1/STEP2/STEP3各自的格式，跟這裡實際要
         產出的格式不完全一樣沒關係，user_content自己的【輸出格式】欄位
         會蓋過去，跟STEP3同一個模式。
+
+        2026-08-16稽核：4類分類判斷不準，改成先列「判斷依據」再輸出「分類」
+        數字、最後才寫「承接語」（跟本檔其他地方用「證據式核對」取代小模型
+        直接下整體判斷的模式一致，見 _has_usable_detail、_decide_topic_
+        continuation 稽核筆記——8B量化基底模型對整體判斷穩定漏判/誤判，
+        改成逐項列證據後才穩定下來）。
+        原本分類完全隱含在承接語的措辭裡，沒有獨立欄位，出錯時無從得知
+        模型是分類錯還是措辭沒依照分類寫；現在拆出可解析、可記錄的欄位，
+        且強迫模型先講出線索再下結論，同一次呼叫內完成，不額外增加一次
+        LLM 呼叫延遲。「判斷依據」「分類」目前只用來記錄／除錯，不影響
+        後續流程（承接語才是真正念給長者聽的內容），parser 見
+        _parse_image_reveal_response。
+
+        2026-08-16稽核（第二次，實測後補）：本機基底模型（未經DPO）實測
+        6例，只有1例真的輸出「判斷依據／分類」這兩個新欄位，其餘5例都
+        跳過、改用模型自己習慣的「思考：」自由格式開頭——代表它有先推理
+        的傾向，但沒對齊我們要的欄位名稱；還有一例把分類4的例句整句原封
+        不動照抄，違反下面的「不可照抄」規則。补上一組完整的【範例】區塊
+        （用跟本次任務無關的情境示範判斷依據/分類/承接語/問題四欄位一起
+        長什麼樣子），具體示範通常比純文字規則更能提高本地小模型的格式
+        遵循度；範例情境刻意跟任何真實場景不同，降低被照抄整句的風險。
+
+        2026-08-16稽核（第三次，實測後補）：長者說「還好」這種簡短/籠統的
+        反應時，模型會生成「喔，『還好』是嗎，你記得的畫面跟這張有點不同，
+        可以多說說看嗎。」這種把長者原話用引號複述、後面接反問語尾的句子
+        ——中文語境下這樣講聽起來像是在調侃/質疑長者，不是溫暖承接。追查
+        後發現源頭是【範例】1原本示範的承接語就是「喔，是嗎，...」這個
+        開頭，模型照樣套用、把長者的原話填進引號裡。改掉範例1的措辭，並
+        在【範例】區塊後面明文加一條規則禁止這種「引號複述＋反問語尾」的
+        寫法。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -3502,7 +3614,10 @@ class TherapyOrchestrator:
             f"\n【禁忌話題（絕對不可提及）】\n{taboo_str}\n"
             f"\n【任務】\n"
             f"長者剛看完AI依據他先前說的內容生成的一張示意圖，說出了他的第一"
-            f"反應。請先判斷這句反應屬於下面哪一種，用對應的原則寫一句承接語：\n"
+            f"反應。請先具體列出這句反應裡有哪些線索（例如：出現「對/沒錯/"
+            f"就是這樣」這類肯定詞、或「不像/不一樣/有點不同」這類籠統差異"
+            f"詞、或位置/顏色/擺設等具體細節詞、或明顯的情緒字眼），再依這些"
+            f"線索判斷屬於下面哪一種，最後用對應的原則寫一句承接語：\n"
             f"1. 覺得圖跟自己記得的一致 → 肯定的語氣呼應，例如「對，就是這種"
             f"感覺對不對，聽你這樣說，我更能懂當時的畫面了。」\n"
             f"2. 覺得圖跟自己記得的不一樣，但還沒具體講出是哪裡不一樣（只"
@@ -3519,19 +3634,52 @@ class TherapyOrchestrator:
             f"好，聽你這樣說，你記得的畫面比圖裡的還要豐富。」\n"
             f"4. 明顯被圖片觸動、感動 → 直接承接這份情緒，不急著轉開話題，"
             f"例如「這段回憶對你來說真的很重要，謝謝你願意跟我分享。」\n"
-            f"（以上4句都只是示範語氣用的例句，不是可以直接照抄的答案——"
-            f"這次的承接語必須根據長者這次實際說的反應內容重新寫，禁止把"
-            f"上面任何一句原封不動搬過來用。）\n"
+            f"\n【範例】（跟這次任務完全無關的另一組情境，只是示範輸出格式"
+            f"長什麼樣子——判斷依據/分類/承接語/問題都要照這個順序、這個"
+            f"欄位名稱輸出）\n"
+            f"範例1（眼前畫面元素：稻田、扁擔、斗笠；長者反應：「這個好像跟"
+            f"我印象不太一樣」）\n"
+            f"判斷依據：長者只籠統說「不太一樣」，沒有講出是哪裡不同。\n"
+            f"分類：2\n"
+            f"承接語：你記得的畫面好像跟這張有點不一樣，我很想知道是哪裡"
+            f"不同，可以多說一點嗎。\n"
+            f"問題：扁擔挑的稻穀通常要挑去哪裡？\n"
+            f"本回合已涵蓋的W：無\n"
+            f"範例2（眼前畫面元素：大灶、柴火、老收音機；長者反應：「阿嬤"
+            f"以前常在灶前聽收音機，看到這個我好想她」）\n"
+            f"判斷依據：長者提到已故的阿嬤，語氣裡有明顯的想念與情緒。\n"
+            f"分類：4\n"
+            f"承接語：聽你這樣說，感覺阿嬤陪你的那些時光都還在心裡。\n"
+            f"問題：阿嬤常聽的收音機節目是什麼？\n"
+            f"本回合已涵蓋的W：無\n"
+            f"（以上4句分類例句跟上面2個範例的所有內容——判斷依據、承接語、"
+            f"問題——都只是示範語氣跟格式用，情境也跟這次任務無關，不是可以"
+            f"直接照抄的答案。這次的判斷依據、承接語、問題必須根據長者這次"
+            f"實際說的反應內容跟【眼前畫面元素】重新寫，禁止把上面任何一句"
+            f"原封不動搬過來用。）\n"
+            f"承接語絕對不要把長者剛才說的原話用「」引號整段複述出來、後面"
+            f"接「是嗎」「呢」這種反問語尾（例如「你剛才說『還好』是嗎」）"
+            f"——長者的反應如果本來就簡短、籠統（例如「還好」「沒有」），"
+            f"這樣把他的話原句引用再反問，聽起來會像是在質疑或調侃長者，"
+            f"不是溫暖的承接。要具體呼應時，改用自己的話轉述長者的意思"
+            f"（例如「聽起來你覺得還好，不算特別不一樣」），不要用引號原句"
+            f"複述。\n"
             f"承接語只要1-2句、30字以內。承接語之後，緊接著問長者一個新問題"
             f"——依【STEP2自由追問／STEP3補問：生成流程】的選角度、選錨點方式"
             f"生成（先依五個切入角度優先順序選方向，再從【眼前畫面元素】或"
             f"【長者生圖前分享的內容】裡找一個能撐起這個角度的具體人事物當"
             f"錨點，接不上就換角度重選，不要硬套）。若上面列出【已涵蓋的W"
             f"維度】，這些方向長者剛才在生圖前的訪談裡已經自然講過了，這題"
-            f"不要重複問同一個方向。\n"
+            f"不要重複問同一個方向。另外，如果【長者看完圖後的第一反應】裡"
+            f"長者已經主動講出某個人事物的具體細節（例如位置、顏色、數量），"
+            f"這題不要再問同一個細節（例如長者剛說「柚子樹在門口左邊」，"
+            f"就不要再問「柚子樹在哪裡」），換一個角度、或換一個錨點問。\n"
             f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
-            f"承接語：（1-2句，30字以內，依上面4種分類擇一）\n"
+            f"判斷依據：（一句話列出你在長者這句反應裡看到的具體線索，不要空泛"
+            f"帶過）\n"
+            f"分類：（只能填1、2、3、4其中一個數字，對應上面4種分類）\n"
+            f"承接語：（1-2句，30字以內，依上面判斷依據與分類撰寫）\n"
             f"問題：（≤18字，開放式，開頭要有具體錨點，畫面物件或長者生圖前分享的"
             f"內容皆可）\n"
             f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個"
@@ -3739,14 +3887,33 @@ class TherapyOrchestrator:
     def _parse_image_reveal_response(
         self, raw: str, scene_elements: list[str] | None = None,
     ) -> dict:
-        """解析 _generate_image_reveal_reaction 的輸出（承接語＋問題＋涵蓋的W）。"""
-        result: dict = {"reaction_text": "", "question": "", "covered_w": []}
+        """
+        解析 _generate_image_reveal_reaction 的輸出（判斷依據＋分類＋承接語＋
+        問題＋涵蓋的W）。
+
+        judgment_evidence/classification 是2026-08-16新增的除錯／記錄欄位
+        （見 _generate_image_reveal_reaction 該次稽核說明），只有前者的輸出
+        會有這兩個欄位；_generate_quick_end_recap 沒有分類任務、不會產生
+        這兩個欄位，共用這支 parser 時保持空字串即可，不影響它原本的行為。
+        classification 只取開頭的1個數字字元，LLM若多寫了說明文字一併丟棄，
+        找不到數字就保留原始字串以便從log看出是哪裡解析失敗。
+        """
+        result: dict = {
+            "judgment_evidence": "", "classification": "",
+            "reaction_text": "", "question": "", "covered_w": [],
+        }
         current_field: str | None = None
         for line in raw.splitlines():
             line = line.strip()
             if not line:
                 continue
-            if line.startswith("承接語："):
+            if line.startswith("判斷依據："):
+                result["judgment_evidence"] = line[len("判斷依據："):].strip()
+                current_field = "judgment_evidence"
+            elif line.startswith("分類："):
+                result["classification"] = line[len("分類："):].strip()
+                current_field = "classification"
+            elif line.startswith("承接語："):
                 result["reaction_text"] = line[len("承接語："):].strip()
                 current_field = "reaction_text"
             elif line.startswith("問題："):
@@ -3760,10 +3927,15 @@ class TherapyOrchestrator:
                     if w.strip()
                 ]
                 current_field = None
+            elif current_field == "judgment_evidence":
+                result["judgment_evidence"] = f"{result['judgment_evidence']} {line}".strip()
             elif current_field == "reaction_text":
                 result["reaction_text"] = f"{result['reaction_text']} {line}".strip()
             elif current_field == "question":
                 result["question"] = f"{result['question']} {line}".strip()
+        digit_match = re.search(r"[1-4]", result["classification"])
+        if digit_match:
+            result["classification"] = digit_match.group()
         if not result["question"]:
             result["question"] = raw.strip()
         for key in ("reaction_text", "question"):
