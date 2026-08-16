@@ -39,6 +39,10 @@ WORKDIR /workspace/BlueMagpie-TTS
 RUN pip install -e ".[train]" --no-cache-dir || \
     pip install -e . --no-cache-dir
 RUN pip install soundfile huggingface_hub fastapi uvicorn python-multipart --no-cache-dir
+RUN apt-get update -y && apt-get install -y rubberband-cli && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN pip install pyrubberband --no-cache-dir
+# speechbrain：供 extract_speaker_centroid 使用（avg_centroid.py）
+RUN pip install -e ".[clone]" --no-cache-dir || pip install speechbrain --no-cache-dir
 
 # ── 複製 API server ─────────────────────────────────────────
 COPY server.py /workspace/server.py
