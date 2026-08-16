@@ -44,9 +44,6 @@ public class GameController : MonoBehaviour
     public int sampleRate = 16000;
     public int maxRecordSeconds = 60;
 
-    [Header("逐字動畫")]
-    public float charInterval = 0.03f;
-
     private string[] roundNames = { "第一回合", "第二回合", "第三回合" };
     private string placeholderText = "想到什麼就說什麼，按下麥克風可以用說的…";
 
@@ -69,7 +66,6 @@ public class GameController : MonoBehaviour
     private readonly Queue<string> incomingMessages = new Queue<string>();
     private readonly object queueLock = new object();
     private string displayedText = "";
-    private Coroutine typingCoroutine;
 
     private bool UseKinect => kinectAudioSender != null;
 
@@ -143,7 +139,6 @@ public class GameController : MonoBehaviour
     {
         CancelReactionTimeout();
         isRecording = true;
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         displayedText = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -189,13 +184,20 @@ public class GameController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
-        OnSttFinal();
+        // 逾時前都沒收到任何 transcript 訊息，displayedText 還是空的：代表整段
+        // 錄音沒辨識到任何內容，見 OnSttFinal 的 noSpeechRecognized 說明。
+        OnSttFinal(noSpeechRecognized: string.IsNullOrEmpty(displayedText));
     }
 
-    void OnSttFinal()
+    void OnSttFinal(bool noSpeechRecognized = false)
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
+        // 沒辨識到任何內容時，把卡住的「辨識中...」換成「辨識完成」，不要留著
+        // 讓長者/治療師誤以為還在辨識；真的有辨識到文字的情況完全不動這裡，
+        // 文字框已經在 HandleSTTMessage 被實際辨識結果蓋過了。
+        if (noSpeechRecognized)
+            inputText.text = "辨識完成";
         RefreshSubmitButton();
     }
 
@@ -304,12 +306,17 @@ public class GameController : MonoBehaviour
         }
 
         if (msg.type != "transcript") return;
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-        typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
+        bool hasText = !string.IsNullOrWhiteSpace(msg.text);
+        if (hasText)
+        {
+            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+            inputText.text = msg.text;
+            displayedText  = msg.text;
+        }
         if (msg.isFinal)
         {
-            OnSttFinal();
-            if (!string.IsNullOrWhiteSpace(msg.text))
+            OnSttFinal(noSpeechRecognized: !hasText);
+            if (hasText)
                 StartCoroutine(PostTranscript(msg.text));
         }
     }
@@ -325,26 +332,6 @@ public class GameController : MonoBehaviour
         yield return req.SendWebRequest();
         if (req.result != UnityWebRequest.Result.Success)
             Debug.LogWarning($"[Transcript] POST 失敗: {req.error}");
-    }
-
-    IEnumerator TypeCharByChar(string target)
-    {
-        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-        if (target.StartsWith(displayedText))
-        {
-            for (int i = displayedText.Length; i <= target.Length; i++)
-            {
-                string partial = target.Substring(0, i);
-                inputText.text = partial;
-                displayedText  = partial;
-                yield return new WaitForSeconds(charInterval);
-            }
-        }
-        else
-        {
-            inputText.text = target;
-            displayedText  = target;
-        }
     }
 
     void ResetInputText()
@@ -570,7 +557,6 @@ public class GameController : MonoBehaviour
     {
         isSubmitting = true;
         RefreshSubmitButton();
-        if (typingCoroutine != null) { StopCoroutine(typingCoroutine); typingCoroutine = null; }
         ResetInputText();
         aiText.gameObject.SetActive(false);
         loadingSpinner.SetActive(true);

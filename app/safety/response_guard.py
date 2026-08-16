@@ -356,9 +356,9 @@ def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] |
     combined = f"{scene_text or ''}{q}"
 
     length = len(_FORMAT_PUNCT_RE.sub("", q))
-    if length > 20:
+    if length > 30:
         return "too_long", (
-            f"上一次的問題「{q}」共{length}字，超過20字上限。這次請把這句話縮短到20字以內，"
+            f"上一次的問題「{q}」共{length}字，超過30字上限。這次請把這句話縮短到30字以內，"
             "可以拿掉不影響意思的修飾詞。"
         )
 

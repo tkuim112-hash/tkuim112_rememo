@@ -91,6 +91,22 @@ async def _get_session_topic(r, session_id: str) -> str | None:
     return json.loads(meta_raw).get("topic") or None
 
 
+async def _cache_round_carryover(r, session_id: str, round_number: int, data: dict) -> None:
+    """round 1/2 結束時，把下一回合開場（round 2/3）需要承接的內容存進 Redis
+    （見 orchestrator.py start_round 對 carryover 參數的說明）——前端在回合
+    邊界不會把 state 傳回來（Unity StartRound 呼叫 /session/round 不帶
+    state），只能由後端自己記住上一回合結束時的內容。"""
+    await r.set(
+        f"session:{session_id}:round{round_number}_carryover",
+        json.dumps(data, ensure_ascii=False), ex=86400,
+    )
+
+
+async def _get_round_carryover(r, session_id: str, round_number: int) -> dict | None:
+    raw = await r.get(f"session:{session_id}:round{round_number}_carryover")
+    return json.loads(raw) if raw else None
+
+
 async def _update_live_view(r, session_id: str, **fields) -> None:
     """把場景/長者回應/AI建議寫進 metrics hash，供治療師 live 頁每 2 秒 polling。"""
     try:
@@ -609,16 +625,26 @@ async def session_round(
     """
     orchestrator = request.app.state.orchestrator
     try:
-        topic_override = await _get_session_topic(request.app.state.redis, session_id)
+        r = request.app.state.redis
+        topic_override = await _get_session_topic(r, session_id)
+        # round 2/3 開場需要承接上一回合結束時的內容（round 1 的畫面元素／
+        # 話題、或 round 2 最後一句話），見 orchestrator.py start_round 說明。
+        carryover = (
+            await _get_round_carryover(r, session_id, round_number - 1)
+            if round_number in (2, 3) else None
+        )
         result = await orchestrator.start_round(
             user_id=user_id,
             session_id=session_id,
             round_number=round_number,
             topic_override=topic_override,
+            carryover=carryover,
         )
         result["state"]["question_number"] = 1
         result["state"]["question_asked_at"] = int(time.time() * 1000)
-        if result.get("question"):
+        # 第二、三回合不生圖也不合成語音（STT 仍照常），見這次改動需求：
+        # 第二回合自由追問、第三回合 closing 都只靠畫面文字＋長者口說回應。
+        if result.get("question") and round_number not in (2, 3):
             tts = request.app.state.tts_service
             scene_audio_path = None
             if result.get("scene_text"):
@@ -1066,6 +1092,19 @@ async def session_respond(
                     f"session:{body.state.session_id}:closing_asked_at",
                     str(int(time.time() * 1000)), ex=3600,
                 )
+            if result.get("action") == "end_round" and body.state.round in (1, 2):
+                # round 2/3 開場需要承接這裡：round 1 結束時記畫面元素／話題／
+                # 生圖前訪談內容＋這句話，round 2 結束時只需要這句話（round 3
+                # 的 closing 不需要畫面），見 orchestrator.py start_round 說明。
+                carryover = {"last_elder_response": body.elder_response, "emotion": emotion}
+                if body.state.round == 1:
+                    carryover.update({
+                        "scene_elements": body.state.scene_elements,
+                        "scene_composition": body.state.scene_composition,
+                        "pre_image_detail": body.state.pre_image_detail,
+                        "topic_category": body.state.topic_category,
+                    })
+                await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
 
         if result.get("question"):
             # state 不是 None 代表回合還在繼續（open_followup / ask_supplement_w），
@@ -1073,25 +1112,29 @@ async def session_respond(
             # state 是 None 代表 end_round/end_session，問題本身留給下一回合開場或
             # /session/{id}/closing 處理，這裡只負責播音檔。
             next_qn = body.state.question_number + 1
-            tts = request.app.state.tts_service
-            if result.get("scene_text"):
-                scene_audio_path = await _synthesize_safe(
+            # 第二回合（自由追問）全程不合成語音，STT 仍照常。第三回合的唯一
+            # 一題在 /session/round 開場就問完了，這裡只會是 end_session 時
+            # 「心得」那題（既有機制，這次刻意不變），所以不用在這裡另外排除。
+            if body.state.round != 2:
+                tts = request.app.state.tts_service
+                if result.get("scene_text"):
+                    scene_audio_path = await _synthesize_safe(
+                        tts,
+                        text=result["scene_text"],
+                        session_id=body.state.session_id,
+                        round_number=body.state.round,
+                        turn_number=None,
+                    )
+                    result["scene_audio_path"] = scene_audio_path
+                question_audio_path = await _synthesize_safe(
                     tts,
-                    text=result["scene_text"],
+                    text=result["question"],
                     session_id=body.state.session_id,
                     round_number=body.state.round,
-                    turn_number=None,
+                    turn_number=next_qn if result.get("state") is not None else None,
                 )
-                result["scene_audio_path"] = scene_audio_path
-            question_audio_path = await _synthesize_safe(
-                tts,
-                text=result["question"],
-                session_id=body.state.session_id,
-                round_number=body.state.round,
-                turn_number=next_qn if result.get("state") is not None else None,
-            )
-            result["question_audio_path"] = question_audio_path
-            result["audio_path"] = question_audio_path  # 向下相容
+                result["question_audio_path"] = question_audio_path
+                result["audio_path"] = question_audio_path  # 向下相容
             await _update_live_view(
                 request.app.state.redis, body.state.session_id,
                 current_scene=result.get("scene_text", "") + result["question"],
