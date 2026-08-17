@@ -205,6 +205,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
          {/* 操作建議 */}
          <div className="bg-[#f9fafb] rounded-xl p-3 md:p-3 lg:p-6 xl:p-8 flex flex-col gap-2 md:gap-2 lg:gap-4 xl:gap-5">
            <h3 className="text-[15px] md:text-[18px] lg:text-[20px] font-medium text-[#0a0a0a]">操作建議</h3>
+           <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">療程進行中可參考以下建議：</p>
            <div className="flex flex-col gap-2 lg:gap-3 xl:gap-4">
              <div className="bg-white border border-[#e5e7eb] rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 text-[13px] md:text-[14px] lg:text-[16px] font-medium text-[#0a0a0a]">
                反應時間超過 8 秒，請把題目唸一次給長者聽，或口述說明題意
