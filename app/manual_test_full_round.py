@@ -14,12 +14,13 @@ _append_session_topic）這裡改用本地變數頂替，組法照抄該檔
 session_respond 對 action=="end_round"/"end_session" 的處理。
 
 三回合跑完後接著跑心得環節（app/services/closing_templates.py：
-build_closing_invitation → 長者回答 → build_closing_message），跟正式部署
-行為一致，全程只用LLM，不生圖。
+build_closing_invitation 產生的收尾語已經呼應過回合3的回答、接系統整合肯定
+與感謝語，長者對這句開場邀請語的回答只記錄不再另外生成收尾訊息），跟正式
+部署行為一致，全程只用LLM，不生圖。
 
 用法：在 app/ 目錄下執行 `python manual_test_full_round.py`，每一題會印出
 scene_text/question，接著在終端機手動輸入「長者」的回答，Enter 空白代表
-長者沒回應（沉默逾時）。全部跑完（心得環節收尾語印出後）自動停止。
+長者沒回應（沉默逾時）。全部跑完（心得環節問完最後一題並記錄回答後）自動停止。
 """
 import os
 import sys
@@ -38,7 +39,7 @@ import asyncio
 from config import settings
 from services.llm import LLMService
 from services.image import OpenAIImageService
-from services.closing_templates import build_closing_invitation, build_closing_message
+from services.closing_templates import build_closing_invitation
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator, _NO_RESPONSE_MARKER
 
@@ -144,6 +145,7 @@ async def main() -> None:
     try:
         topics: list[str] = []
         carryover: dict | None = None
+        round3_response = ""
 
         for round_number in (1, 2, 3):
             result, last_state, last_elder_response = await run_round(
@@ -166,24 +168,23 @@ async def main() -> None:
                     topics.append(last_state["topic_category"])
 
             if action == "end_session":
+                round3_response = last_elder_response
                 break
 
         # 三回合結束，接心得環節（見 app/services/closing_templates.py，
         # app/routers/session.py session_respond 對 end_session 的處理）。
+        # 收尾語呼應長者剛才在回合3的回答，emotion 這裡沒有 Kinect 資料，傳空值。
         print("\n=== 心得環節 ===")
-        invitation = build_closing_invitation(topics)
+        invitation = await build_closing_invitation(topics, round3_response, "", llm)
         if invitation["scene_text"]:
             print(f"[場景/承接語] {invitation['scene_text']}")
+        if invitation["thanks_text"]:
+            print(f"[感謝語] {invitation['thanks_text']}")
         print(f"[問題] {invitation['question']}")
-        # 心得環節不經過 orchestrator.process_response，_NO_RESPONSE_MARKER
-        # 只有 orchestrator 內部認得，這裡沒回應要傳空字串給
-        # classify_closing_response 才會正確判成 thin_or_silent。
-        closing_response = input("\n長者回答（直接 Enter 表示沒回應）：").strip()
-        closing_message = await build_closing_message(
-            text=closing_response, emotion="", topics=topics, llm_service=llm,
-        )
-        print(f"[收尾語] {closing_message}")
-
+        # 承接語＋系統整合肯定＋感謝語已經在上面的開場邀請語呼應過回合3的回答了
+        # （見 build_closing_invitation），長者這題的回答只需要記錄，不再另外
+        # 生成第二段收尾訊息（見 app/routers/session.py session_closing 說明）。
+        input("\n長者回答（直接 Enter 表示沒回應）：").strip()
         print("\n=== 療程全部結束 ===")
     finally:
         await llm.close()
