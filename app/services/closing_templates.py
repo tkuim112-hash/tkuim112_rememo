@@ -142,21 +142,58 @@ async def _detect_system_complaint(text: str, llm_service) -> str | None:
 
     回傳 SYSTEM_COMPLAINT_RECEIVING_PHRASES 的其中一個 key，或 None（不是
     在抱怨系統）。
+
+    2026-08-17稽核（實測後補）：原本直接叫模型「選一類或回NONE」，是整段
+    一次性下結論的判斷模式——跟 orchestrator.py 好幾處稽核筆記記錄過的同一種
+    本地量化基底模型不穩定模式一樣（見 _detect_covered_w／_check_w_answered
+    等函式說明：「整體判斷小模型會穩定漏判/誤判，改逐項列證據才穩定」）。
+    實測案例：長者說「我覺得我彷彿回到了那個時候」——單純在描述沉浸在回憶
+    裡的正向感受，被誤判成「想找真人」，接了「不好意思，沒能讓你覺得像在跟
+    真人聊天」這種完全答非所問的道歉語。改成先要求引用長者原話裡的具體證據
+    再分類，且核對引用的證據是不是真的出現在長者原話裡（judgment_evidence_
+    unsupported 同一套防線）——沒有證據支持，或證據是編造的，一律當NONE，
+    不採信分類結果。
     """
     prompt = (
         f"長者剛才回答「現在心裡是什麼感覺」這個問題，他說：「{text}」\n\n"
-        "請判斷這句話是不是在抱怨/不滿這套陪伴系統或AI本身，而不是在回答"
-        "問題本身的內容，分成以下四類，選最貼近的一種：\n"
+        "請先判斷這句話裡有沒有實際出現「抱怨/不滿這套陪伴系統或AI本身」的"
+        "具體字詞或語氣——不是長者在描述回憶內容、也不是單純敘述自己的感受"
+        "（即使提到「像/彷彿/感覺」這類詞，只要語意上是在講回憶或情緒本身，"
+        "不算）。如果真的有，逐字引用長者原話裡的證據；如果沒有，證據欄位"
+        "就寫「找不到」，不要為了湊出證據硬找不相關的字詞。\n"
+        "分類請依上面找到的證據，分成以下四類，選最貼近的一種：\n"
         "一般不耐煩：對這個過程/流程感到不耐煩、厭煩、想結束\n"
         "質疑AI不信任：質疑AI聽不懂他、AI不是真的懂他、不相信AI\n"
-        "想找真人：想找真人聊、覺得AI不是人、想要真人陪伴\n"
+        "想找真人：明確表示想找真人聊、覺得AI不是人、想要真人陪伴\n"
         "覺得沒意義沒用：覺得這整件事沒有用、沒意義、沒幫助\n"
-        "如果都不是（長者是在正常回答自己的感受或回憶），回NONE。\n"
-        "只回「一般不耐煩」「質疑AI不信任」「想找真人」「覺得沒意義沒用」"
-        "其中一個詞，或「NONE」，不要其他文字。"
+        "如果證據欄位是「找不到」，分類一律回NONE。\n"
+        "輸出格式（兩行都要輸出）：\n"
+        "證據：（逐字引用長者原話裡的具體字詞，或「找不到」）\n"
+        "分類：（一般不耐煩／質疑AI不信任／想找真人／覺得沒意義沒用／NONE"
+        "其中一個，不要其他文字）"
     )
     raw = (await llm_service.ask(prompt, temperature=0)).strip()
-    return raw if raw in SYSTEM_COMPLAINT_RECEIVING_PHRASES else None
+    evidence = ""
+    classification = ""
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("證據："):
+            evidence = line[len("證據："):].strip()
+        elif line.startswith("分類："):
+            classification = line[len("分類："):].strip()
+    if not classification:
+        # 模型沒照格式輸出兩行時，退回舊版寬鬆比對，直接看整段輸出裡有沒有
+        # 剛好等於某個分類key的內容——比完全解析失敗、直接當NONE安全一點。
+        classification = raw
+    if classification not in SYSTEM_COMPLAINT_RECEIVING_PHRASES:
+        return None
+    # 證據核對：引用的內容必須真的出現在長者原話裡，跟 response_guard.py
+    # 的 judgment_evidence_unsupported 同一套防線，防止模型分類選對格式、
+    # 但證據本身是編造的（先講出正確證據、卻選錯分類，或反過來，都是這個
+    # 本地模型已知會犯的錯誤模式）。
+    if not evidence or evidence == "找不到" or evidence not in text:
+        return None
+    return classification
 
 
 async def classify_closing_response(

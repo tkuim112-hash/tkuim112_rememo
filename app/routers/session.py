@@ -463,14 +463,36 @@ class SessionState(BaseModel):
     # 過渡句（見 orchestrator.py _start_scene_after_detail、
     # _generate_quick_end_recap）。同樣需要宣告在這裡才能透過 API 往返存活。
     pre_image_detail: str = ""
-    # 長者看完圖後反應被分類成「有差異但還沒具體講出哪裡不一樣」（分類2）
-    # 時，承接語本身就是追問「哪裡不一樣」的問題，這輪不接STEP1問題，
-    # state 留在 image_reveal 等長者先回答；這個欄位標記「已經追問過一次」，
-    # 避免長者第二次還是講得很籠統時無限追問下去（見 orchestrator.py
-    # process_response 的 image_reveal 分支）。跟上面其他欄位一樣，必須
-    # 宣告在這裡才能透過 API 往返存活，否則會被 FastAPI 驗證丟棄，導致
-    # 每次都判斷成「沒追問過」而無限循環。
-    image_reveal_deferred: bool = False
+    # round 1 結束時已經自然涵蓋的 W 維度，round 2 開場用來排除補問候選、
+    # 避免重複問長者上一回合已經明確答過的事實（見 orchestrator.py
+    # _start_round2_free_followup 的 known_facts_w 說明）。2026-08-17稽核
+    # （實測後補）：這個欄位當初漏宣告在這裡——只在 manual_test_full_round.py
+    # （不走這個 pydantic model，直接傳裸 dict）測試時有效，透過正式 API
+    # 其實從一開始就被 FastAPI 驗證悄悄丟棄，round 2 一直沒真的用上，是跟
+    # 上面這幾個欄位同一種踩過的坑，這裡一併補上。
+    known_facts_w: list[str] = []
+    # 上一題問了什麼，當模型生成下一題時的參考資訊（2026-08-18稽核，第四次，
+    # 使用者提案：原本這裡還有一個 round_qa_log 欄位，累積整場療程的Q&A摘要
+    # 塞進prompt，但實測回報累積的內容越長，承接語／問題品質反而越差——
+    # 本地量化基底模型對長prompt的指令遵循本來就不穩定。已移除，改成只留
+    # 這個單一字串。第十次稽核：一度加上生成後事後核對＋重打，比對commit
+    # 版本後發現那套機制本身也會拖累品質，已經拿掉，這裡純粹是參考資訊，
+    # 不驅動任何強制核對）。同樣必須宣告在這裡才能透過 API 往返存活。
+    last_question_text: str = ""
+    # 這回合到目前為止已經自然涵蓋哪些感官（視覺/聽覺/嗅覺/味覺/觸覺），
+    # 供 STEP2/3 選感官切入角度時避免重複問同一種、或問跟主題不相關的
+    # 感官（見 orchestrator.py process_response 對 covered_senses 的說明、
+    # _relevant_uncovered_senses）。同樣必須宣告在這裡才能透過 API 往返存活。
+    covered_senses: list[str] = []
+    # 2026-08-18新增：跟 covered_w／skipped_w 對稱——covered_senses 只記錄
+    # 「長者的回答有沒有自然涵蓋某個感官」，last_sense_asked／skipped_senses
+    # 補上「這題問了哪個感官、長者有沒有答到」的追蹤（見 orchestrator.py
+    # _relevant_uncovered_senses 的 skipped_senses 說明）。同樣必須宣告在這裡
+    # 才能透過 API 往返存活，否則會被 FastAPI 驗證悄悄丟棄——這幾個新欄位
+    # 剛加時就是因為漏宣告在這裡，透過正式 API 完全沒生效過（question_count
+    # 等欄位都踩過同一個坑，見上面說明）。
+    last_sense_asked: str = ""
+    skipped_senses: list[str] = []
 
 
 class RespondRequest(BaseModel):
@@ -1148,6 +1170,22 @@ async def session_respond(
                         # （見 orchestrator.py _start_round2_free_followup 的
                         # known_facts_w 說明）。
                         "round1_covered_w": body.state.covered_w,
+                        # round 1 最後一題問了什麼——round 2 開場生成時當
+                        # 參考資訊（見 orchestrator.py _start_round2_free_
+                        # followup 說明）。2026-08-18稽核（第四次，使用者
+                        # 提案）：這裡原本帶的是round 1整份round_qa_log，
+                        # 改成只帶最後一題的單一字串，理由見
+                        # SessionState.last_question_text 上方註解。
+                        "round1_last_question": body.state.last_question_text,
+                        # round 1 結束時已經自然涵蓋的感官——round 2 開場用來排除
+                        # 感官選項，不要再問長者已經在 round 1 答過的感官（例如
+                        # 味覺/嗅覺），跟上面 round1_covered_w 同一個問題、同一種
+                        # 修法（見 orchestrator.py _start_round2_free_followup 的
+                        # known_senses 說明）。只帶 covered_senses、不帶
+                        # skipped_senses——skipped_senses 是「問了但長者沒答到」，
+                        # round 2 沒理由跟著避開，跟 round1_covered_w 只帶
+                        # covered_w、不帶 skipped_w 是同一個理由。
+                        "round1_covered_senses": body.state.covered_senses,
                     })
                 await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
                 await _append_session_topic(r, body.state.session_id, body.state.topic_category)
