@@ -110,9 +110,9 @@ export default function NewCasePage() {
           />
         </div>
 
-        {/* 家人姓名關係 */}
+        {/* 緊急聯絡人 */}
         <div className="flex flex-col gap-2">
-          <label className="text-[14px] font-medium text-[#1a1a1a]">家人姓名關係</label>
+          <label className="text-[14px] font-medium text-[#1a1a1a]">緊急聯絡人</label>
           <input
             type="text"
             value={family}

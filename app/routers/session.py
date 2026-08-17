@@ -271,9 +271,12 @@ async def _save_round_exchange(
     round_type: str | None = None,
     patient_id: int | None = None,
     therapist_id: int | None = None,
+    stage: str | None = None,
 ) -> None:
     """AI 每問一個新問題就新增一筆 round_exchanges（answer 先留空，長者回答後由
-    _fill_round_exchange_answer 補上）。"""
+    _fill_round_exchange_answer 補上）。stage="pre_image" 代表這題是生圖前的
+    引導問題（見 orchestrator.py 的 pre_image_q1/pre_image_q2），供歷史療程
+    檢視頁區分第一回合的問題是生圖前還是生圖後問的。"""
     try:
         round_row = await _get_or_create_round(
             db, session_id, round_number, patient_id, therapist_id, round_type
@@ -285,6 +288,7 @@ async def _save_round_exchange(
             round_id=round_row.id,
             question_number=question_number,
             question=question,
+            stage=stage,
         ))
         await db.commit()
         print(f"[DB] round_exchanges 新增問題: round={round_number} q#={question_number}")
@@ -612,9 +616,11 @@ async def session_start(
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
         if result.get("question"):
+            last_type = (result.get("state") or {}).get("last_question_type", "")
             await _save_round_exchange(
                 db, session_id, 1, question_number=1, question=result["question"],
                 patient_id=_to_int(user_id), therapist_id=therapist_id,
+                stage="pre_image" if last_type.startswith("pre_image") else None,
             )
         await _cache_start_result(r, session_id, result)
         return result
@@ -698,9 +704,11 @@ async def session_round(
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
         if result.get("question"):
+            last_type = (result.get("state") or {}).get("last_question_type", "")
             await _save_round_exchange(
                 db, session_id, round_number, question_number=1, question=result["question"],
                 patient_id=_to_int(user_id), therapist_id=therapist_id,
+                stage="pre_image" if last_type.startswith("pre_image") else None,
             )
         return result
     except ValueError as e:
@@ -1185,10 +1193,12 @@ async def session_respond(
             if result.get("state") is not None:
                 result["state"]["question_number"] = next_qn
                 result["state"]["question_asked_at"] = int(time.time() * 1000)
+                last_type = (result.get("state") or {}).get("last_question_type", "")
                 await _save_round_exchange(
                     db, body.state.session_id, body.state.round,
                     question_number=next_qn, question=result["question"],
                     patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                    stage="pre_image" if last_type.startswith("pre_image") else None,
                 )
         return result
     except ValueError as e:

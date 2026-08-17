@@ -66,7 +66,7 @@ export default function DashboardPage() {
       {/* 頂部導覽列 */}
       <nav className="bg-white rounded-2xl shadow-sm px-8 py-5 flex items-center justify-between">
         <span className="text-[25px] font-medium text-[#1a1a1a] tracking-tight">
-          {displayInstitution}　{displayName} 治療師
+          {displayInstitution}　{displayName} 
         </span>
         <div className="flex items-center gap-4">
           <Link
@@ -165,7 +165,7 @@ export default function DashboardPage() {
                     )}
                     <div>
                       <p className="text-[19px] font-medium text-[#1a1a1a] leading-tight">{c.name}</p>
-                      <p className="text-[14px] text-[#888] mt-0.5">最近療程：{c.lastSession}</p>
+                      <p className="text-[14px] text-[#888] mt-0.5">最近活動：{c.lastSession}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
