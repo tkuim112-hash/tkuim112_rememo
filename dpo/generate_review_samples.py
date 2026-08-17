@@ -5,7 +5,7 @@
 抽樣 dpo/scenarios.json（Track A）與 dpo/collect_data.py 裡的
 EMOTIONAL_SCENARIOS（Track B）／TRACK_C_SCENARIOS（Track C）／
 TRACK_D_SCENARIOS（Track D），組出跟生產環境一致的 prompt
-（重用 dpo/evaluate_model.py 的 build_inference_prompt/build_prompt_b/c/d
+（重用 dpo/data_quality.py 的 build_eval_inference_prompt/build_prompt_b/c/d
 與 call_ollama），送給指定的 Ollama 模型生成回應，整理成一份 HTML 報告，
 方便直接用瀏覽器打開，人工判斷語氣自然度、溫暖度、懷舊療法引導效果。
 
@@ -42,10 +42,9 @@ import urllib.error
 from pathlib import Path
 
 from collect_data import EMOTIONAL_SCENARIOS, TRACK_C_SCENARIOS, TRACK_D_SCENARIOS
-from evaluate_model import (
-    OLLAMA_HOST,
+from data_quality import (
     SCENARIOS_FILE,
-    build_inference_prompt,
+    build_eval_inference_prompt as build_inference_prompt,
     build_prompt_b,
     build_prompt_c,
     build_prompt_d,
@@ -54,7 +53,9 @@ from evaluate_model import (
 )
 
 TRAIN_DATA_FILE = Path(__file__).parent / "data" / "train.jsonl"
-STEPS = ("STEP1", "STEP2", "STEP3")
+# 2026-08 Track A 拿掉 STEP2（見 collect_data.generate_track_a 說明），
+# 人工複查報告同步只看 STEP1/STEP3。
+STEPS = ("STEP1", "STEP3")
 
 
 def load_reference_chosen() -> dict[str, dict]:
@@ -150,7 +151,7 @@ def _cols_html(model: str, compare: str | None, model_output: str, compare_outpu
 
 
 def build_report_a(model: str, compare: str | None, scenarios: list[dict], reference: dict) -> tuple[str, str]:
-    """回傳 (toc_html, sections_html)，Track A 維持原本的 STEP1/2/3 多欄位排版。"""
+    """回傳 (toc_html, sections_html)，Track A 維持原本的 STEP1/3 多欄位排版。"""
     toc = "".join(f'<a href="#{sc["id"]}">{sc["id"]}</a> ' for sc in scenarios)
 
     sections = []

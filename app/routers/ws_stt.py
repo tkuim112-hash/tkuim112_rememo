@@ -6,6 +6,7 @@ import wave
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from auth import get_therapist_id_from_ws_token
+import ws_registry
 
 router = APIRouter()
 
@@ -22,21 +23,26 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -
 
 
 @router.websocket("/ws/stt")
-async def ws_stt(websocket: WebSocket, token: str = ""):
+async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
     """
     接收 Unity 送來的 PCM int16 mono 16kHz 音訊 chunks。
 
-    連線網址需帶登入時拿到的 JWT：ws://host/ws/stt?token=<JWT>
+    連線網址需帶登入時拿到的 JWT 與 session_id：
+    ws://host/ws/stt?session_id=<id>&token=<JWT>
 
-    控制訊息 (text frame):
+    session_id 讓 /session/{id}/control（治療師網頁的重播/跳過/暫停/繼續按鈕）
+    能查到這場療程對應哪一條連線，把 control 訊框轉發過來（見 ws_registry.py）。
+
+    控制訊息 (text frame，Unity → 後端):
       {"type": "start"} — 清空緩衝區，開始新一段錄音
       {"type": "end"}   — 對完整緩衝區做最終辨識，isFinal=true
 
-    音訊資料 (binary frame):
+    音訊資料 (binary frame，Unity → 後端):
       raw PCM int16, 16 kHz, mono
 
-    回傳 (text frame):
+    回傳 (text frame，後端 → Unity):
       {"type": "transcript", "text": "...", "isFinal": true|false}
+      {"type": "control", "action": "replay_audio"|"skip_scene"|"pause"|"resume"}
     """
     try:
         await get_therapist_id_from_ws_token(websocket.app.state.redis, token)
@@ -47,6 +53,7 @@ async def ws_stt(websocket: WebSocket, token: str = ""):
     stt_service = websocket.app.state.stt_service
 
     await websocket.accept()
+    ws_registry.register(session_id, websocket)
     audio_buf: bytearray = bytearray()
 
     SAMPLE_RATE = 16000
@@ -109,3 +116,5 @@ async def ws_stt(websocket: WebSocket, token: str = ""):
         pass
     except Exception as e:
         print(f"[WS/STT] {e}")
+    finally:
+        ws_registry.unregister(session_id, websocket)

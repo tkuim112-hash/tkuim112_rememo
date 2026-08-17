@@ -29,13 +29,22 @@ from datasets import Dataset
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from trl import DPOConfig, DPOTrainer
 
-from validate_data import Validator
+from data_quality import Validator
 
 # ─── 設定 ───────────────────────────────────────────────────────────────────
 
 BASE_MODEL = str(Path(__file__).parent / "models" / "taiwan-llama")
 DATA_FILE = Path(__file__).parent / "data" / "train.jsonl"
 OUTPUT_DIR = Path(__file__).parent / "output"
+
+# 2026-08-17：使用者決定這一輪訓練只練 Track B（情緒引導）／C（承接＋追問）
+# 這兩軌「承接情緒」的核心行為，Track A（問題生成格式）／D（收尾引導）
+# 整個排除。train.jsonl 裡 A/D 的資料原樣保留、不刪除，只是這次訓練不會
+# 讀取——因為每次訓練都是從 BASE_MODEL 重新練起、不是接續舊 adapter
+# 繼續練（見 load_model_and_tokenizer），被排除的 track 這次訓練完全不會
+# 反映在新 adapter 上，退回純 prompt 指示＋app/safety/response_guard.py
+# 的 regex 防護。之後若要恢復，把這個集合改回 {"A", "B", "C", "D"} 即可。
+TRACKS_TO_TRAIN = {"B", "C"}
 
 MAX_SEQ_LENGTH = 512
 DPO_BETA = 0.1
@@ -48,7 +57,7 @@ GRAD_ACCUM = 8
 # epoch3 幾乎只把 margin 從 0.32 推到 0.37（已分開的 pair 被推更開，
 # 邊際價值低，有輕微過擬合風險）。這裡把容量調大、並納入 MLP 層——
 # 語氣/情緒暫存這類「軟性」判斷通常更依賴 MLP，而不只是注意力層。
-# 建議跟舊的 r=8 attn-only 版本用同一套 evaluate_model.py 對照比較，
+# 建議跟舊的 r=8 attn-only 版本用同一套 data_quality.py 的 evaluate 子命令對照比較，
 # 不要預設容量越大越好（訓練資料不到 3000 筆，也可能撐不住太大的 r）。
 LORA_R = 16
 LORA_ALPHA = 32
@@ -62,22 +71,30 @@ LORA_TARGET_MODULES = [
 
 def load_dataset_from_jsonl(path: Path) -> Dataset:
     records = []
+    skipped_by_track: dict[str, int] = {}
     with path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
+            track = rec["meta"]["track"]
+            if track not in TRACKS_TO_TRAIN:
+                skipped_by_track[track] = skipped_by_track.get(track, 0) + 1
+                continue
             records.append({
                 "prompt": rec["prompt"],
                 "chosen": rec["chosen"],
                 "rejected": rec["rejected"],
                 # 只留 track/scenario_id 字串（不是整個 meta dict），給下面的分層
                 # 切分用，切分完後會移除，不會進到 DPOTrainer。
-                "track": rec["meta"]["track"],
+                "track": track,
                 "scenario_id": rec["meta"]["scenario_id"],
             })
 
+    if skipped_by_track:
+        skipped_desc = "、".join(f"{t}={n}筆" for t, n in sorted(skipped_by_track.items()))
+        print(f"依 TRACKS_TO_TRAIN={sorted(TRACKS_TO_TRAIN)} 排除：{skipped_desc}")
     print(f"載入 {len(records)} 筆訓練對")
     return Dataset.from_list(records)
 
@@ -165,11 +182,12 @@ def load_model_and_tokenizer():
 
 def _run_validation_gate() -> None:
     """
-    訓練前強制跑一次 dpo/validate_data.py 的檢查邏輯，有 critical failure 就中止。
+    訓練前強制跑一次 dpo/data_quality.py（validate 子命令）的檢查邏輯，有
+    critical failure 就中止。
 
     2026-07 稽核發現：train_dpo.py 原本只檢查 train.jsonl 存不存在，完全不管
     裡面的資料有沒有問題（例如 chosen==rejected、chosen 本身違規、rejected
-    沒有真的違反該筆記錄的規則）。validate_data.py 雖然存在，但沒有任何東西
+    沒有真的違反該筆記錄的規則）。這套檢查雖然存在，但沒有任何東西
     強制要求「訓練前一定要先跑過」，全靠使用者記得手動執行——已知至少一次
     train.jsonl 在有 critical failure 的狀態下仍被拿去訓練（見
     dpo/data/validate_report.txt 的歷史記錄）。這裡直接在訓練腳本裡內建同一套
@@ -212,7 +230,7 @@ def main() -> None:
             "請先執行 python dpo/collect_data.py 生成資料。"
         )
 
-    print("訓練前先驗證 train.jsonl（等同執行一次 python dpo/validate_data.py）...")
+    print("訓練前先驗證 train.jsonl（等同執行一次 python dpo/data_quality.py validate）...")
     _run_validation_gate()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

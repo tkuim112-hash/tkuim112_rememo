@@ -44,9 +44,6 @@ public class GameController : MonoBehaviour
     public int sampleRate = 16000;
     public int maxRecordSeconds = 60;
 
-    [Header("逐字動畫")]
-    public float charInterval = 0.03f;
-
     private string[] roundNames = { "第一回合", "第二回合", "第三回合" };
     private string placeholderText = "想到什麼就說什麼，按下麥克風可以用說的…";
 
@@ -63,10 +60,12 @@ public class GameController : MonoBehaviour
     private bool isPaused = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
+    private Coroutine reactionTimeoutCoroutine;
+    private readonly WaitForSeconds reactionTimeoutWait = new WaitForSeconds(30f);
+    private const string NoResponseMarker = "（長者未回應）";
     private readonly Queue<string> incomingMessages = new Queue<string>();
     private readonly object queueLock = new object();
     private string displayedText = "";
-    private Coroutine typingCoroutine;
 
     private bool UseKinect => kinectAudioSender != null;
 
@@ -93,17 +92,33 @@ public class GameController : MonoBehaviour
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
 
-        if (!UseKinect)
+        if (UseKinect)
+            // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/跳過/重播指令
+            // 隨時可能在長者第一次按麥克風之前就送到，這裡要先掛好才不會漏接。
+            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
+        else
             ConnectWebSocket();
 
-        StartCoroutine(StartRound(currentRound));
+        if (currentRound == 1 && PendingSessionStart.Response != null)
+        {
+            var resp = PendingSessionStart.Response;
+            PendingSessionStart.Response = null;
+            ApplyRoundResponse(resp);
+        }
+        else
+        {
+            StartCoroutine(StartRound(currentRound));
+        }
     }
 
     // ─── STT ──────────────────────────────────────────────────────
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(AuthService.AppendToken(sttServerUrl));
+        // session_id 讓後端 /session/{id}/control 知道要把治療師的重播/跳過/暫停/繼續
+        // 指令轉發到哪一條連線（見 app/ws_registry.py）。
+        string url = string.IsNullOrEmpty(sessionId) ? sttServerUrl : $"{sttServerUrl}?session_id={sessionId}";
+        ws = new WebSocket(AuthService.AppendToken(url));
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
@@ -122,8 +137,8 @@ public class GameController : MonoBehaviour
 
     void StartRecording()
     {
+        CancelReactionTimeout();
         isRecording = true;
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         displayedText = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -132,7 +147,6 @@ public class GameController : MonoBehaviour
 
         if (UseKinect)
         {
-            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
             kinectAudioSender.StartSTT();
         }
         else
@@ -170,13 +184,20 @@ public class GameController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
-        OnSttFinal();
+        // 逾時前都沒收到任何 transcript 訊息，displayedText 還是空的：代表整段
+        // 錄音沒辨識到任何內容，見 OnSttFinal 的 noSpeechRecognized 說明。
+        OnSttFinal(noSpeechRecognized: string.IsNullOrEmpty(displayedText));
     }
 
-    void OnSttFinal()
+    void OnSttFinal(bool noSpeechRecognized = false)
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
+        // 沒辨識到任何內容時，把卡住的「辨識中...」換成「辨識完成」，不要留著
+        // 讓長者/治療師誤以為還在辨識；真的有辨識到文字的情況完全不動這裡，
+        // 文字框已經在 HandleSTTMessage 被實際辨識結果蓋過了。
+        if (noSpeechRecognized)
+            inputText.text = "辨識完成";
         RefreshSubmitButton();
     }
 
@@ -256,17 +277,18 @@ public class GameController : MonoBehaviour
             switch (msg.action)
             {
                 case "replay_audio":
-                    if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-                    typingCoroutine = StartCoroutine(TypeCharByChar(aiText.text));
+                    OnReplayAudio();
                     break;
                 case "skip_scene":
-                    if (currentRound >= totalRounds)
-                        SceneManager.LoadScene("ShareScene");
-                    else
-                        StartCoroutine(StartRound(currentRound + 1));
+                    // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
+                    // 沿用 ReactionTimeout 逾時時同樣的忙碌判斷，避免跟錄音/送出中互撞。
+                    CancelReactionTimeout();
+                    if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused)
+                        StartCoroutine(AutoSubmitNoResponse());
                     break;
                 case "pause":
                     isPaused = true;
+                    CancelReactionTimeout();
                     micButton.interactable = false;
                     submitButton.interactable = false;
                     break;
@@ -274,6 +296,7 @@ public class GameController : MonoBehaviour
                     isPaused = false;
                     RefreshSubmitButton();
                     micButton.interactable = true;
+                    StartReactionTimeout();
                     break;
                 case "end":
                     Application.Quit();
@@ -283,12 +306,17 @@ public class GameController : MonoBehaviour
         }
 
         if (msg.type != "transcript") return;
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-        typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
+        bool hasText = !string.IsNullOrWhiteSpace(msg.text);
+        if (hasText)
+        {
+            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+            inputText.text = msg.text;
+            displayedText  = msg.text;
+        }
         if (msg.isFinal)
         {
-            OnSttFinal();
-            if (!string.IsNullOrWhiteSpace(msg.text))
+            OnSttFinal(noSpeechRecognized: !hasText);
+            if (hasText)
                 StartCoroutine(PostTranscript(msg.text));
         }
     }
@@ -304,26 +332,6 @@ public class GameController : MonoBehaviour
         yield return req.SendWebRequest();
         if (req.result != UnityWebRequest.Result.Success)
             Debug.LogWarning($"[Transcript] POST 失敗: {req.error}");
-    }
-
-    IEnumerator TypeCharByChar(string target)
-    {
-        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-        if (target.StartsWith(displayedText))
-        {
-            for (int i = displayedText.Length; i <= target.Length; i++)
-            {
-                string partial = target.Substring(0, i);
-                inputText.text = partial;
-                displayedText  = partial;
-                yield return new WaitForSeconds(charInterval);
-            }
-        }
-        else
-        {
-            inputText.text = target;
-            displayedText  = target;
-        }
     }
 
     void ResetInputText()
@@ -357,9 +365,13 @@ public class GameController : MonoBehaviour
         }
 
         var resp = JsonUtility.FromJson<StartRoundResponse>(req.downloadHandler.text);
-        currentState = resp.state;
-
         loadingSpinner.SetActive(false);
+        ApplyRoundResponse(resp);
+    }
+
+    void ApplyRoundResponse(StartRoundResponse resp)
+    {
+        currentState = resp.state;
         aiText.text = resp.question;
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
@@ -367,6 +379,8 @@ public class GameController : MonoBehaviour
         StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
         if (!string.IsNullOrEmpty(resp.audio_path))
             StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
+        else
+            StartReactionTimeout();
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -405,14 +419,20 @@ public class GameController : MonoBehaviour
         if (req.result != UnityWebRequest.Result.Success)
         {
             Debug.LogWarning($"[TTS] 語音載入失敗: {req.error}");
+            StartReactionTimeout();  // 語音沒播成也要給長者反應窗口，不能卡死
             yield break;
         }
 
-        if (audioSource == null) yield break;
+        if (audioSource == null) { StartReactionTimeout(); yield break; }
         AudioClip clip = DownloadHandlerAudioClip.GetContent(req);
         audioSource.Stop();
         audioSource.clip = clip;
         audioSource.Play();
+
+        // 長者要聽完整句問題才算「聽到」，反應時間從播放結束才開始算
+        // （問題設計規則.pdf 原訂10秒，考量長者手部動作/認知處理可能較慢，改成30秒）。
+        yield return new WaitForSeconds(clip.length);
+        StartReactionTimeout();
     }
 
     void OnReplayAudio()
@@ -430,6 +450,7 @@ public class GameController : MonoBehaviour
 
     IEnumerator ProcessSubmit()
     {
+        CancelReactionTimeout();
         isSubmitting = true;
         if (isRecording) StopRecording();
         isWaitingForStt = false;
@@ -503,6 +524,47 @@ public class GameController : MonoBehaviour
         kinectSensorSender?.OnQuestionAsked();
         if (!string.IsNullOrEmpty(resp.audio_path))
             StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
+        else
+            StartReactionTimeout();
+    }
+
+    // ─── 反應逾時（長者聽完問題30秒沒按麥克風）────────────────────────
+
+    void CancelReactionTimeout()
+    {
+        if (reactionTimeoutCoroutine != null)
+        {
+            StopCoroutine(reactionTimeoutCoroutine);
+            reactionTimeoutCoroutine = null;
+        }
+    }
+
+    void StartReactionTimeout()
+    {
+        CancelReactionTimeout();
+        reactionTimeoutCoroutine = StartCoroutine(ReactionTimeout());
+    }
+
+    IEnumerator ReactionTimeout()
+    {
+        yield return reactionTimeoutWait;
+        reactionTimeoutCoroutine = null;
+        if (isRecording || isWaitingForStt || isSubmitting || isPaused) yield break;
+        StartCoroutine(AutoSubmitNoResponse());
+    }
+
+    IEnumerator AutoSubmitNoResponse()
+    {
+        isSubmitting = true;
+        RefreshSubmitButton();
+        ResetInputText();
+        aiText.gameObject.SetActive(false);
+        loadingSpinner.SetActive(true);
+
+        yield return StartCoroutine(SendResponse(NoResponseMarker));
+
+        isSubmitting = false;
+        RefreshSubmitButton();
     }
 
     void UpdateRoundBadge()
@@ -520,18 +582,8 @@ public class GameController : MonoBehaviour
     }
 
     // ─── JSON 資料結構 ─────────────────────────────────────────────
-
-    [System.Serializable]
-    class StartRoundResponse
-    {
-        public string user_name;
-        public string today_topic;
-        public string scene_text;
-        public string image_path;
-        public string question;
-        public string audio_path;
-        public SessionStateData state;
-    }
+    // StartRoundResponse / SessionStateData 定義在 SessionModels.cs，
+    // 供 InstructionController 預抓第一回合資料時共用同一組型別。
 
     [System.Serializable]
     class RespondResponse
@@ -549,18 +601,5 @@ public class GameController : MonoBehaviour
     {
         public string elder_response;
         public SessionStateData state;
-    }
-
-    [System.Serializable]
-    class SessionStateData
-    {
-        public string user_id;
-        public string session_id;
-        public int round;
-        public string[] scene_elements;
-        public string[] covered_w;
-        public string[] skipped_w;
-        public string last_question_type;
-        public string last_w_asked;
     }
 }

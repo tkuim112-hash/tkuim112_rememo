@@ -18,24 +18,32 @@ class LLMService:
         self.model = settings.ollama_model
         self.client = httpx.AsyncClient(timeout=60.0)
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, temperature: float | None = None) -> str:
         """
         送出單一純文字 prompt，內部包裝為 user message 呼叫 /api/chat。
 
         Args:
             prompt: 完整的提示文字（包含 system 指令和 user 內容）
+            temperature: 覆寫本次呼叫的 temperature，不傳則用模組預設值
+                TEMPERATURE。翻譯/重構這類要求「忠實、不遺漏」而非發散
+                創意的任務，應該傳 0 降低隨機性遺漏內容的機率。
 
         Returns:
             LLM 的回應文字
         """
-        return await self.chat([{"role": "user", "content": prompt}])
+        return await self.chat(
+            [{"role": "user", "content": prompt}], temperature=temperature
+        )
 
-    async def chat(self, messages: list[dict]) -> str:
+    async def chat(
+        self, messages: list[dict], temperature: float | None = None
+    ) -> str:
         """
         送出 messages 格式的對話，對齊 DPO 訓練時的 prompt 結構。
 
         Args:
             messages: [{"role": "system"|"user"|"assistant", "content": "..."}]
+            temperature: 覆寫本次呼叫的 temperature，不傳則用模組預設值 TEMPERATURE。
 
         Returns:
             LLM 的回應文字
@@ -46,7 +54,9 @@ class LLMService:
                 "model": self.model,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": TEMPERATURE},
+                "options": {
+                    "temperature": TEMPERATURE if temperature is None else temperature
+                },
             },
         )
         response.raise_for_status()

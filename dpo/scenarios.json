@@ -10,7 +10,8 @@
       "birth_place": "台中",
       "main_occupation": "紡織廠工人",
       "taboos": [],
-      "today_topic": "工廠上班的日子"
+      "today_topic": "工廠上班的日子",
+      "preferences": "聽歌仔戲、養鴿子"
     },
     "scene": {
       "text": "黃昏時分，紡織廠大門口的工人陸續下班，廠門外停著幾輛腳踏車，空氣中飄著棉絮。",
@@ -37,7 +38,8 @@
       "birth_place": "台南",
       "main_occupation": "鹽田工人",
       "taboos": [],
-      "today_topic": "在鹽田工作的歲月"
+      "today_topic": "在鹽田工作的歲月",
+      "preferences": "拜拜、做粿"
     },
     "scene": {
       "text": "廣闊的鹽田在烈日下閃閃發亮，工人拿著長耙推著白色鹽山，遠處的風車緩緩轉動。",
@@ -63,8 +65,11 @@
       "birth_year": 1953,
       "birth_place": "苗栗",
       "main_occupation": "農夫",
-      "taboos": ["颱風或天災造成農作大幅損失的困難年份"],
-      "today_topic": "農忙收割的日子"
+      "taboos": [
+        "颱風或天災造成農作大幅損失的困難年份"
+      ],
+      "today_topic": "農忙收割的日子",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "金黃色的稻穗在微風中搖曳，農民們彎腰揮鐮收割，田埂旁停著一輛牛車。",
@@ -91,7 +96,8 @@
       "birth_place": "台北",
       "main_occupation": "裁縫師",
       "taboos": [],
-      "today_topic": "做裁縫的時光"
+      "today_topic": "做裁縫的時光",
+      "preferences": "做手工藝、聽廣播"
     },
     "scene": {
       "text": "小裁縫工作室裡，陽光透過窗戶灑進來，縫紉機排成一排，桌上堆著各色布料和線軸。",
@@ -117,8 +123,11 @@
       "birth_year": 1950,
       "birth_place": "高雄",
       "main_occupation": "漁民",
-      "taboos": ["出海時遭遇的危險意外或失去的捕魚夥伴"],
-      "today_topic": "出海捕魚的記憶"
+      "taboos": [
+        "出海時遭遇的危險意外或失去的捕魚夥伴"
+      ],
+      "today_topic": "出海捕魚的記憶",
+      "preferences": "釣魚、喝茶聊天"
     },
     "scene": {
       "text": "清晨的漁港，漁船整齊停在碼頭邊，漁民們整理漁網準備出港，海風帶著鹹鹹的味道。",
@@ -145,7 +154,8 @@
       "birth_place": "宜蘭",
       "main_occupation": "小學老師",
       "taboos": [],
-      "today_topic": "教書的歲月"
+      "today_topic": "教書的歲月",
+      "preferences": "看報紙、種花"
     },
     "scene": {
       "text": "鄉間小學的教室裡，黑板上寫著工整的字，學生們坐在木桌椅前，教室外是一棵老榕樹。",
@@ -172,7 +182,8 @@
       "birth_place": "彰化",
       "main_occupation": "糕餅師傅",
       "taboos": [],
-      "today_topic": "做糕餅的手藝"
+      "today_topic": "做糕餅的手藝",
+      "preferences": "泡茶、看歌仔戲"
     },
     "scene": {
       "text": "糕餅店後廚裡，師傅正在揉麵團，木製模具整齊排在架上，烤爐散發著濃郁的糕餅香。",
@@ -198,7 +209,8 @@
       "birth_place": "花蓮",
       "main_occupation": "茶農",
       "taboos": [],
-      "today_topic": "採茶的日子"
+      "today_topic": "採茶的日子",
+      "preferences": "種花、做手工藝"
     },
     "scene": {
       "text": "山坡上的茶園鬱鬱蔥蔥，採茶工戴著斗笠，靈巧地一芽一芽採摘，茶香飄散在山間。",
@@ -224,7 +236,8 @@
       "birth_place": "台中",
       "main_occupation": "鐵路局站務員",
       "taboos": [],
-      "today_topic": "在火車站工作的歲月"
+      "today_topic": "在火車站工作的歲月",
+      "preferences": "下棋、聽廣播"
     },
     "scene": {
       "text": "舊式火車站的月台上，蒸汽火車緩緩進站冒出白煙，站務員揮著旗子，旅客提著行李等候。",
@@ -250,8 +263,11 @@
       "birth_year": 1957,
       "birth_place": "嘉義",
       "main_occupation": "布行老闆娘",
-      "taboos": ["布行後來的生意困境或被迫歇業的原因"],
-      "today_topic": "經營布行的故事"
+      "taboos": [
+        "布行後來的生意困境或被迫歇業的原因"
+      ],
+      "today_topic": "經營布行的故事",
+      "preferences": "打麻將、做衣服"
     },
     "scene": {
       "text": "傳統布行裡，各色花布整齊疊在木架上，老闆娘拿著剪刀正在替客人量尺寸，捲尺掛在脖子上。",
@@ -278,7 +294,8 @@
       "birth_place": "屏東",
       "main_occupation": "甘蔗農",
       "taboos": [],
-      "today_topic": "收割甘蔗的辛苦"
+      "today_topic": "收割甘蔗的辛苦",
+      "preferences": "釣魚、種菜"
     },
     "scene": {
       "text": "高高的甘蔗田在陽光下閃亮，農民戴著斗笠揮刀砍蔗，地上鋪了厚厚一層甘蔗渣。",
@@ -304,7 +321,8 @@
       "birth_place": "台北",
       "main_occupation": "工廠女工",
       "taboos": [],
-      "today_topic": "在工廠上班的青春"
+      "today_topic": "在工廠上班的青春",
+      "preferences": "跳土風舞、拜拜"
     },
     "scene": {
       "text": "電子零件工廠的流水線上，女工們戴著口罩低頭組裝，頭上的日光燈很亮，廠房裡有機器的嗡嗡聲。",
@@ -330,8 +348,11 @@
       "birth_year": 1950,
       "birth_place": "澎湖",
       "main_occupation": "漁民",
-      "taboos": ["家庭最困難時期的負債或財務危機"],
-      "today_topic": "在澎湖討海的生活"
+      "taboos": [
+        "家庭最困難時期的負債或財務危機"
+      ],
+      "today_topic": "在澎湖討海的生活",
+      "preferences": "種蘭花、聽歌仔戲"
     },
     "scene": {
       "text": "蔚藍海面上，機動漁船在波浪中前行，馬達答答答地響，老漁夫坐在船頭看著遠方，海風迎面吹來。",
@@ -358,7 +379,8 @@
       "birth_place": "台中",
       "main_occupation": "傳統市場攤販",
       "taboos": [],
-      "today_topic": "在市場賣菜的日子"
+      "today_topic": "在市場賣菜的日子",
+      "preferences": "打麻將、跳土風舞"
     },
     "scene": {
       "text": "清晨的傳統市場人聲鼎沸，攤販把新鮮蔬菜整齊堆放，竹籃旁放著秤砣，叫賣聲此起彼落。",
@@ -384,8 +406,11 @@
       "birth_year": 1953,
       "birth_place": "新竹",
       "main_occupation": "玻璃廠工人",
-      "taboos": ["自身目前的病況或身體機能退化的狀況"],
-      "today_topic": "在玻璃廠工作的技藝"
+      "taboos": [
+        "自身目前的病況或身體機能退化的狀況"
+      ],
+      "today_topic": "在玻璃廠工作的技藝",
+      "preferences": "下棋、養鳥"
     },
     "scene": {
       "text": "玻璃廠的熔爐旁，師傅用長鐵管吹製玻璃球，橙紅色的玻璃液在火焰下閃光，工人們戴著護目鏡。",
@@ -411,8 +436,11 @@
       "birth_year": 1952,
       "birth_place": "基隆",
       "main_occupation": "碼頭工人",
-      "taboos": ["工作中受過的嚴重傷害或累積的職業病"],
-      "today_topic": "在基隆港搬貨的歲月"
+      "taboos": [
+        "工作中受過的嚴重傷害或累積的職業病"
+      ],
+      "today_topic": "在基隆港搬貨的歲月",
+      "preferences": "釣魚、喝茶聊天"
     },
     "scene": {
       "text": "基隆港碼頭上，大貨輪停靠岸邊，工人扛著重物排隊走過跳板，港邊起重機高高矗立。",
@@ -439,7 +467,8 @@
       "birth_place": "南投",
       "main_occupation": "茶農",
       "taboos": [],
-      "today_topic": "在日月潭旁種茶的回憶"
+      "today_topic": "在日月潭旁種茶的回憶",
+      "preferences": "種花、拜拜"
     },
     "scene": {
       "text": "日月潭旁的山坡茶園裡，晨霧瀰漫在茶樹之間，採茶工戴著毛巾帽低頭採摘，遠處湖面反著光。",
@@ -466,7 +495,8 @@
       "birth_place": "桃園",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "小時候在農田旁的童年"
+      "today_topic": "小時候在農田旁的童年",
+      "preferences": "做粿、種菜"
     },
     "scene": {
       "text": "桃園的農田旁，孩子們在田埂上仰望天空看飛機，番薯田一畦一畦整齊排列，遠處是農家的竹籬笆。",
@@ -493,7 +523,8 @@
       "birth_place": "台東",
       "main_occupation": "釋迦果農",
       "taboos": [],
-      "today_topic": "種植釋迦的日子"
+      "today_topic": "種植釋迦的日子",
+      "preferences": "種蘭花、下棋"
     },
     "scene": {
       "text": "台東的果園裡，釋迦樹上掛滿了綠色果實，果農拿著竹竿採摘高處的釋迦，遠處是藍藍的太平洋。",
@@ -519,7 +550,8 @@
       "birth_place": "台南",
       "main_occupation": "成衣廠女工",
       "taboos": [],
-      "today_topic": "在成衣廠做工的青春"
+      "today_topic": "在成衣廠做工的青春",
+      "preferences": "跳土風舞、做手工藝"
     },
     "scene": {
       "text": "成衣廠的大廳裡縫紉機聲此起彼落，女工們埋頭車縫衣物，成品堆在一旁的竹籃裡，窗外透著午後陽光。",
@@ -545,8 +577,11 @@
       "birth_year": 1952,
       "birth_place": "彰化",
       "main_occupation": "客運車掌小姐",
-      "taboos": ["因婚姻被迫辭職的委屈或職場對女性的不公待遇"],
-      "today_topic": "隨車服務的公路上青春"
+      "taboos": [
+        "因婚姻被迫辭職的委屈或職場對女性的不公待遇"
+      ],
+      "today_topic": "隨車服務的公路上青春",
+      "preferences": "聽廣播、做衣服"
     },
     "scene": {
       "text": "老舊的客運巴士停在車站旁，車廂裡瀰漫著濃濃的汽油味，年輕的車掌小姐穿著筆挺的制服、戴著帽子，手裡拿著剪票器準備迎客。",
@@ -572,8 +607,11 @@
       "birth_year": 1962,
       "birth_place": "新北",
       "main_occupation": "家庭代工（學生時期）",
-      "taboos": ["沒能繼續讀書的遺憾或童年被迫賺錢的委屈"],
-      "today_topic": "客廳即工廠的代工童年"
+      "taboos": [
+        "沒能繼續讀書的遺憾或童年被迫賺錢的委屈"
+      ],
+      "today_topic": "客廳即工廠的代工童年",
+      "preferences": "編織、聽歌仔戲"
     },
     "scene": {
       "text": "平房的客廳裡塞滿了紙箱，大大小小的彩色聖誕燈泡散落一地，收音機裡放著歌，全家人圍坐在小矮凳上低頭忙碌。",
@@ -599,8 +637,11 @@
       "birth_year": 1952,
       "birth_place": "台北",
       "main_occupation": "工廠工人",
-      "taboos": ["童年玩伴目前的狀況（部分已過世或失去聯繫）"],
-      "today_topic": "小時候在巷子裡玩的童年"
+      "taboos": [
+        "童年玩伴目前的狀況（部分已過世或失去聯繫）"
+      ],
+      "today_topic": "小時候在巷子裡玩的童年",
+      "preferences": "下棋、養鳥"
     },
     "scene": {
       "text": "老舊巷弄裡，孩子們蹲在地上打彈珠，一個男孩手握陀螺繩準備甩出，牆角榕樹根裸露在外。",
@@ -627,7 +668,8 @@
       "birth_place": "台南",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "夏天去柑仔店買枝仔冰"
+      "today_topic": "夏天去柑仔店買枝仔冰",
+      "preferences": "拜拜、種花"
     },
     "scene": {
       "text": "夏日午後，小柑仔店門口掛著飲料廣告旗，老闆坐在竹椅上搖扇子，店內擺著一個有厚蓋的木製冰棒箱。",
@@ -654,7 +696,8 @@
       "birth_place": "嘉義",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "廟口看野台戲的夜晚"
+      "today_topic": "廟口看野台戲的夜晚",
+      "preferences": "看歌仔戲、做粿"
     },
     "scene": {
       "text": "廟埕上搭起野台戲棚，鑼鼓聲隆隆，花旦水袖翻飛，廟前廣場擠滿了搬椅子來的村民，香煙嫋嫋。",
@@ -681,7 +724,8 @@
       "birth_place": "高雄",
       "main_occupation": "工廠工人",
       "taboos": [],
-      "today_topic": "圍著收音機聽少棒轉播"
+      "today_topic": "圍著收音機聽少棒轉播",
+      "preferences": "釣魚、聽廣播"
     },
     "scene": {
       "text": "客廳裡一台木殼收音機擺在桌上，全家人圍坐在旁邊，收音機傳出沙沙的播報聲，空氣中透著緊張。",
@@ -707,8 +751,11 @@
       "birth_year": 1960,
       "birth_place": "苗栗",
       "main_occupation": "農民",
-      "taboos": ["兄弟姊妹之間目前是否有疏離或衝突"],
-      "today_topic": "幫媽媽在大灶前燒火的記憶"
+      "taboos": [
+        "兄弟姊妹之間目前是否有疏離或衝突"
+      ],
+      "today_topic": "幫媽媽在大灶前燒火的記憶",
+      "preferences": "種菜、拜拜"
     },
     "scene": {
       "text": "農家廚房裡，土磚砌成的大灶冒著白煙，柴火通紅，大鍋裡的飯香飄出來，牆上掛著斗笠和蓑衣。",
@@ -735,7 +782,8 @@
       "birth_place": "台中",
       "main_occupation": "工廠工人",
       "taboos": [],
-      "today_topic": "中秋夜提燈籠賞月"
+      "today_topic": "中秋夜提燈籠賞月",
+      "preferences": "下棋、養鴿子"
     },
     "scene": {
       "text": "中秋夜晚，農家院子裡擺著月餅和柚子，全家搬椅子坐在院子裡賞月，孩子們搶著把柚子皮剝下來戴在頭上，笑成一團。",
@@ -762,7 +810,8 @@
       "birth_place": "基隆",
       "main_occupation": "商人",
       "taboos": [],
-      "today_topic": "去老式理髮廳剃頭的記憶"
+      "today_topic": "去老式理髮廳剃頭的記憶",
+      "preferences": "喝茶聊天、聽廣播"
     },
     "scene": {
       "text": "老式理髮廳門口旋轉著紅白燈柱，廳內鏡子前排著藤椅，師傅拿著剃刀和熱毛巾，香皂泡沫的味道很濃。",
@@ -789,7 +838,8 @@
       "birth_place": "台南",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "元宵節提燈籠猜燈謎"
+      "today_topic": "元宵節提燈籠猜燈謎",
+      "preferences": "拜拜、做手工藝"
     },
     "scene": {
       "text": "元宵夜廟前廣場掛滿花燈，一排排燈謎紙條在燈下搖晃，孩子們提著燈籠穿梭其中，湯圓香氣飄散。",
@@ -816,7 +866,8 @@
       "birth_place": "台北",
       "main_occupation": "工廠女工",
       "taboos": [],
-      "today_topic": "放學後在巷子裡跳繩的童年"
+      "today_topic": "放學後在巷子裡跳繩的童年",
+      "preferences": "種花草、做手工藝"
     },
     "scene": {
       "text": "放學後的巷弄裡，女孩們把橡皮筋串成一條長繩，兩人撐著讓另一個跳，地上用粉筆畫著跳房子的格子，書包靠著牆放著。",
@@ -843,7 +894,8 @@
       "birth_place": "新竹",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "除夕圍爐過年的記憶"
+      "today_topic": "除夕圍爐過年的記憶",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "農家廳堂裡，除夕夜全家圍著圓桌吃團圓飯，桌上擺著平時吃不到的菜，門外傳來鞭炮聲，紅燈籠高掛。",
@@ -869,8 +921,11 @@
       "birth_year": 1950,
       "birth_place": "基隆",
       "main_occupation": "礦工",
-      "taboos": [],
-      "today_topic": "在煤礦坑工作的歲月"
+      "taboos": [
+        "礦災意外或工友的死傷"
+      ],
+      "today_topic": "在煤礦坑工作的歲月",
+      "preferences": "喝茶聊天、養鳥"
     },
     "scene": {
       "text": "礦坑入口旁，礦工戴著頭燈帽整裝待發，身後的坑道黑漆漆地延伸進去，推車的鐵軌從坑道口一路延出來。",
@@ -897,7 +952,8 @@
       "birth_place": "台北",
       "main_occupation": "郵差",
       "taboos": [],
-      "today_topic": "騎腳踏車送信的日子"
+      "today_topic": "騎腳踏車送信的日子",
+      "preferences": "種花、聽廣播"
     },
     "scene": {
       "text": "清晨的街道上，郵差騎著腳踏車，後座掛著鼓鼓的深綠色郵袋，沿路一戶一戶投遞，晨光灑在街道上。",
@@ -924,7 +980,8 @@
       "birth_place": "南投",
       "main_occupation": "竹編師傅",
       "taboos": [],
-      "today_topic": "編竹籃竹椅的手藝"
+      "today_topic": "編竹籃竹椅的手藝",
+      "preferences": "種蘭花、泡茶"
     },
     "scene": {
       "text": "竹編工作室裡，師傅熟練地劈著竹篾，地上散落著竹屑，架子上整齊放著半成品的竹籃，空氣裡有淡淡的竹香。",
@@ -951,7 +1008,8 @@
       "birth_place": "嘉義",
       "main_occupation": "阿里山林業工人",
       "taboos": [],
-      "today_topic": "在阿里山運木材的日子"
+      "today_topic": "在阿里山運木材的日子",
+      "preferences": "下棋、種菜"
     },
     "scene": {
       "text": "阿里山林道旁，一節節粗大的原木綁在窄軌小火車的平板車上，山嵐繚繞，工人們站在車旁等待出發。",
@@ -978,7 +1036,8 @@
       "birth_place": "台中",
       "main_occupation": "豆腐師傅",
       "taboos": [],
-      "today_topic": "每天凌晨起來做豆腐"
+      "today_topic": "每天凌晨起來做豆腐",
+      "preferences": "喝茶聊天、聽廣播"
     },
     "scene": {
       "text": "凌晨的豆腐工坊裡，師傅推著沉重的石磨慢慢磨豆漿，爐上大鍋冒著白煙，滿室飄著豆香，外面天色還黑著。",
@@ -1005,7 +1064,8 @@
       "birth_place": "屏東",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "小時候幫家裡餵豬的記憶"
+      "today_topic": "小時候幫家裡餵豬的記憶",
+      "preferences": "種菜、拜拜"
     },
     "scene": {
       "text": "農家豬圈旁，小女孩提著木桶倒著餿水，幾頭肥豬搶著圍過來，豬圈旁晾著洗淨的桶子，竹籬笆圍著豬欄。",
@@ -1032,7 +1092,8 @@
       "birth_place": "台南",
       "main_occupation": "中藥店學徒",
       "taboos": [],
-      "today_topic": "在中藥行學習的歲月"
+      "today_topic": "在中藥行學習的歲月",
+      "preferences": "泡茶、下棋"
     },
     "scene": {
       "text": "傳統中藥行裡，一排排藥屜整齊貼著藥名，學徒在藥秤前仔細量著藥材，空氣中瀰漫著濃郁的藥草香。",
@@ -1059,7 +1120,8 @@
       "birth_place": "台北",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "小時候去戲院看電影"
+      "today_topic": "小時候去戲院看電影",
+      "preferences": "看歌仔戲、做手工藝"
     },
     "scene": {
       "text": "老式戲院門口，排隊買票的人龍從售票窗口延伸出來，看板上貼著台語片的手繪海報，小販在旁邊叫賣零食。",
@@ -1086,7 +1148,8 @@
       "birth_place": "苗栗",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "夏天在溪邊游泳的童年"
+      "today_topic": "夏天在溪邊游泳的童年",
+      "preferences": "釣魚、種菜"
     },
     "scene": {
       "text": "夏日的溪邊，孩子們在清澈的溪水中戲水，有人跳水有人抓魚，岸邊大石頭上曬著衣服，蟬聲響得震天。",
@@ -1113,7 +1176,8 @@
       "birth_place": "彰化",
       "main_occupation": "工廠女工",
       "taboos": [],
-      "today_topic": "小時候學騎腳踏車"
+      "today_topic": "小時候學騎腳踏車",
+      "preferences": "跳土風舞、拜拜"
     },
     "scene": {
       "text": "寬闊的廟前廣場上，一個小女孩扶著腳踏車把手練習，大人在旁邊攙扶，廣場邊有老榕樹，地上有劃過的練習痕跡。",
@@ -1140,7 +1204,8 @@
       "birth_place": "雲林",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "小時候走路去學校讀書的記憶"
+      "today_topic": "小時候走路去學校讀書的記憶",
+      "preferences": "下棋、種菜"
     },
     "scene": {
       "text": "鄉間的小學教室裡，學生們坐在木製課桌前，黑板上寫著整齊的字，窗外是一望無際的稻田，孩子們的書包掛在椅背上。",
@@ -1167,7 +1232,8 @@
       "birth_place": "台北",
       "main_occupation": "工廠女工",
       "taboos": [],
-      "today_topic": "準備聯考拼命讀書的歲月"
+      "today_topic": "準備聯考拼命讀書的歲月",
+      "preferences": "做手工藝、聽廣播"
     },
     "scene": {
       "text": "深夜的書桌前，一盞綠色大同檯燈把課本照得雪亮，女孩低頭用心做筆記，書桌旁點著蚊香，窗外的巷弄已經靜悄悄的了。",
@@ -1194,7 +1260,8 @@
       "birth_place": "台南",
       "main_occupation": "裁縫師",
       "taboos": [],
-      "today_topic": "當初相親嫁給先生的故事"
+      "today_topic": "當初相親嫁給先生的故事",
+      "preferences": "做衣服、拜拜"
     },
     "scene": {
       "text": "婚禮當天，新娘穿著白色婚紗站在廳堂前，媒人婆笑著在頭頂撐起一個大米篩，親友們圍著道賀，紅包袋一個個遞來，喜糖擺了滿滿一桌。",
@@ -1221,7 +1288,8 @@
       "birth_place": "台中",
       "main_occupation": "工廠工人",
       "taboos": [],
-      "today_topic": "跟老伴一起打拼的日子"
+      "today_topic": "跟老伴一起打拼的日子",
+      "preferences": "下棋、養鳥"
     },
     "scene": {
       "text": "老舊的磚瓦屋裡，夫妻倆圍著小木桌吃飯，牆上掛著結婚照，角落放著一台舊電風扇，窗外是巷弄裡的聲音。",
@@ -1247,8 +1315,11 @@
       "birth_year": 1951,
       "birth_place": "台北",
       "main_occupation": "工廠工人",
-      "taboos": [],
-      "today_topic": "當兵服役的歲月"
+      "taboos": [
+        "戰友的死傷或戰場上的創傷經歷"
+      ],
+      "today_topic": "當兵服役的歲月",
+      "preferences": "種菜、看報紙"
     },
     "scene": {
       "text": "軍隊訓練場上，士兵們穿著軍服整齊列隊，長官站在前面喊口令，早晨的操場還帶著露水，遠處是一排排綠色軍營。",
@@ -1273,8 +1344,11 @@
       "birth_year": 1955,
       "birth_place": "高雄",
       "main_occupation": "漁民",
-      "taboos": [],
-      "today_topic": "在軍中交到的好朋友"
+      "taboos": [
+        "服役期間家人過世卻不能回家的遺憾"
+      ],
+      "today_topic": "在軍中交到的好朋友",
+      "preferences": "釣魚、喝茶聊天"
     },
     "scene": {
       "text": "軍營宿舍的木板床上，幾個士兵圍坐在一起打撲克牌，桌上放著從家裡帶來的零食，有人手裡捧著家書反覆看著。",
@@ -1286,7 +1360,7 @@
         "戰友"
       ]
     },
-    "elder_step1_response": "軍中那幾個同梯感情最好，放假一起出去吃飯，把薪水全部吃光，回到營區口袋空空的，互相看了一眼，笑得很開心。",
+    "elder_step1_response": "晚上訓練結束沒別的事做，幾個同梯就窩在木板床上打撲克牌，誰輸了就要學狗叫或唱歌，笑鬧聲吵得整間寢室都聽得到，那是一天裡最放鬆的時候。",
     "elder_step2_response": "有個戰友是台南人，他媽媽寄來的新港飴他都分給大家，那個芭蕉味甜甜黏黏的，嚼起來很香，我退伍之後很多年，一看到新港飴就想到他。"
   },
   {
@@ -1301,7 +1375,8 @@
       "birth_place": "嘉義",
       "main_occupation": "小學老師",
       "taboos": [],
-      "today_topic": "年輕時立志當老師的夢想"
+      "today_topic": "年輕時立志當老師的夢想",
+      "preferences": "看書、種花"
     },
     "scene": {
       "text": "師範學校的校園裡，一排木棉樹夾道而立，女學生抱著課本走過，教學大樓的黑板上有整齊的板書，遠處是南台灣的山巒。",
@@ -1328,7 +1403,8 @@
       "birth_place": "台北",
       "main_occupation": "商人",
       "taboos": [],
-      "today_topic": "親眼見證台灣從貧窮到繁榮的時代"
+      "today_topic": "親眼見證台灣從貧窮到繁榮的時代",
+      "preferences": "喝茶聊天、看報紙"
     },
     "scene": {
       "text": "老舊街巷旁，工地正在興建新樓房，對面的電視行外圍了一群人爭看一台黑白電視機，街頭小販的叫賣聲和機器聲混在一起。",
@@ -1354,6 +1430,7 @@
       "birth_place": "台北",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "種花草、做手工藝",
       "today_topic": "每天聽老歌的習慣"
     },
     "scene": {
@@ -1380,6 +1457,7 @@
       "birth_place": "高雄",
       "main_occupation": "工廠工人",
       "taboos": [],
+      "preferences": "釣魚、下棋",
       "today_topic": "守著電視看少棒比賽的童年記憶"
     },
     "scene": {
@@ -1406,6 +1484,7 @@
       "birth_place": "台中",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "做菜、跳土風舞",
       "today_topic": "在家裡種花的樂趣"
     },
     "scene": {
@@ -1432,6 +1511,7 @@
       "birth_place": "台南",
       "main_occupation": "農民",
       "taboos": [],
+      "preferences": "種蘭花、聽歌仔戲",
       "today_topic": "以前每天聽廣播的習慣"
     },
     "scene": {
@@ -1458,6 +1538,7 @@
       "birth_place": "基隆",
       "main_occupation": "漁民",
       "taboos": [],
+      "preferences": "釣魚、養鳥",
       "today_topic": "週末去溪邊釣魚的快樂"
     },
     "scene": {
@@ -1484,6 +1565,7 @@
       "birth_place": "台北",
       "main_occupation": "退休公務員",
       "taboos": [],
+      "preferences": "書法、下圍棋",
       "today_topic": "在公園和老朋友下棋的日子"
     },
     "scene": {
@@ -1510,6 +1592,7 @@
       "birth_place": "台南",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "編織、聽廣播劇",
       "today_topic": "和鄰居一起打麻將的樂趣"
     },
     "scene": {
@@ -1537,6 +1620,7 @@
       "birth_place": "嘉義",
       "main_occupation": "小學老師",
       "taboos": [],
+      "preferences": "書法、種蘭花",
       "today_topic": "練習書法的多年心得"
     },
     "scene": {
@@ -1565,7 +1649,8 @@
       "taboos": [
         "母親臨終過程細節（彌留時刻、最後說的話）"
       ],
-      "today_topic": "媽媽過世後的思念"
+      "today_topic": "媽媽過世後的思念",
+      "preferences": "拜拜、聽廣播"
     },
     "scene": {
       "text": "老照片放在木框裡擺在客廳矮櫃上，照片裡年輕的媽媽抱著嬰兒微笑，旁邊放著一個小小的香爐，空氣裡有淡淡的線香味。",
@@ -1595,7 +1680,8 @@
         "老伴的死因或病情細節",
         "生前相處的愧疚自責（嫌她嘮叨）"
       ],
-      "today_topic": "老伴走了之後的日子"
+      "today_topic": "老伴走了之後的日子",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "廚房裡，鍋子架在爐子上，桌上只擺了一副碗筷，窗台上放著一盆老伴生前種的蘭花，花朵還開著，陽光照進來，屋子裡靜悄悄的。",
@@ -1624,7 +1710,8 @@
         "病情預後或是否會惡化、死亡",
         "拖累子女的自責感"
       ],
-      "today_topic": "生病之後心情的起伏"
+      "today_topic": "生病之後心情的起伏",
+      "preferences": "拜拜、聽歌仔戲"
     },
     "scene": {
       "text": "診所候診室裡，椅子排成一排，牆上掛著衛教海報，老奶奶手裡捧著診療單靜靜等候，窗外馬路上車聲來往，室內燈光白亮。",
@@ -1653,7 +1740,8 @@
       "taboos": [
         "家中貧困細節或手足間資源分配的比較"
       ],
-      "today_topic": "年輕時沒辦法繼續讀書的遺憾"
+      "today_topic": "年輕時沒辦法繼續讀書的遺憾",
+      "preferences": "下棋、養鳥"
     },
     "scene": {
       "text": "廟口廣場的石凳上，老伯伯看著旁邊幾個孩子背著書包上學，日光照在校服上，遠處傳來學校的鐘聲，他的手微微握緊放在腿上。",
@@ -1682,7 +1770,8 @@
         "子女多久沒回來探視或聯繫頻率",
         "覺得自己是子女負擔的自我否定感"
       ],
-      "today_topic": "孩子長大離家後的寂寞"
+      "today_topic": "孩子長大離家後的寂寞",
+      "preferences": "拜拜、做手工藝"
     },
     "scene": {
       "text": "傍晚的客廳裡，電視開著但聲音調得很小，沙發上放著一件還沒織完的毛線衣，牆上掛著全家合照，窗外路燈漸漸亮起來，屋裡只有她一個人。",
@@ -1709,7 +1798,8 @@
       "birth_place": "彰化",
       "main_occupation": "農民",
       "taboos": [],
-      "today_topic": "被老師體罰的記憶"
+      "today_topic": "被老師體罰的記憶",
+      "preferences": "種菜、喝茶聊天"
     },
     "scene": {
       "text": "小學教室裡，老師手持長長的竹條站在講台前，學生們正襟危坐，黑板上寫著一道道算術題，粉筆灰在陽光中飛舞，教室裡靜到可以聽到呼吸聲。",
@@ -1736,7 +1826,8 @@
       "birth_place": "新竹",
       "main_occupation": "紡織廠女工",
       "taboos": [],
-      "today_topic": "國中時代的好同學"
+      "today_topic": "國中時代的好同學",
+      "preferences": "跳土風舞、做手工藝"
     },
     "scene": {
       "text": "學校走廊上，幾個女學生聚在一起，校服整齊，有人在看別人的作業，有人偷偷交換便條紙，走廊盡頭是操場，體育課結束的哨聲傳來。",
@@ -1763,7 +1854,8 @@
       "birth_place": "台東",
       "main_occupation": "工廠工人",
       "taboos": [],
-      "today_topic": "半工半讀的艱難歲月"
+      "today_topic": "半工半讀的艱難歲月",
+      "preferences": "釣魚、下棋"
     },
     "scene": {
       "text": "夜間補校的教室裡，燈光黃黃的，學生們穿著工作服直接來上課，有人手上還有油汙，黑板上是老師寫的數學公式，窗外是深夜的街道。",
@@ -1789,7 +1881,8 @@
       "birth_place": "桃園",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "小時候去補習班補課的記憶"
+      "today_topic": "小時候去補習班補課的記憶",
+      "preferences": "拜拜、種花"
     },
     "scene": {
       "text": "補習班的小教室裡，學生們密密麻麻坐著，老師在黑板前密密麻麻寫著粉筆字，桌上疊著一落練習本，窗外已經天黑，走廊上還有家長在等候。",
@@ -1814,8 +1907,11 @@
       "birth_year": 1959,
       "birth_place": "台南",
       "main_occupation": "工廠女工",
-      "taboos": ["初戀男生後來的下落或現況"],
-      "today_topic": "年輕時候的初戀記憶"
+      "taboos": [
+        "初戀男生後來的下落或現況"
+      ],
+      "today_topic": "年輕時候的初戀記憶",
+      "preferences": "聽歌仔戲、做手工藝"
     },
     "scene": {
       "text": "工廠宿舍旁邊的小公園裡，路燈把夜晚映得橘黃色，長椅旁有一棵芒果樹，幾個年輕人下班後聚在這裡閒聊，夜風帶著工廠的味道。",
@@ -1842,7 +1938,8 @@
       "birth_place": "台中",
       "main_occupation": "裁縫師",
       "taboos": [],
-      "today_topic": "媒人牽線相親的趣事"
+      "today_topic": "媒人牽線相親的趣事",
+      "preferences": "泡茶、下棋"
     },
     "scene": {
       "text": "一間普通的茶館裡，兩個年輕人隔著茶桌對坐，媒人婆坐在旁邊努力說話活絡氣氛，茶杯旁邊擺著一盤瓜子，兩個年輕人各自盯著桌面，不敢多說話。",
@@ -1867,8 +1964,11 @@
       "birth_year": 1960,
       "birth_place": "台北",
       "main_occupation": "店員",
-      "taboos": ["先生目前的健康狀況或近況"],
-      "today_topic": "談戀愛時期的甜蜜記憶"
+      "taboos": [
+        "先生目前的健康狀況或近況"
+      ],
+      "today_topic": "談戀愛時期的甜蜜記憶",
+      "preferences": "聽廣播、拜拜"
     },
     "scene": {
       "text": "老式電影院門口，年輕的情侶並排站著等待入場，海報架上貼著當時流行的國語片，男生手裡拿著買好的零食，路燈下兩人微笑說話。",
@@ -1895,8 +1995,11 @@
       "birth_year": 1952,
       "birth_place": "苗栗",
       "main_occupation": "木工",
-      "taboos": ["太太目前的健康狀況或近況"],
-      "today_topic": "婚後兩個人一起打拼的歲月"
+      "taboos": [
+        "太太目前的健康狀況或近況"
+      ],
+      "today_topic": "婚後兩個人一起打拼的歲月",
+      "preferences": "喝茶聊天、種菜"
     },
     "scene": {
       "text": "小公寓的廚房裡，妻子在爐子前炒菜，丈夫坐在飯桌旁翻看報紙，桌上只有簡單的幾道菜，掛曆貼在牆上，日曆翻到了某個平凡的日期。",
@@ -1922,8 +2025,12 @@
       "birth_year": 1948,
       "birth_place": "台南",
       "main_occupation": "農民",
-      "taboos": ["二二八事件", "戒嚴與省籍歧視"],
-      "today_topic": "小時候跑防空洞的記憶"
+      "taboos": [
+        "二二八事件",
+        "戒嚴與省籍歧視"
+      ],
+      "today_topic": "小時候跑防空洞的記憶",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "老舊社區的防空洞入口用水泥砌成，入口旁邊的牆上還依稀看得到當年的記號，洞口黑暗陰涼，旁邊種著幾棵九重葛，老人家坐在附近的石椅上。",
@@ -1948,8 +2055,11 @@
       "birth_year": 1954,
       "birth_place": "嘉義",
       "main_occupation": "農民",
-      "taboos": ["父母目前的狀況（父母已離世）"],
-      "today_topic": "當兵時思念家鄉的心情"
+      "taboos": [
+        "父母目前的狀況（父母已離世）"
+      ],
+      "today_topic": "當兵時思念家鄉的心情",
+      "preferences": "種菜、養鳥"
     },
     "scene": {
       "text": "偏遠的軍事基地裡，連日的操練結束後，夜晚的宿舍裡幾個士兵拿著信紙寫家書，月光從窗戶照進來，遠處傳來哨兵換班的腳步聲。",
@@ -1975,8 +2085,11 @@
       "birth_year": 1956,
       "birth_place": "台中",
       "main_occupation": "工廠工人",
-      "taboos": ["母親是何時、如何過世的細節（母親已離世，避免深究死因或過世過程，但重逢當下的互動可以談）"],
-      "today_topic": "退伍回家那一天的感受"
+      "taboos": [
+        "母親是何時、如何過世的細節（母親已離世，避免深究死因或過世過程，但重逢當下的互動可以談）"
+      ],
+      "today_topic": "退伍回家那一天的感受",
+      "preferences": "下棋、喝茶聊天"
     },
     "scene": {
       "text": "鄉間小車站的月台上，一個穿軍服的年輕人提著行李走下火車，月台上有家人等著，媽媽看到了小跑步過去，不說話，只是用力拉著他的手，眼眶紅了。",
@@ -2002,7 +2115,8 @@
       "birth_place": "高雄",
       "main_occupation": "漁民",
       "taboos": [],
-      "today_topic": "軍中伙食與生活的記憶"
+      "today_topic": "軍中伙食與生活的記憶",
+      "preferences": "釣魚、種菜"
     },
     "scene": {
       "text": "軍中大飯廳裡，長桌排成一排，士兵們端著鐵盤魚貫取餐，廚房煙霧嫋嫋飄出米飯香氣，飯廳角落的黑板上寫著今天的菜色，嘈雜的說話聲迴盪在大廳。",
@@ -2029,6 +2143,7 @@
       "birth_place": "台南",
       "main_occupation": "退休工廠主任",
       "taboos": [],
+      "preferences": "種菜、看報紙",
       "today_topic": "那年半夜爬起來聽少棒的記憶"
     },
     "scene": {
@@ -2056,7 +2171,8 @@
       "birth_place": "嘉義",
       "main_occupation": "退休超市員工",
       "taboos": [],
-      "today_topic": "家裡第一次買電視機的那天"
+      "today_topic": "家裡第一次買電視機的那天",
+      "preferences": "拜拜、跳土風舞"
     },
     "scene": {
       "text": "爸爸把一台黑白電視機搬進客廳，天線插在屋頂上，畫面搖搖晃晃的，鄰居也跑來湊熱鬧，媽媽特地鋪了一塊布在電視上，說要遮灰塵，很寶貝的樣子。",
@@ -2083,7 +2199,8 @@
       "birth_place": "雲林",
       "main_occupation": "退休工廠師傅",
       "taboos": [],
-      "today_topic": "第一次離家北上找工作的那天"
+      "today_topic": "第一次離家北上找工作的那天",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "那年十七歲，提著一個布包袱站在月台上，蒸汽火車汽笛長鳴，媽媽在月台邊一直揮手，火車慢慢開走，那個背影一輩子忘不掉。",
@@ -2110,7 +2227,8 @@
       "birth_place": "南投",
       "main_occupation": "退休農家",
       "taboos": [],
-      "today_topic": "村裡第一次通電、電燈亮起來那一夜"
+      "today_topic": "村裡第一次通電、電燈亮起來那一夜",
+      "preferences": "種花、拜拜"
     },
     "scene": {
       "text": "傍晚電力公司把線接好，村長一聲令下，家家戶戶電燈同時亮起來，全村的人跑到外面看，有人哭了，說比過年還熱鬧，黑暗裡突然這麼多光。",
@@ -2138,7 +2256,8 @@
       "birth_place": "雲林",
       "main_occupation": "退休小學老師",
       "taboos": [],
-      "today_topic": "拼命考上師範學校的那段日子"
+      "today_topic": "拼命考上師範學校的那段日子",
+      "preferences": "看書、種花"
     },
     "scene": {
       "text": "師範學校的榜單貼在布告欄上，施奶奶的名字就在那裡，媽媽拉著她的手哭了，說這一輩子的苦沒有白苦，當老師是全村最光榮的事。",
@@ -2165,7 +2284,8 @@
       "birth_place": "彰化",
       "main_occupation": "退休公務員",
       "taboos": [],
-      "today_topic": "苦讀備考省立高中聯考的那個暑假"
+      "today_topic": "苦讀備考省立高中聯考的那個暑假",
+      "preferences": "下棋、看報紙"
     },
     "scene": {
       "text": "備考那個暑假，許伯伯每天在油燈下讀到深夜，數學參考書翻到頁角都折起來了，爸爸不多說話，只是每天晚上悄悄放一顆番薯在桌上。",
@@ -2191,8 +2311,11 @@
       "birth_year": 1950,
       "birth_place": "嘉義",
       "main_occupation": "退休建築工人",
-      "taboos": ["父親目前的狀況（父親已離世）"],
-      "today_topic": "立志要幫家人蓋一棟磚房的夢想"
+      "taboos": [
+        "父親目前的狀況（父親已離世）"
+      ],
+      "today_topic": "立志要幫家人蓋一棟磚房的夢想",
+      "preferences": "喝茶聊天、種菜"
     },
     "scene": {
       "text": "吳伯伯從小住茅草屋，每次颱風來就擔心屋頂，他跟自己說，有一天一定要蓋一棟不怕颱風的磚房，讓爸媽住得安心，不用再怕。",
@@ -2219,7 +2342,8 @@
       "birth_place": "台中",
       "main_occupation": "退休鐵工師傅",
       "taboos": [],
-      "today_topic": "學徒出師、第一次獨立完成作品那一天"
+      "today_topic": "學徒出師、第一次獨立完成作品那一天",
+      "preferences": "喝茶聊天、聽廣播"
     },
     "scene": {
       "text": "學徒滿三年，師傅把那套用了幾十年的工具整齊交給葉伯伯，說：以後這是你的了。第一個獨立做完的鐵窗掛上去，師傅過來看了一圈，點了點頭。",
@@ -2246,7 +2370,8 @@
       "birth_place": "台北",
       "main_occupation": "退休成衣廠女工",
       "taboos": [],
-      "today_topic": "第一次拿薪水買東西給媽媽的那天"
+      "today_topic": "第一次拿薪水買東西給媽媽的那天",
+      "preferences": "跳土風舞、拜拜"
     },
     "scene": {
       "text": "蔡奶奶領到第一份薪水，去市場買了一雙拖鞋給媽媽，媽媽穿上去試了試，沒有說謝謝，只是悄悄轉過身去，用圍裙角偷偷擦了眼角。",
@@ -2273,7 +2398,8 @@
       "birth_place": "台南",
       "main_occupation": "退休市場攤販",
       "taboos": [],
-      "today_topic": "小時候除夕圍爐的記憶"
+      "today_topic": "小時候除夕圍爐的記憶",
+      "preferences": "拜拜、做粿"
     },
     "scene": {
       "text": "除夕那天，桌上出現平時吃不到的雞鴨魚肉，媽媽一大早就開始忙，爸爸難得早回家，全家人圍著小圓桌，客廳飄著瓜子和花生炒熟的香味。",
@@ -2299,8 +2425,11 @@
       "birth_year": 1952,
       "birth_place": "彰化",
       "main_occupation": "退休農夫",
-      "taboos": ["布袋戲傳統技藝是否已消逝或老師傅的現況"],
-      "today_topic": "廟埕看布袋戲野台戲的童年"
+      "taboos": [
+        "布袋戲傳統技藝是否已消逝或老師傅的現況"
+      ],
+      "today_topic": "廟埕看布袋戲野台戲的童年",
+      "preferences": "看布袋戲、下棋"
     },
     "scene": {
       "text": "廟口搭起野台，布袋戲師傅手裡的戲偶上下翻飛，鑼鼓聲傳遍整個村子，小孩子從下午就搬好板凳佔位置，一直等到天黑戲開演，沒有人要回家吃飯。",
@@ -2326,7 +2455,8 @@
       "birth_place": "嘉義",
       "main_occupation": "雜貨店老闆",
       "taboos": [],
-      "today_topic": "過年前備年貨、包紅包的記憶"
+      "today_topic": "過年前備年貨、包紅包的記憶",
+      "preferences": "拜拜、泡茶聊天"
     },
     "scene": {
       "text": "過年前夕，雜貨店燈火通明，架上擺著年糕、花生糖和各色糖果，門口貼著新春對聯，孩子們在店門口嬉鬧。",
@@ -2352,7 +2482,8 @@
       "birth_place": "新竹",
       "main_occupation": "玻璃工廠工人",
       "taboos": [],
-      "today_topic": "元宵夜提燈籠、猜燈謎的快樂"
+      "today_topic": "元宵夜提燈籠、猜燈謎的快樂",
+      "preferences": "下棋、養鳥"
     },
     "scene": {
       "text": "元宵夜，廟前廣場掛滿紙燈籠，孩子們提著各式燈籠走在人群中，猜燈謎的攤位前圍了一圈人。",
@@ -2379,7 +2510,8 @@
       "birth_place": "苗栗",
       "main_occupation": "農婦",
       "taboos": [],
-      "today_topic": "清明掃墓祭祖的傳統"
+      "today_topic": "清明掃墓祭祖的傳統",
+      "preferences": "拜拜、種菜"
     },
     "scene": {
       "text": "清明時節，山坡上的墓地一片翠綠，家族老少拎著香燭紙錢和供品，沿著山路緩緩走上去，遠處杜鵑花開得正紅。",
@@ -2406,7 +2538,8 @@
       "birth_place": "台北",
       "main_occupation": "木工",
       "taboos": [],
-      "today_topic": "端午節包粽子的家庭時光"
+      "today_topic": "端午節包粽子的家庭時光",
+      "preferences": "喝茶聊天、下棋"
     },
     "scene": {
       "text": "端午前夕，廚房裡飄著粽葉和糯米的香氣，媽媽坐在矮凳上熟練地包著粽子，旁邊大鍋裡沸騰的水蒸氣瀰漫整個廚房。",
@@ -2433,7 +2566,8 @@
       "birth_place": "彰化",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "冬至全家搓湯圓的記憶"
+      "today_topic": "冬至全家搓湯圓的記憶",
+      "preferences": "拜拜、做手工藝"
     },
     "scene": {
       "text": "冬至那天，家裡的大木盆放在矮桌上，一家人圍坐搓湯圓，糯米糰粉撲撲的，爐子上的紅豆湯咕嚕咕嚕冒著熱氣。",
@@ -2459,7 +2593,8 @@
       "birth_place": "台北",
       "main_occupation": "公務員",
       "taboos": [],
-      "today_topic": "第一次坐飛機出公差的記憶"
+      "today_topic": "第一次坐飛機出公差的記憶",
+      "preferences": "種菜、養鳥"
     },
     "scene": {
       "text": "松山機場的候機廳裡，旅客穿著整齊的西裝或旗袍，大型螺旋槳飛機停在跑道旁，機場地勤人員忙碌地穿梭。",
@@ -2486,7 +2621,8 @@
       "birth_place": "雲林",
       "main_occupation": "農婦",
       "taboos": [],
-      "today_topic": "第一個孫子出生的那天"
+      "today_topic": "第一個孫子出生的那天",
+      "preferences": "種花、拜拜"
     },
     "scene": {
       "text": "醫院走廊盡頭，嬰兒室玻璃窗後整排搖籃，護士抱著剛出生的小嬰兒出來，家族成員擠在走廊上等待，人人臉上都是喜悅。",
@@ -2513,7 +2649,8 @@
       "birth_place": "桃園",
       "main_occupation": "工廠領班",
       "taboos": [],
-      "today_topic": "搬進新家那一天"
+      "today_topic": "搬進新家那一天",
+      "preferences": "種蘭花、聽歌仔戲"
     },
     "scene": {
       "text": "搬家那天，整條巷子的鄰居都來幫忙，家具一件件搬上卡車，舊家門口的大榕樹靜靜地站著，新家的鑰匙握在手中閃閃發亮。",
@@ -2540,7 +2677,8 @@
       "birth_place": "台中",
       "main_occupation": "護士",
       "taboos": [],
-      "today_topic": "退休典禮上那些難忘的話"
+      "today_topic": "退休典禮上那些難忘的話",
+      "preferences": "聽廣播、種花"
     },
     "scene": {
       "text": "護理站旁邊的小會議室，同事們布置了氣球和紅布條，護理長捧著紀念獎牌，窗外是四十年工作的那棟病房大樓。",
@@ -2567,7 +2705,8 @@
       "birth_place": "台北",
       "main_occupation": "報社印刷工人",
       "taboos": [],
-      "today_topic": "台灣少棒奪冠、連夜趕印號外那一晚"
+      "today_topic": "台灣少棒奪冠、連夜趕印號外那一晚",
+      "preferences": "看報紙、下棋"
     },
     "scene": {
       "text": "民國五十八年深夜，報社印刷廠燈火通明，機器轟隆隆加班趕印，廠長拿著從美國傳回的電報大喊「金龍少棒贏了！」，工人們丟下工具歡呼，空氣中瀰漫著油墨和汗水的氣味。",
@@ -2594,7 +2733,8 @@
       "birth_place": "嘉義",
       "main_occupation": "市場攤販",
       "taboos": [],
-      "today_topic": "從小就想自己開攤做生意的心願"
+      "today_topic": "從小就想自己開攤做生意的心願",
+      "preferences": "拜拜、泡茶聊天"
     },
     "scene": {
       "text": "傳統市場的早晨，攤販們將各色蔬果整齊排列，黃澄澄的木瓜和翠綠的蔬菜擺得漂漂亮亮，攤主打著算盤跟客人算錢。",
@@ -2621,7 +2761,8 @@
       "birth_place": "南投",
       "main_occupation": "礦工",
       "taboos": [],
-      "today_topic": "在礦坑裡工作，只為讓孩子讀書"
+      "today_topic": "在礦坑裡工作，只為讓孩子讀書",
+      "preferences": "喝茶聊天、下棋"
     },
     "scene": {
       "text": "礦坑口前，工人頭戴安全帽，燈光昏黃，礦石塵土瀰漫，遠處山邊礦工宿舍旁有幾個孩子在做功課。",
@@ -2648,7 +2789,8 @@
       "birth_place": "花蓮",
       "main_occupation": "郵局員工",
       "taboos": [],
-      "today_topic": "退休後完成環島旅行的心願"
+      "today_topic": "退休後完成環島旅行的心願",
+      "preferences": "種花、聽廣播"
     },
     "scene": {
       "text": "花蓮郵局的分信台，整排的郵袋和信件，郵務士騎著摩托車在路上穿梭，遠處太平洋在陽光下波光粼粼。",
@@ -2675,6 +2817,7 @@
       "birth_place": "台南",
       "main_occupation": "水電工",
       "taboos": [],
+      "preferences": "修東西、聽收音機",
       "today_topic": "退休後終於去學毛筆字的故事"
     },
     "scene": {
@@ -2702,7 +2845,8 @@
       "birth_place": "屏東",
       "main_occupation": "農婦",
       "taboos": [],
-      "today_topic": "存錢蓋磚房、給家人好日子的心願"
+      "today_topic": "存錢蓋磚房、給家人好日子的心願",
+      "preferences": "拜拜、種菜"
     },
     "scene": {
       "text": "屏東平原的農地旁，幾根竹竿搭著的舊式農舍，旁邊空地上有人在量地基，遠處甘蔗田一望無際，南部艷陽高掛。",
@@ -2729,7 +2873,8 @@
       "birth_place": "桃園",
       "main_occupation": "農夫",
       "taboos": [],
-      "today_topic": "村子裡那條清澈水圳的記憶"
+      "today_topic": "村子裡那條清澈水圳的記憶",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "農村的水圳蜿蜒穿過田野，圳邊長著幾棵老榕樹，孩子們坐在樹根上，把腳伸進清涼的流水裡，水圳對岸是一排排整齊的稻田。",
@@ -2756,7 +2901,8 @@
       "birth_place": "台南",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "出嫁的那座三合院天井"
+      "today_topic": "出嫁的那座三合院天井",
+      "preferences": "拜拜、做手工藝"
     },
     "scene": {
       "text": "老式台南三合院的天井裡，紅磚鋪地，一棵茉莉花樹開著白色小花，庭院兩側是廂房，正廳供著祖先牌位，燈籠掛在屋簷下。",
@@ -2783,7 +2929,8 @@
       "birth_place": "鹿港",
       "main_occupation": "漁民",
       "taboos": [],
-      "today_topic": "從小拜到大的鹿港天后宮廟口"
+      "today_topic": "從小拜到大的鹿港天后宮廟口",
+      "preferences": "釣魚、拜拜"
     },
     "scene": {
       "text": "鹿港天后宮廟埕，石板地被香客磨得光滑，大殿前香煙嫋嫋，宮燈高掛，廟口的老小販賣著蚵仔煎和肉圓，廟埕旁幾棵老榕樹。",
@@ -2810,7 +2957,8 @@
       "birth_place": "基隆",
       "main_occupation": "魚販",
       "taboos": [],
-      "today_topic": "做了三十年生意的基隆魚市場"
+      "today_topic": "做了三十年生意的基隆魚市場",
+      "preferences": "拜拜、泡茶聊天"
     },
     "scene": {
       "text": "基隆崁仔頂魚市，清晨四五點，漁貨批發正熱鬧，各式魚貨攤在地上，冰塊堆積成山，叫賣聲和殺魚聲此起彼伏，空氣中瀰漫著魚腥味。",
@@ -2837,7 +2985,8 @@
       "birth_place": "南投",
       "main_occupation": "伐木工人",
       "taboos": [],
-      "today_topic": "家附近那條清澈的山溪"
+      "today_topic": "家附近那條清澈的山溪",
+      "preferences": "喝茶聊天、下棋"
     },
     "scene": {
       "text": "南投山村溪邊，清澈的溪水繞著山腳流過，溪石上長著青苔，幾個孩子在溪邊用竹子做的水車玩水，遠山在雲霧中若隱若現。",
@@ -2863,8 +3012,11 @@
       "birth_year": 1958,
       "birth_place": "台中",
       "main_occupation": "紡織廠女工",
-      "taboos": ["父親的死因或病情細節"],
-      "today_topic": "爸爸走了那一年，心裡的遺憾"
+      "taboos": [
+        "父親的死因或病情細節"
+      ],
+      "today_topic": "爸爸走了那一年，心裡的遺憾",
+      "preferences": "拜拜、做手工藝"
     },
     "scene": {
       "text": "台中老家的正廳，遺照擺在神桌上，香爐裡的線香嫋嫋升起，靈前的供品一碗碗排列整齊，白布花圈掛在門口，鄰居輕聲走進走出。",
@@ -2889,8 +3041,11 @@
       "birth_year": 1951,
       "birth_place": "高雄",
       "main_occupation": "船廠工人",
-      "taboos": ["已故工友的死因或臨終過程"],
-      "today_topic": "老工友們一個個都不在了"
+      "taboos": [
+        "已故工友的死因或臨終過程"
+      ],
+      "today_topic": "老工友們一個個都不在了",
+      "preferences": "喝茶聊天、下棋"
     },
     "scene": {
       "text": "老式茶館的木桌旁，幾杯茶冒著熱氣，老照片攤在桌上，都是年輕時工廠的合照，幾張椅子空著，窗外市區喧囂。",
@@ -2916,8 +3071,11 @@
       "birth_year": 1960,
       "birth_place": "雲林",
       "main_occupation": "農婦",
-      "taboos": ["孩子多久沒回來探視或聯繫頻率"],
-      "today_topic": "孩子離家去外地打拼的那個清晨"
+      "taboos": [
+        "孩子多久沒回來探視或聯繫頻率"
+      ],
+      "today_topic": "孩子離家去外地打拼的那個清晨",
+      "preferences": "種菜、拜拜"
     },
     "scene": {
       "text": "農村老家門口，一輛遊覽車停在路邊，年輕人拎著行李要搭車去城市工作，父母站在路邊揮手，田野安靜無聲，天色剛亮。",
@@ -2942,8 +3100,11 @@
       "birth_year": 1954,
       "birth_place": "台北",
       "main_occupation": "機械工人",
-      "taboos": ["老家舊址目前的樣貌（已無法承受重提）"],
-      "today_topic": "老家被拆遷那天的心情"
+      "taboos": [
+        "老家舊址目前的樣貌（已無法承受重提）"
+      ],
+      "today_topic": "老家被拆遷那天的心情",
+      "preferences": "修東西、下棋"
     },
     "scene": {
       "text": "都市更新工地旁，老舊平房被圍起來，怪手停在旁邊，老屋牆上還留著小時候的鉛筆刻痕，最後一片斑駁的紅磚牆在陽光下顯得脆弱。",
@@ -2969,8 +3130,11 @@
       "birth_year": 1957,
       "birth_place": "嘉義",
       "main_occupation": "家庭主婦",
-      "taboos": ["大哥的死因或離世過程細節"],
-      "today_topic": "對已故大哥的思念"
+      "taboos": [
+        "大哥的死因或離世過程細節"
+      ],
+      "today_topic": "對已故大哥的思念",
+      "preferences": "拜拜、聽廣播"
     },
     "scene": {
       "text": "嘉義老家的客廳，老式相框擺滿一整面牆，黑白家族照記錄著幾十年歲月，小木桌上一杯清茶，窗外龍眼樹葉在微風中輕搖。",
@@ -2996,7 +3160,8 @@
       "birth_place": "台北",
       "main_occupation": "百貨公司員工",
       "taboos": [],
-      "today_topic": "年輕時暗戀卻沒說出口的那個人"
+      "today_topic": "年輕時暗戀卻沒說出口的那個人",
+      "preferences": "聽廣播、做手工藝"
     },
     "scene": {
       "text": "民國六十年代的台北西門町，霓虹燈初亮，年輕男女穿著喇叭褲走在人行道上，街邊的唱片行傳出流行歌曲，電影院前有人在排隊。",
@@ -3022,7 +3187,8 @@
       "birth_place": "彰化",
       "main_occupation": "木工師傅",
       "taboos": [],
-      "today_topic": "訂婚那天鬧了笑話的記憶"
+      "today_topic": "訂婚那天鬧了笑話的記憶",
+      "preferences": "下棋、聽廣播"
     },
     "scene": {
       "text": "彰化老宅的客廳，大圓桌上擺著喜餅和鳳梨糖，雙方家長坐在太師椅上，媒人婆笑著說吉利話，準新娘端茶出來，屋外鞭炮剛放完。",
@@ -3047,8 +3213,11 @@
       "birth_year": 1958,
       "birth_place": "台南",
       "main_occupation": "護士",
-      "taboos": ["老伴目前的健康狀況或近況"],
-      "today_topic": "和老伴第一次出遊去日月潭"
+      "taboos": [
+        "老伴目前的健康狀況或近況"
+      ],
+      "today_topic": "和老伴第一次出遊去日月潭",
+      "preferences": "種花、拜拜"
     },
     "scene": {
       "text": "日月潭碼頭邊，遊湖船輕輕搖晃，湖面映著翠綠山色，一對年輕情侶坐在船頭，湖風輕輕吹起女方的頭髮，遠處水社碼頭的遊客細如螞蟻。",
@@ -3075,7 +3244,8 @@
       "birth_place": "高雄",
       "main_occupation": "港口工人",
       "taboos": [],
-      "today_topic": "幾十年來結婚紀念日的老習慣"
+      "today_topic": "幾十年來結婚紀念日的老習慣",
+      "preferences": "喝茶聊天、下棋"
     },
     "scene": {
       "text": "高雄老家的飯廳，圓桌上一桌家常菜，一對老夫妻對坐，桌角放著一束野花，電視機發出輕輕的聲音，窗外高雄港的船隻緩緩移動。",
@@ -3100,8 +3270,11 @@
       "birth_year": 1955,
       "birth_place": "台北",
       "main_occupation": "電子廠工人",
-      "taboos": [],
-      "today_topic": "新兵訓練第一週又累又怕的記憶"
+      "taboos": [
+        "兩岸政治話題"
+      ],
+      "today_topic": "新兵訓練第一週又累又怕的記憶",
+      "preferences": "下棋、種菜"
     },
     "scene": {
       "text": "軍營操場上，新兵們排成整齊方陣，穿著過大的新兵服，在烈日下站軍姿，教官在前方大聲喝令，遠處的軍旗在風中飄揚。",
@@ -3127,8 +3300,11 @@
       "birth_year": 1952,
       "birth_place": "台中",
       "main_occupation": "司機",
-      "taboos": [],
-      "today_topic": "在軍中學開車，讓我謀生一輩子"
+      "taboos": [
+        "退伍後求職不順或被歧視的經歷"
+      ],
+      "today_topic": "在軍中學開車，讓我謀生一輩子",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "軍事訓練場，整排吉普車停在場地上，士兵們接受駕駛訓練，教官在旁邊比手勢指導倒車，訓練場邊圍著鐵絲網和瞭望哨。",
@@ -3153,8 +3329,11 @@
       "birth_year": 1957,
       "birth_place": "嘉義",
       "main_occupation": "農夫",
-      "taboos": [],
-      "today_topic": "退伍走出軍營大門那一刻"
+      "taboos": [
+        "戒嚴時期言論審查的恐懼經歷"
+      ],
+      "today_topic": "退伍走出軍營大門那一刻",
+      "preferences": "種菜、下棋"
     },
     "scene": {
       "text": "軍營大門口，即將退伍的士兵們換上便服，拎著行李等待，家屬在門口張望，軍營的哨兵挺立，兩年的時光在這道大門前畫下句點。",
@@ -3179,8 +3358,11 @@
       "birth_year": 1951,
       "birth_place": "台南",
       "main_occupation": "水電工",
-      "taboos": ["兩岸政治話題"],
-      "today_topic": "在金門當兵、望著對岸的日子"
+      "taboos": [
+        "兩岸政治話題"
+      ],
+      "today_topic": "在金門當兵、望著對岸的日子",
+      "preferences": "下棋、看報紙"
     },
     "scene": {
       "text": "金門海邊，礁石邊浪花拍打，哨所的士兵望著對岸，島上木麻黃樹在海風中搖擺，遠處對岸的燈火在夜色中若隱若現。",
@@ -3207,7 +3389,8 @@
       "birth_place": "台北",
       "main_occupation": "成衣廠女工",
       "taboos": [],
-      "today_topic": "第一次被廠長當眾誇獎的那天"
+      "today_topic": "第一次被廠長當眾誇獎的那天",
+      "preferences": "做手工藝、拜拜"
     },
     "scene": {
       "text": "成衣工廠的縫製車間，一排排縫紉機快速運轉，女工們低頭趕製衣物，廠長走在走道間巡視，窗外工廠煙囪緩緩冒出白煙。",
@@ -3234,7 +3417,8 @@
       "birth_place": "彰化",
       "main_occupation": "小販",
       "taboos": [],
-      "today_topic": "考上大學那天郵差來送掛號信的記憶"
+      "today_topic": "考上大學那天郵差來送掛號信的記憶",
+      "preferences": "喝茶聊天、看報紙"
     },
     "scene": {
       "text": "民國六十年代初的彰化老街，郵差騎著腳踏車沿街停下，一戶一戶大聲喊「恭喜！掛號信！」，爸爸在攤位前親自簽收，顫抖著手拆開信封，鄰居全都探頭出來看，騎樓下掛著的鞭炮應聲燃放，紅色碎屑灑了滿地。",
@@ -3261,7 +3445,8 @@
       "birth_place": "苗栗",
       "main_occupation": "農婦",
       "taboos": [],
-      "today_topic": "自己種的高麗菜那年大豐收"
+      "today_topic": "自己種的高麗菜那年大豐收",
+      "preferences": "種菜、拜拜"
     },
     "scene": {
       "text": "苗栗的菜園裡，一排排高麗菜長得圓滾飽滿，農婦蹲在菜畦間摘菜，竹籃很快就裝滿，旁邊的土地翻得鬆軟，早晨的露水還掛在菜葉上。",
@@ -3288,7 +3473,8 @@
       "birth_place": "台南",
       "main_occupation": "電器行老闆",
       "taboos": [],
-      "today_topic": "學會騎腳踏車那天的成就感"
+      "today_topic": "學會騎腳踏車那天的成就感",
+      "preferences": "下棋、喝茶聊天"
     },
     "scene": {
       "text": "台南老街巷弄，寬闊的磚鋪道路，一個少年扶著腳踏車慢慢學騎，旁邊阿公在牆邊等著，巷弄兩旁是低矮的老厝，午後陽光斜斜灑落。",
@@ -3314,7 +3500,8 @@
       "birth_place": "嘉義",
       "main_occupation": "公務員",
       "taboos": [],
-      "today_topic": "畢業謝師宴那一夜的回憶"
+      "today_topic": "畢業謝師宴那一夜的回憶",
+      "preferences": "種蘭花、下棋"
     },
     "scene": {
       "text": "畢業謝師宴的圓桌上擺滿菜餚，老師胸前別著一朵大紅花，學生們捧著酒杯依序上前敬酒，牆邊立著一塊燙金謝師匾額，門外鞭炮聲此起彼落。",
@@ -3341,6 +3528,7 @@
       "birth_place": "高雄",
       "main_occupation": "康樂隊歌手",
       "taboos": [],
+      "preferences": "唱歌、聽老歌",
       "today_topic": "在勞軍晚會唱歌表演的歲月"
     },
     "scene": {
@@ -3367,6 +3555,7 @@
       "birth_place": "雲林",
       "main_occupation": "家庭主婦",
       "taboos": [],
+      "preferences": "拜拜、種花",
       "today_topic": "迷戀歌仔戲小生的少女時光"
     },
     "scene": {
@@ -3394,7 +3583,8 @@
       "birth_place": "彰化",
       "main_occupation": "家庭主婦",
       "taboos": [],
-      "today_topic": "用麵粉袋改做衣服褲子的年代"
+      "today_topic": "用麵粉袋改做衣服褲子的年代",
+      "preferences": "做手工藝、拜拜"
     },
     "scene": {
       "text": "廚房角落堆著幾個印花麵粉袋，拆開洗淨後攤平在裁剪桌上，一旁擺著老式縫紉機和剪刀，桌邊散落著裁剩的碎布。",
@@ -3420,7 +3610,8 @@
       "birth_place": "台中",
       "main_occupation": "百貨公司專櫃小姐",
       "taboos": [],
-      "today_topic": "去美容院燙頭髮做頭髮的回憶"
+      "today_topic": "去美容院燙頭髮做頭髮的回憶",
+      "preferences": "聽老歌、做手工藝"
     },
     "scene": {
       "text": "美容院裡一排旋轉椅前擺著大鏡子，燙髮夾一個個夾在頭髮上，空氣中飄著洗髮精跟燙髮藥水混合的味道，老闆娘忙進忙出招呼客人。",

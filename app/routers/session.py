@@ -13,6 +13,8 @@ from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
 from db.models import TherapySession, TherapyRound, RoundExchange
+from services.closing_templates import build_closing_invitation, build_closing_message
+import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -88,6 +90,39 @@ async def _get_session_topic(r, session_id: str) -> str | None:
     if not meta_raw:
         return None
     return json.loads(meta_raw).get("topic") or None
+
+
+async def _cache_round_carryover(r, session_id: str, round_number: int, data: dict) -> None:
+    """round 1/2 結束時，把下一回合開場（round 2/3）需要承接的內容存進 Redis
+    （見 orchestrator.py start_round 對 carryover 參數的說明）——前端在回合
+    邊界不會把 state 傳回來（Unity StartRound 呼叫 /session/round 不帶
+    state），只能由後端自己記住上一回合結束時的內容。"""
+    await r.set(
+        f"session:{session_id}:round{round_number}_carryover",
+        json.dumps(data, ensure_ascii=False), ex=86400,
+    )
+
+
+async def _get_round_carryover(r, session_id: str, round_number: int) -> dict | None:
+    raw = await r.get(f"session:{session_id}:round{round_number}_carryover")
+    return json.loads(raw) if raw else None
+
+
+async def _append_session_topic(r, session_id: str, topic_category: str | None) -> None:
+    """記錄這場療程實際分類到的16大主題（見 orchestrator.py
+    _classify_topic_category），供三回合結束後心得環節的 build_closing_
+    affirmation 判斷要用「撐過來」還是「美好時光」的收尾語氣。round 2 沿用
+    round 1 的分類（round 2 本身不重新分類），round 3 是 closing 沒有分類，
+    所以只有 round 1/2 結束時會呼叫這裡。"""
+    if not topic_category:
+        return
+    key = f"session:{session_id}:topics"
+    await r.rpush(key, topic_category)
+    await r.expire(key, 86400)
+
+
+async def _get_session_topics(r, session_id: str) -> list[str]:
+    return await r.lrange(f"session:{session_id}:topics", 0, -1)
 
 
 async def _update_live_view(r, session_id: str, **fields) -> None:
@@ -391,12 +426,51 @@ class SessionState(BaseModel):
     session_id: str
     round: int
     scene_elements: list[str]
+    scene_composition: str = ""  # 生圖時的英文構圖描述，供追問維持畫面一致性
     covered_w: list[str] = []
     skipped_w: list[str] = []
     last_question_type: str = "step1"
     last_w_asked: str = ""
     question_number: int = 1  # 本回合目前問到第幾題，供 round_exchanges 配對與 TTS 檔名編號
     question_asked_at: int = 0  # 目前這一題送出的時間（epoch ms），供計算 rounds.response_time
+    # question_count / supplement_count 是 orchestrator 的回合題數上限/補問上限
+    # 計數器（見 orchestrator.py _MAX_QUESTIONS_PER_ROUND）。這兩個欄位先前沒有
+    # 宣告在這個 pydantic model 裡，導致長者每答一次話、前端把 state 傳回來時
+    # 都被 FastAPI 的請求驗證直接丟棄、重置回預設值——單回合題數/補問上限
+    # 因此透過正式 API 從未真正生效過（每次呼叫都從預設值重新起算）。2026-08
+    # 修復：補上這兩個欄位讓它們能正常透過 API 往返存活。
+    question_count: int = 1
+    supplement_count: int = 0
+    # 生圖前 Q1 開場時就分類過 today_topic 屬於16大主題分類的哪一類（見
+    # orchestrator.py _classify_topic_category），供之後若需要問 Q2 縮小
+    # 範圍時直接複用，不用重複分類。同樣需要宣告在這裡才能透過 API 往返存活，
+    # 理由同上面 question_count/supplement_count 的說明。
+    topic_category: str | None = None
+    # start_round 一開始就撈好的 RAG 候選記憶（見 orchestrator.py
+    # _retrieve_candidate_memories），供 _start_scene_after_detail 需要
+    # RAG fallback 時直接讀，不用重新查一次。同樣需要宣告在這裡才能透過
+    # API 往返存活，理由同上面 question_count/supplement_count 的說明。
+    cached_rag_memories: list[dict] = []
+    # 生圖前 Q1 的回答，供 pre_image_q2 階段跟 Q2 合併當生圖記憶來源（見
+    # orchestrator.py process_response 的 pre_image_q1/pre_image_q2 分支）。
+    # 2026-08 發現：這個欄位原本沒宣告在這裡，導致每次長者答完Q1、前端把
+    # state 傳回來問Q2時就已經被 FastAPI 驗證丟棄——Q1+Q2合併生圖實際上
+    # 從未真正生效過，Q2階段只會拿到Q2單獨那句。理由同上面 question_count
+    # 等欄位的說明，這裡補上宣告修復。
+    pre_image_q1_answer: str = ""
+    # 生圖前 Q1(+Q2) 的完整內容，供長者看完圖後若沒有真正反應（quick_end）
+    # 時，STEP1問題前面能接一句具體呼應這段內容的話，而不是完全通用的固定
+    # 過渡句（見 orchestrator.py _start_scene_after_detail、
+    # _generate_quick_end_recap）。同樣需要宣告在這裡才能透過 API 往返存活。
+    pre_image_detail: str = ""
+    # 長者看完圖後反應被分類成「有差異但還沒具體講出哪裡不一樣」（分類2）
+    # 時，承接語本身就是追問「哪裡不一樣」的問題，這輪不接STEP1問題，
+    # state 留在 image_reveal 等長者先回答；這個欄位標記「已經追問過一次」，
+    # 避免長者第二次還是講得很籠統時無限追問下去（見 orchestrator.py
+    # process_response 的 image_reveal 分支）。跟上面其他欄位一樣，必須
+    # 宣告在這裡才能透過 API 往返存活，否則會被 FastAPI 驗證丟棄，導致
+    # 每次都判斷成「沒追問過」而無限循環。
+    image_reveal_deferred: bool = False
 
 
 class RespondRequest(BaseModel):
@@ -455,12 +529,15 @@ async def session_status(
 ):
     """
     calibrated：Unity 是否已把校正基準存進 session:{id}:calibration（見 ws_calibration.py）。
+    calibrating：Unity 目前是否連著 /ws/calibration、正在跑校正流程但還沒完成
+      （見 ws_registry.py）；跟 calibrated 互斥，一旦 calibrated 為 true 就不算 calibrating。
     started：/session/start 是否已被呼叫過（session:{id}:meta 已建立）。
     """
     r = request.app.state.redis
     calibrated = bool(await r.exists(f"session:{session_id}:calibration"))
+    calibrating = (not calibrated) and ws_registry.is_calibrating(session_id)
     started = bool(await r.exists(f"session:{session_id}:meta"))
-    return {"calibrated": calibrated, "started": started}
+    return {"calibrated": calibrated, "calibrating": calibrating, "started": started}
 
 
 @router.post("/start")
@@ -566,16 +643,26 @@ async def session_round(
     """
     orchestrator = request.app.state.orchestrator
     try:
-        topic_override = await _get_session_topic(request.app.state.redis, session_id)
+        r = request.app.state.redis
+        topic_override = await _get_session_topic(r, session_id)
+        # round 2/3 開場需要承接上一回合結束時的內容（round 1 的畫面元素／
+        # 話題、或 round 2 最後一句話），見 orchestrator.py start_round 說明。
+        carryover = (
+            await _get_round_carryover(r, session_id, round_number - 1)
+            if round_number in (2, 3) else None
+        )
         result = await orchestrator.start_round(
             user_id=user_id,
             session_id=session_id,
             round_number=round_number,
             topic_override=topic_override,
+            carryover=carryover,
         )
         result["state"]["question_number"] = 1
         result["state"]["question_asked_at"] = int(time.time() * 1000)
-        if result.get("question"):
+        # 第二、三回合不生圖也不合成語音（STT 仍照常），見這次改動需求：
+        # 第二回合自由追問、第三回合 closing 都只靠畫面文字＋長者口說回應。
+        if result.get("question") and round_number not in (2, 3):
             tts = request.app.state.tts_service
             scene_audio_path = None
             if result.get("scene_text"):
@@ -620,6 +707,35 @@ async def session_round(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"回合開場失敗: {str(e)}")
+
+
+_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume"}
+
+
+class ControlPayload(BaseModel):
+    action: str
+
+
+@router.post("/{session_id}/control", summary="治療師網頁即時控制療程（重播/跳過/暫停/繼續）")
+async def session_control(
+    session_id: str,
+    body: ControlPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    轉發給長者端 Unity 目前開著的 /ws/stt 連線（見 ws_registry.py）。
+    action 對應 Unity GameController.HandleSTTMessage 的 control 分支：
+      replay_audio → 重播目前這一題的語音
+      skip_scene   → 跳過目前這一題（不是跳過整個回合），視同長者未回應直接進下一步
+      pause/resume → 暫停/繼續本回合（暫停時取消反應逾時、鎖住麥克風與送出鈕）
+
+    長者端如果目前沒有連線（例如療程還沒進到 GameScene），delivered 會是 false，
+    不當錯誤處理——網頁不需要特別跳錯誤訊息給治療師。
+    """
+    if body.action not in _CONTROL_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"不支援的控制動作: {body.action}")
+    delivered = await ws_registry.send_control(session_id, body.action)
+    return {"ok": True, "delivered": delivered}
 
 
 @router.get("/{session_id}/metrics", summary="取得即時檢測回饋（供治療師頁面 polling）")
@@ -801,6 +917,7 @@ async def _compute_and_save_assessment(
                 total_score=total,
                 emotional_status=emotional_status,
                 story_summary=story_summary or None,
+                status="completed",
             )
             .on_conflict_do_update(
                 index_elements=["session_uuid"],
@@ -812,6 +929,7 @@ async def _compute_and_save_assessment(
                     "score_interaction": scores["互動頻率"],
                     "total_score": total,
                     "emotional_status": emotional_status,
+                    "status": "completed",
                     # story_summary 若這次沒生成成功（例如 LLM 逾時），保留舊值，不要用空字串蓋掉
                     **({"story_summary": story_summary} if story_summary else {}),
                 },
@@ -834,6 +952,9 @@ async def _compute_and_save_assessment(
             f"session:{session_id}:ema",
             f"session:{session_id}:calibration",
             f"session:{session_id}:round1_result",
+            f"session:{session_id}:round1_carryover",
+            f"session:{session_id}:round2_carryover",
+            f"session:{session_id}:topics",
         )
         if meta.get("patient_id"):
             await r.delete(f"patient:{meta['patient_id']}:active")
@@ -909,13 +1030,24 @@ async def session_closing(
             await db.rollback()
     await r.delete(f"session:{session_id}:closing_asked_at")
 
+    # 心得環節步驟2+3：長者回答完開場邀請語後，組出承接語＋收尾語（一般
+    # 分類接「撐過來/美好時光」核心語，抱怨系統/AI本身則只接感謝語，見
+    # app/services/closing_templates.py build_closing_message 說明）。
+    # 長者看完這則訊息後療程直接結束，不用再回應（見 ShareController.cs
+    # 顯示完就轉場）。
+    emotion = metrics.get("emotion_raw", "")
+    topics = await _get_session_topics(r, session_id)
+    closing_message = await build_closing_message(
+        body.text, emotion, topics, request.app.state.llm_service,
+    )
+
     try:
         scores = await _compute_and_save_assessment(request, session_id, db, therapist_id)
     except HTTPException as e:
         print(f"[Closing] 自動評估略過: {e.detail}")
         scores = None
 
-    return {"ok": True, "assessment": scores}
+    return {"ok": True, "closing_message": closing_message, "assessment": scores}
 
 
 @router.post("/respond")
@@ -968,6 +1100,18 @@ async def session_respond(
             emotion=emotion,
         )
 
+        if result.get("image_path"):
+            # action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次
+            # 真的生出圖片（見 orchestrator.py _start_scene_after_detail）。
+            # /session/start、/session/round 那兩支端點呼叫 start_round 時還
+            # 沒有圖，寫進 DB 的 scene_image 會是空字串，要等這裡才補上真正的
+            # 圖片路徑與場景文字。
+            await _save_round_image(
+                db, body.state.session_id, body.state.round, result["image_path"],
+                scene_text=result.get("scene_text", ""),
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
+
         if result.get("state") is None:
             # 回合結束（end_round / end_session），把這回合累積的平均反應時間寫進 rounds.response_time
             await _finalize_round_response_time(
@@ -980,6 +1124,28 @@ async def session_respond(
                     f"session:{body.state.session_id}:closing_asked_at",
                     str(int(time.time() * 1000)), ex=3600,
                 )
+                # 心得環節開場邀請語是純規則模板（見 app/services/closing_
+                # templates.py），orchestrator._end_action 對 end_session 只回
+                # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
+                # 實際分類到的16大主題（見 _append_session_topic）。
+                topics = await _get_session_topics(r, body.state.session_id)
+                invitation = build_closing_invitation(topics)
+                result["scene_text"] = invitation["scene_text"]
+                result["question"] = invitation["question"]
+            if result.get("action") == "end_round" and body.state.round in (1, 2):
+                # round 2/3 開場需要承接這裡：round 1 結束時記畫面元素／話題／
+                # 生圖前訪談內容＋這句話，round 2 結束時只需要這句話（round 3
+                # 的 closing 不需要畫面），見 orchestrator.py start_round 說明。
+                carryover = {"last_elder_response": body.elder_response, "emotion": emotion}
+                if body.state.round == 1:
+                    carryover.update({
+                        "scene_elements": body.state.scene_elements,
+                        "scene_composition": body.state.scene_composition,
+                        "pre_image_detail": body.state.pre_image_detail,
+                        "topic_category": body.state.topic_category,
+                    })
+                await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
+                await _append_session_topic(r, body.state.session_id, body.state.topic_category)
 
         if result.get("question"):
             # state 不是 None 代表回合還在繼續（open_followup / ask_supplement_w），
@@ -987,25 +1153,30 @@ async def session_respond(
             # state 是 None 代表 end_round/end_session，問題本身留給下一回合開場或
             # /session/{id}/closing 處理，這裡只負責播音檔。
             next_qn = body.state.question_number + 1
-            tts = request.app.state.tts_service
-            if result.get("scene_text"):
-                scene_audio_path = await _synthesize_safe(
+            # 第二回合（自由追問）全程不合成語音，STT 仍照常。end_session 的
+            # scene_text/question 是 build_closing_invitation 補上的心得環節
+            # 收尾語＋開場問題（見上面 action=="end_session" 分支），這一段
+            # 全部不需要語音，只當畫面上的文字。
+            if body.state.round != 2 and result.get("action") != "end_session":
+                tts = request.app.state.tts_service
+                if result.get("scene_text"):
+                    scene_audio_path = await _synthesize_safe(
+                        tts,
+                        text=result["scene_text"],
+                        session_id=body.state.session_id,
+                        round_number=body.state.round,
+                        turn_number=None,
+                    )
+                    result["scene_audio_path"] = scene_audio_path
+                question_audio_path = await _synthesize_safe(
                     tts,
-                    text=result["scene_text"],
+                    text=result["question"],
                     session_id=body.state.session_id,
                     round_number=body.state.round,
-                    turn_number=None,
+                    turn_number=next_qn if result.get("state") is not None else None,
                 )
-                result["scene_audio_path"] = scene_audio_path
-            question_audio_path = await _synthesize_safe(
-                tts,
-                text=result["question"],
-                session_id=body.state.session_id,
-                round_number=body.state.round,
-                turn_number=next_qn if result.get("state") is not None else None,
-            )
-            result["question_audio_path"] = question_audio_path
-            result["audio_path"] = question_audio_path  # 向下相容
+                result["question_audio_path"] = question_audio_path
+                result["audio_path"] = question_audio_path  # 向下相容
             await _update_live_view(
                 request.app.state.redis, body.state.session_id,
                 current_scene=result.get("scene_text", "") + result["question"],
