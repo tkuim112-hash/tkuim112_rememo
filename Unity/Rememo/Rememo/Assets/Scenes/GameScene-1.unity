@@ -646,7 +646,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: 47.5}
+  m_AnchoredPosition: {x: -14, y: 62}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &308883032
@@ -973,7 +973,7 @@ GameObject:
   - component: {fileID: 490781380}
   - component: {fileID: 490781379}
   m_Layer: 5
-  m_Name: Line6 (1)
+  m_Name: Line7
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -995,7 +995,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: -90}
+  m_AnchoredPosition: {x: -14, y: -80}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &490781379
@@ -1601,7 +1601,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: 123}
+  m_AnchoredPosition: {x: -14, y: 136}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &913718378
@@ -1991,8 +1991,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -15.734, y: 146.01}
-  m_SizeDelta: {x: 794.9734, y: 404.3976}
+  m_AnchoredPosition: {x: -15.734, y: 134}
+  m_SizeDelta: {x: 794.9734, y: 447.24}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1133395052
 MonoBehaviour:
@@ -2028,7 +2028,10 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: 
+  m_text: "\u80CC\u666F\uFF1A\u7CFB\u7D71\u539F\u672C\u8DD1\u5728\u6C92\u6709\u516C\u7DB2
+    IP\u3001\u8DEF\u7531\u5668\u4E5F\u7121\u6CD5\u8A2D\u5B9A portforwarding \u7684\u74B0\u5883\uFF0C\u6240\u4EE5\u6C92\u8FA6\u6CD5\u7528\u50B3\u7D71\u67B6
+    Nginx + \u958B\u653E\u901A\u8A0A\u57E0\u7684\u65B9\u5F0F\u5C0D\u5916\u958B\u653E\u3002\u6539\u7528
+    Cloudflare Tunnel\uFF0C\u4E0D\u9700\u8981\u516C\u7DB2 IP\u3001\u4E0D\u9700\u8981\u5C0D\u5916\u958B\u653E\u4EFB\u4F55\u9632\u706B\u7246\u901A\u8A0A\u57E0"
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 7b0848de019d74b028f80380e3f38bbe, type: 2}
   m_sharedMaterial: {fileID: 9175543853248863310, guid: 7b0848de019d74b028f80380e3f38bbe, type: 2}
@@ -2055,8 +2058,8 @@ MonoBehaviour:
   m_faceColor:
     serializedVersion: 2
     rgba: 4294967295
-  m_fontSize: 50
-  m_fontSizeBase: 50
+  m_fontSize: 48
+  m_fontSizeBase: 48
   m_fontWeight: 400
   m_enableAutoSizing: 0
   m_fontSizeMin: 18
@@ -3123,7 +3126,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: -23}
+  m_AnchoredPosition: {x: -14, y: -10}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1829308381
@@ -3198,7 +3201,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: 275}
+  m_AnchoredPosition: {x: -14, y: 286}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1992957121
@@ -3273,7 +3276,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: 201}
+  m_AnchoredPosition: {x: -14, y: 214}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &2060219688
