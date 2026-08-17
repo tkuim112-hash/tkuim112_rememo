@@ -1143,6 +1143,11 @@ async def session_respond(
                         "scene_composition": body.state.scene_composition,
                         "pre_image_detail": body.state.pre_image_detail,
                         "topic_category": body.state.topic_category,
+                        # round 1 結束時已經自然涵蓋的 W 維度——round 2 開場用來
+                        # 排除補問候選，不要再問長者已經在 round 1 講過的具體事實
+                        # （見 orchestrator.py _start_round2_free_followup 的
+                        # known_facts_w 說明）。
+                        "round1_covered_w": body.state.covered_w,
                     })
                 await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
                 await _append_session_topic(r, body.state.session_id, body.state.topic_category)

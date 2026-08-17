@@ -125,9 +125,9 @@ _W_ORDER = ["Where", "Who", "What", "When", "How", "Why"]
 # 一個維度的證據」也還是會重現——_missing_from_checks 的重複證據去重邏輯
 # 又剛好偏袒 _W_ORDER 排序在前的 What，把正確的 When 判定砍成「仍缺」，
 # 長者已經回答過的時間又被重問一次。這份清單同時餵給 _W_DESC["When"]（prompt
-# 定義）跟 _resolve_when_duplicate_evidence（跑在 _missing_from_checks 之前
-# 的去重修正，見該函式），兩邊共用同一份字面詞才不會各自漂移（同一種「兩邊
-# 各自 hardcode 忘改一邊」的坑，之前 DPO 用詞審查也踩過）。
+# 定義）跟 _void_pure_time_evidence_from_other_dims（跑在 _missing_from_checks
+# 之前的去重修正，見該函式），兩邊共用同一份字面詞才不會各自漂移（同一種
+# 「兩邊各自 hardcode 忘改一邊」的坑，之前 DPO 用詞審查也踩過）。
 _WHEN_KEYWORDS = [
     "什麼時候", "幾點", "早上", "中午", "下午", "傍晚", "晚上", "凌晨",
     "早餐", "午餐", "晚餐", "宵夜", "季節", "年份",
@@ -679,7 +679,8 @@ def get_scenario2_followup(
     sub_item: str | None,
     covered_w: list[str],
     named_person: str = "",
-) -> str | None:
+    skipped_w: list[str] | None = None,
+) -> tuple[str, str] | None:
     """
     生圖前 Q2・情境2專用：依 _PRE_IMAGE_PRIORITY_ORDER 找下一個該問的W維度，
     直接複用 _FIVE_W1H_BANK 裡已經核對過、排除過不適用欄位的那份題庫——
@@ -689,9 +690,19 @@ def get_scenario2_followup(
     covered_w：目前已經涵蓋的W維度（來自 _detect_pre_image_w_coverage 對
     Q1的核對，或後續每一輪 _detect_covered_w 對長者回答的更新），已涵蓋的
     欄位跳過不問。
+    skipped_w：已經問過、但長者這輪沒答到的W維度（見 process_response 的
+    pre_image_q2 迴圈說明）——2026-08-17稽核：這裡原本沒有這個參數，只看
+    covered_w，代表長者已經被問過、卻沒答到的維度，下一輪還是會被
+    _PRE_IMAGE_PRIORITY_ORDER 選中再問一次（例如連續兩輪都問「什麼時候」），
+    長者答不出來或答非所問時會被同一個問題卡住。跟 covered_w 一樣跳過不問，
+    差別是 covered_w 代表「已經答對」，skipped_w 代表「問過但沒答到，不再
+    重問」，兩者都要排除。
 
-    回傳 None 代表該問的都問完了（扣掉 excluded_fields、covered_w 後，
-    _PRE_IMAGE_PRIORITY_ORDER 已經沒有欄位可問）——呼叫端據此結束情境2的
+    回傳值改成 (question, w)：多回傳這次挑中的是哪個維度，讓呼叫端知道
+    「這題在問哪個W」，下一輪核對長者答了沒有時才能對得上（否則呼叫端只有
+    問題文字，沒辦法回推是哪個維度，就沒辦法在沒答到時把它加進 skipped_w）。
+    回傳 None 代表該問的都問完了（扣掉 excluded_fields、covered_w、skipped_w
+    後，_PRE_IMAGE_PRIORITY_ORDER 已經沒有欄位可問）——呼叫端據此結束情境2的
     追問迴圈，進生圖。theme 不在題庫裡、或 sub_item 分類失敗（該主題是
     sub_item granularity 卻拿不到有效值）時，同樣回傳 None，不勉強瞎猜。
     """
@@ -706,9 +717,10 @@ def get_scenario2_followup(
         return None
 
     excluded = set(field_data.get("excluded_fields", []))
+    skipped = set(skipped_w or [])
     fields = field_data.get("fields", {})
     for w in _PRE_IMAGE_PRIORITY_ORDER:
-        if w in excluded or w in covered_w:
+        if w in excluded or w in covered_w or w in skipped:
             continue
         field = fields.get(w)
         variants = field.get("variants") if field else None
@@ -717,7 +729,7 @@ def get_scenario2_followup(
         question = random.choice(variants)
         if field.get("requires") == "named_person":
             question = question.format(person=named_person or "他")
-        return question
+        return question, w
     return None
 
 
@@ -1036,43 +1048,57 @@ def _whole_sentence_copy_items(
     return items
 
 
-def _resolve_when_duplicate_evidence(checks: list) -> list:
+# 時間詞前後常見的泛泛填詞——「晚上的時候」「晚餐時間」這類片語裡，除了
+# _WHEN_KEYWORDS 本身的時間詞，唯一剩下的就是這些不帶任何實質內容的填詞，
+# 見 _void_pure_time_evidence_from_other_dims 說明。「時間」「時候」等單獨
+# 出現時通常緊接在某個時間詞後面組成「X時間／X時候」（例如「晚餐時間」拿掉
+# 「晚餐」後剩「時間」），不是獨立的實質內容，一併算填詞。
+_TEMPORAL_FILLER_RE = re.compile(r"的時候|的時間|的時段|時候|時段|時分|時間|之時")
+
+
+def _void_pure_time_evidence_from_other_dims(checks: list) -> list:
     """
     _detect_covered_w 專用，跑在 _missing_from_checks 之前。見 _WHEN_KEYWORDS
-    定義處的說明：本地模型常把「晚上」這類時間詞同時標成 When 跟另一個維度
-    （通常是 What）的證據，_missing_from_checks 的重複證據去重邏輯是「先出現
-    的維度贏」，_W_ORDER 裡 What 排在 When 前面，結果永遠是 When 被當重複
-    砍掉——跟長者的話明明是在回答「什麼時候」矛盾。
+    定義處的說明：本地模型常把時間詞誤標到別的維度（通常是 What）的證據。
 
-    這裡只處理「When 的證據本身命中 _WHEN_KEYWORDS 明確時間詞」這個已證實
-    的案例：確定是時間詞的話，把其他維度對同一段文字的重複主張清成
-    「找不到」，讓 When 保留這段證據、不被去重邏輯誤殺。其餘維度之間的
-    證據重複（目前沒有實測案例）維持原本 _missing_from_checks 的處理方式
-    不動，不在這裡預先猜測規則。
+    2026-08-17第一版（_resolve_when_duplicate_evidence）只處理「其他維度的
+    證據跟 When 的證據逐字相同」這個案例（例如兩邊都是「晚上」），但實測
+    發現「晚上的時候」這種除了時間詞、只剩「的時候」這類泛泛填詞、沒有任何
+    其他實質內容的片語，也會被標成 What 的證據——這段文字跟 When 自己的
+    證據（可能是 _backstop_when_evidence 補上的短版「晚上」）字面對不起來，
+    逐字比對抓不到，讓 What 白白多算一項本來不存在的內容。
+
+    改成更通用的判準：不比對是否跟 When 的證據字面相同，直接檢查每個非
+    When 維度的證據本身，把已知時間詞跟常見時間填詞都拿掉後，如果什麼都
+    不剩，代表這段證據整體其實只是在講時間，本來就不該算是那個維度的
+    證據，一律清成「找不到」——這個判準本身就涵蓋了原本「逐字相同」的
+    情況（拿掉時間詞後兩邊都會剩空字串），不用再分別處理兩種案例。
     """
-    when_checks = [c for c in checks if isinstance(c, dict) and c.get("dimension") == "When"]
-    if not when_checks:
-        return checks
-    when_evidence = (when_checks[0].get("evidence") or "").strip()
-    if when_evidence in ("", "找不到") or not any(kw in when_evidence for kw in _WHEN_KEYWORDS):
-        return checks
-    return [
-        {**c, "evidence": "找不到"}
-        if isinstance(c, dict) and c.get("dimension") != "When"
-        and (c.get("evidence") or "").strip() == when_evidence
-        else c
-        for c in checks
-    ]
+    result = []
+    for c in checks:
+        if not isinstance(c, dict):
+            result.append(c)
+            continue
+        evidence = (c.get("evidence") or "").strip()
+        if c.get("dimension") != "When" and evidence and evidence != "找不到":
+            stripped = evidence
+            for kw in _WHEN_KEYWORDS:
+                stripped = stripped.replace(kw, "")
+            stripped = _TEMPORAL_FILLER_RE.sub("", stripped)
+            if not stripped.strip():
+                c = {**c, "evidence": "找不到"}
+        result.append(c)
+    return result
 
 
 def _backstop_when_evidence(checks: list, elder_response: str) -> list:
     """
-    _detect_covered_w 專用，跟 _resolve_when_duplicate_evidence 處理的是
-    另一種失效模式：2026-08-17 實測發現本地模型對「晚餐時間」這類時間詞，
+    _detect_covered_w 專用，跟 _void_pure_time_evidence_from_other_dims 處理
+    的是另一種失效模式：2026-08-17 實測發現本地模型對「晚餐時間」這類時間詞，
     即使 _W_DESC["When"] 已經明列（見 _WHEN_KEYWORDS），有時不是重複標到
     別的維度，而是直接對 When 回「找不到」，完全沒偵測到——即使長者原話
-    裡的時間詞比 _resolve_when_duplicate_evidence 能處理的案例（同一段文字
-    同時被標到兩個維度）更明確，模型還是漏判。這種「該有的證據完全沒找到」
+    裡的時間詞比 _void_pure_time_evidence_from_other_dims 能處理的案例（同一
+    段文字同時被標到兩個維度）更明確，模型還是漏判。這種「該有的證據完全沒找到」
     (vs「找到了但標錯維度」)，靠繼續加提示詞說服模型效果有限（image_reveal
     分類那邊已經加過一次「以語意為準」的通用規則、这里的失效模式不一样：
     不是清單沒列到新詞，是清單列了模型還是沒找到），改用規則直接補：長者
@@ -1552,6 +1578,19 @@ class TherapyOrchestrator:
         W——round 2 是新的一輪 5W1H 追蹤，結束條件（全部涵蓋／單回合題數上限）
         沿用既有機制，見 process_response 對 last_question_type not in
         ("pre_image_q1","pre_image_q2","image_reveal") 的預設分支。
+
+        2026-08-17稽核（實測後補）：covered_w 重置雖然是刻意設計，但補問（STEP3）
+        選還沒問過的W時只看「這回合自己的」covered_w，完全不知道 round 1
+        已經問過什麼──實測案例：round 1 已經確認地點在「家裡」，round 2
+        補問時卻又選中 Where、問「都是在哪裡吃的」，長者回「剛剛不是就說了」
+        （明顯不耐煩）。改成額外帶一份 known_facts_w（round 1 結束時的
+        covered_w，從 carryover 讀），只用在 _next_step_or_end 選補問目標時
+        排除掉這些維度，不影響 covered_w／skipped_w 本身（round 2 自然對話
+        該怎麼判斷結束、還是照原本節奏走，不會因為 known_facts_w 提早收尾——
+        因為「全部涵蓋→結束」查的是 _next_uncovered_w(covered_w, skipped_w)，
+        沒有把 known_facts_w 算進去）。如果 round 1 幾乎把 5W1H 都問滿了，
+        round 2 進到補問階段時 known_facts_w 可能蓋掉大部分候選，此時直接
+        自然收尾——沒有新東西可補問，本來就不該硬湊一題。
         """
         carryover = carryover or {}
         scene_elements = carryover.get("scene_elements") or []
@@ -1560,6 +1599,7 @@ class TherapyOrchestrator:
         topic_category = carryover.get("topic_category")
         last_elder_response = carryover.get("last_elder_response", "")
         emotion = carryover.get("emotion") or "happy"
+        known_facts_w = carryover.get("round1_covered_w") or []
 
         result = await guarded_generate(
             self._generate_open_followup,
@@ -1582,6 +1622,7 @@ class TherapyOrchestrator:
             "scene_composition": scene_composition,
             "covered_w": [],
             "skipped_w": [],
+            "known_facts_w": known_facts_w,
             "last_question_type": "open",
             "last_w_asked": "",
             "question_count": 1,
@@ -1814,11 +1855,12 @@ class TherapyOrchestrator:
             # （_translate_detail_to_image_prompt 改成直接送中文，不再
             # 翻譯成英文）——如果再對整段image_prompt跑一次完整的
             # desensitize_text，會連我們自己寫的固定中文指令也被掃到：
-            # 「1980年代」被_remove_years誤判成確切年份換成「從前」，
-            # 「段落」「任何」被_remove_chinese_names的姓氏規則（「段」
-            # 「任」剛好都是清單裡的姓）誤判成人名換成「某人」。固定
-            # 指令不是使用者輸入，不需要也不能再套用這套針對中文個資
-            # 設計的正則，這裡只保留防禦性的taboo原字串比對（純substring
+            # 「1980年代」會被_remove_years誤判成確切年份換成「從前」（這條
+            # 跟姓名判斷邏輯無關，不管_remove_chinese_names用regex還是
+            # 2026-08-17改用的CKIP NER都一樣會誤傷，因為_remove_years本身
+            # 就是單純比對「19xx年」這種年份格式，不分辨是不是使用者輸入）。
+            # 固定指令不是使用者輸入，不需要也不能再套用這套針對中文個資
+            # 設計的脫敏流程，這裡只保留防禦性的taboo原字串比對（純substring
             # replace，不會誤傷不相關文字）。
             safe_prompt = image_plan["image_prompt"]
             for taboo in user["taboos"]:
@@ -2081,12 +2123,13 @@ class TherapyOrchestrator:
             if theme_data["granularity"] == "sub_item":
                 sub_item = await self._classify_pre_image_sub_item(category, elder_detail)
             named_person = _extract_named_person(elder_detail)
-            q2_question = get_scenario2_followup(category, sub_item, covered_w, named_person)
-            if not q2_question:
+            picked = get_scenario2_followup(category, sub_item, covered_w, named_person)
+            if not picked:
                 # 該問的維度都已經在Q1涵蓋或被排除，不用再多問一題。
                 return await self._start_scene_after_detail(
                     user, state, elder_detail, detail_is_usable=has_usable_detail,
                 )
+            q2_question, q2_w = picked
             print(f"  → 主題分類: {category}（子項目: {sub_item}），"
                   f"情境2（缺維度）追問Q2: {q2_question}，已涵蓋: {covered_w}")
             new_state = {
@@ -2098,6 +2141,7 @@ class TherapyOrchestrator:
                 "covered_w": covered_w,
                 "pre_image_q2_round": 1,
                 "pre_image_q2_max_rounds": _pre_image_q2_round_cap(covered_w),
+                "pre_image_q2_last_w": q2_w,
             }
             return {
                 "action": "pre_image_followup",
@@ -2140,10 +2184,11 @@ class TherapyOrchestrator:
                     if theme_data["granularity"] == "sub_item":
                         sub_item = await self._classify_pre_image_sub_item(category, combined)
                     named_person = _extract_named_person(combined)
-                    next_question = get_scenario2_followup(
+                    picked = get_scenario2_followup(
                         category, sub_item, covered_w, named_person,
                     )
-                    if next_question:
+                    if picked:
+                        next_question, next_w = picked
                         print(f"  → 情境1追問Q2有實質內容但仍缺維度，追加問一次: "
                               f"{next_question}，已涵蓋: {covered_w}")
                         new_state = {
@@ -2155,6 +2200,7 @@ class TherapyOrchestrator:
                             "covered_w": covered_w,
                             "pre_image_q2_round": 1,
                             "pre_image_q2_max_rounds": _pre_image_q2_round_cap(covered_w),
+                            "pre_image_q2_last_w": next_w,
                         }
                         return {
                             "action": "pre_image_followup",
@@ -2194,20 +2240,33 @@ class TherapyOrchestrator:
             for w in newly_covered:
                 if w not in covered_w:
                     covered_w.append(w)
+            # 2026-08-17稽核：上一輪問的維度（pre_image_q2_last_w）如果這輪
+            # 還是沒被涵蓋，代表長者沒答到、或答非所問——記進 skipped_w，下面
+            # 傳給 get_scenario2_followup 排除，不要再挑同一個維度重問一次
+            # （之前的行為是只看 covered_w，沒答到的維度沒有排除機制，會被
+            # _PRE_IMAGE_PRIORITY_ORDER 選中、連續好幾輪問同一個問題）。
+            skipped_w = list(state.get("skipped_w", []))
+            last_w = state.get("pre_image_q2_last_w")
+            if last_w and last_w not in covered_w and last_w not in skipped_w:
+                skipped_w.append(last_w)
+                print(f"  → W({last_w}) 這輪沒答到，加進 skipped_w，不再重問")
             round_count = state.get("pre_image_q2_round", 1)
             max_rounds = state.get("pre_image_q2_max_rounds", 1)
-            next_question = None
+            picked = None
             if round_count < max_rounds:
                 category = state.get("topic_category")
                 sub_item = state.get("pre_image_sub_item")
                 named_person = _extract_named_person(combined)
-                next_question = get_scenario2_followup(category, sub_item, covered_w, named_person)
-            if not next_question:
+                picked = get_scenario2_followup(
+                    category, sub_item, covered_w, named_person, skipped_w,
+                )
+            if not picked:
                 print(f"  → 情境2追問結束，已涵蓋: {covered_w}（共{round_count}輪）")
-                new_state = {**state, "covered_w": covered_w}
+                new_state = {**state, "covered_w": covered_w, "skipped_w": skipped_w}
                 return await self._start_scene_after_detail(
                     user, new_state, combined, detail_is_usable=True,
                 )
+            next_question, next_w = picked
             print(f"  → 情境2第{round_count + 1}輪追問: {next_question}，已涵蓋: {covered_w}")
             new_state = {
                 **state,
@@ -2215,7 +2274,9 @@ class TherapyOrchestrator:
                 "pre_image_q1_answer": combined,
                 "pre_image_q2_scenario": 2,
                 "covered_w": covered_w,
+                "skipped_w": skipped_w,
                 "pre_image_q2_round": round_count + 1,
+                "pre_image_q2_last_w": next_w,
             }
             return {
                 "action": "pre_image_followup",
@@ -2626,13 +2687,51 @@ class TherapyOrchestrator:
             emotion=emotion, elder_response=elder_response, scene_composition=scene_composition,
             pre_image_detail=state.get("pre_image_detail", ""),
         )
-        print(f"  → 補問 W({target_w}): {result['question']}")
+        # 模型可能沒照 target_w 的角度問（順著長者剛才的話自然延伸，見
+        # _classify_question_dimension 說明），核對這題實際問的是哪個維度，
+        # 分類不出來才退回原本指定的 target_w。
+        actual_w = await self._classify_question_dimension(result["question"]) or target_w
+        if actual_w != target_w and actual_w in covered_w:
+            # 2026-08-17稽核（實測後補）：不只是「問偏了」，是問偏到一個長者
+            # 這回合已經答過的維度——等於白問，浪費本回合有限的補問名額（見
+            # _MAX_SUPPLEMENT_PER_ROUND），該補的 target_w 反而從沒被真的問過。
+            # 這種情況才值得多花一次LLM呼叫重打；單純問偏到「還沒問過的其他
+            # 維度」不算浪費，不需要重打（那是刻意允許的自然延伸，見
+            # _classify_question_dimension docstring）。
+            print(
+                f"  → 補問 W({target_w}) 但問到已涵蓋的 {actual_w}（白問），"
+                f"帶 retry_feedback 重打一次: {result['question']!r}"
+            )
+            retry_feedback = (
+                f"上一次生成的問題「{result['question']}」問的其實是"
+                f"「{actual_w}」，但這個維度長者已經回答過了，這次問等於白問。"
+                f"這次請改成明確從「{target_w}」的角度切入——{_W_HINT[target_w]}"
+            )
+            result = await guarded_generate(
+                self._generate_supplement_question,
+                taboo_words=user["taboos"],
+                llm_service=self.llm,
+                max_retry=3,
+                fallback=_element_fallback(
+                    scene_els, target_w=target_w, topic_category=state.get("topic_category"),
+                ),
+                user=user, scene_elements=scene_els, covered_w=covered_w, target_w=target_w,
+                emotion=emotion, elder_response=elder_response, scene_composition=scene_composition,
+                pre_image_detail=state.get("pre_image_detail", ""),
+                retry_feedback=retry_feedback,
+            )
+            actual_w = await self._classify_question_dimension(result["question"]) or target_w
+            print(f"  → 重打後：補問 W({target_w})，實際角度 {actual_w}: {result['question']!r}")
+        elif actual_w != target_w:
+            print(f"  → 補問 W({target_w}) 但問題實際角度是 {actual_w}: {result['question']}")
+        else:
+            print(f"  → 補問 W({target_w}): {result['question']}")
         new_state = {
             **state,
             "covered_w": covered_w,
             "skipped_w": skipped_w,
             "last_question_type": "supplement_w",
-            "last_w_asked": target_w,
+            "last_w_asked": actual_w,
             "question_count": question_count + 1,
             "supplement_count": supplement_count + 1,
         }
@@ -2698,8 +2797,18 @@ class TherapyOrchestrator:
         機械化地把5W1H當成必須照1到5走完的線性流程。改成在非Why的未涵蓋
         維度裡隨機挑一個，Why仍維持最低優先序（只有其他都涵蓋時才輪到，
         且仍要通過長者狀態良好判斷）。
+
+        known_facts_w（見 _start_round2_free_followup 說明）：round 1 已經
+        自然涵蓋、round 2 開場時就知道的維度，一併從候選裡排除，避免補問
+        選到長者上一回合已經明確答過的事實（例如地點）。只影響這裡選哪個W
+        補問，不影響 covered_w／skipped_w 本身，round 2 自然對話該怎麼判斷
+        結束仍照原本節奏走。
         """
-        uncovered = [w for w in _W_ORDER if w not in covered_w and w not in skipped_w]
+        known_facts_w = state.get("known_facts_w") or []
+        uncovered = [
+            w for w in _W_ORDER
+            if w not in covered_w and w not in skipped_w and w not in known_facts_w
+        ]
         if not uncovered:
             return await self._end_action(state, user, elder_response, emotion)
 
@@ -3100,6 +3209,43 @@ class TherapyOrchestrator:
         raw = await self.llm.ask(prompt, temperature=0)
         return raw.strip().upper().startswith("Y")
 
+    async def _classify_question_dimension(self, question_text: str) -> str | None:
+        """
+        判斷一個問題主要是在問哪個W維度，_ask_supplement 生成完STEP3補問的
+        問題後用來核對「這題實際上問的是哪個維度」，不能盲目相信生成前指定
+        的 target_w。
+
+        2026-08-17稽核（實測後補）：_generate_supplement_question 的 prompt
+        雖然帶了 target_w 的角度提示，但同時也要求「順著長者剛才的話...自然
+        地深入問下去，不是在核對清單」——這是刻意的設計（見該函式呼叫端，
+        使用者要求允許自然延伸話題，不強制鎖死角度），但兩個指示衝突時，
+        模型常常選擇順著長者的話延伸、放棄target_w的角度（實測案例：
+        target_w=Where，長者剛講完食材，模型改問「你們都怎麼搭配食材呢」，
+        完全是How的角度）。如果照樣把這題記成「問了Where」，會造成兩個問題：
+        (1) 長者這輪如果沒答到Where（因為問題根本沒問Where），Where會被
+        錯誤記進skipped_w、永久跳過，但其實從沒被真的問過；
+        (2) 下一輪選還沒問過的維度時，可能又選到跟這題角度雷同的其他維度
+        （例如這次選到How），問出跟上一題幾乎重複的問題。
+        改成問題生成後另外核對一次「這題實際上是哪個角度」，用這個核對過的
+        結果取代target_w記進state，讓後續的「有沒有答到」判斷跟「還有哪些
+        維度沒問過」的追蹤，都是根據長者實際被問到的角度，不是原本打算問
+        但模型沒照做的角度。
+
+        回傳 _W_ORDER 其中一個維度名稱，或 None（問題內容判斷不出明確對應
+        哪個維度，呼叫端此時應該退回原本指定的 target_w，不強求一定要分類
+        出新答案）。
+        """
+        dim_list = "、".join(f"「{w}」" for w in _W_ORDER)
+        desc_list = "\n".join(f"- {w}：{_W_DESC[w]}" for w in _W_ORDER)
+        prompt = (
+            f"這是治療師問長者的一句話：「{question_text}」\n\n"
+            f"這句話主要是想引導長者回答下面哪一個維度？\n{desc_list}\n\n"
+            f"只回{dim_list}其中一個維度名稱本身，不要其他文字或說明；"
+            "如果都不像，回NONE。"
+        )
+        raw = (await self.llm.ask(prompt, temperature=0)).strip()
+        return raw if raw in _W_ORDER else None
+
     def _is_quick_end(self, elder_response: str) -> bool:
         """短回答或放棄關鍵字 → 直接標記話題結束，不呼叫 LLM。"""
         # _NO_RESPONSE_MARKER 字數超過5字、也不含放棄關鍵字，要獨立判斷，
@@ -3185,7 +3331,7 @@ class TherapyOrchestrator:
             )
             print(f"  → 短語格式重問結果: {retried}")
             checks = _merge_retried_checks(checks, retried, "dimension")
-        checks = _resolve_when_duplicate_evidence(checks)
+        checks = _void_pure_time_evidence_from_other_dims(checks)
         checks = _backstop_when_evidence(checks, elder_response)
         missing = _missing_from_checks(unchecked, checks, "dimension", elder_response)
         newly_covered = [w for w in unchecked if w not in missing]
@@ -4175,6 +4321,15 @@ class TherapyOrchestrator:
         詞類，沒有真的類推到「擺設」這個抽象類別涵蓋的其他物品。補上「不限
         地點」跟「桌椅家具、物品款式」到分類3的線索與例句裡，明講只要點名
         了具體人事物就算，不是只有地點才算。
+
+        2026-08-17稽核（第九次，實測後補）：長者說「很像當時的場景，但以前
+        我們家不會有那麼多人一起烤肉」——同一句話裡「像」（分類1線索）跟
+        具體差異「人數不對」（分類3線索）同時出現，模型只吃到開頭的「像」，
+        判成分類1，完全沒接住後半句的具體修正，長者這句話等於白說。追查
+        發現這是「兩類線索混在同一句話裡該以哪個為準」這個情境目前完全沒
+        規則涵蓋——不是清單漏詞，是根本沒教過模型「開頭有肯定詞、後面接
+        具體差異」時該怎麼判。補上一條規則，要求完整讀完整句再判斷，且
+        明講「先肯定後接具體差異」時以後半段的具體差異（分類3）為準。
         """
         already_deferred_note = (
             "\n【重要】長者已經被追問過一次「哪裡不一樣」了，這是他這次的"
@@ -4228,6 +4383,12 @@ class TherapyOrchestrator:
             f"在表達肯定/相似，就算分類1的線索，不要因為沒有出現清單上的"
             f"精確字詞就判定不算；同理，只要語意上是在表達差異/不同，就算"
             f"分類2或3的線索，一律以整句語意為準，不是比對字面。）\n"
+            f"（注意：完整讀完整句反應再判斷，不要只看到開頭的「像」就直接"
+            f"歸類1、沒往下看完就下結論。長者常常一句話裡先講一個肯定的"
+            f"開頭，後面才接真正想講的具體差異，例如「很像當時的場景，但"
+            f"以前我們家不會有那麼多人一起烤肉」——開頭「很像」只是順口的"
+            f"起手式，後半段「人數不對」才是這句話真正的重點，這種情況要"
+            f"判成分類3，不是分類1）\n"
             f"1. 覺得圖跟自己記得的一致 → 肯定的語氣呼應，不要把長者剛才的"
             f"肯定詞（例如「對」「就是這樣」）原句複述回去，那樣像鸚鵡學舌；"
             f"改用自己的話接，例如「聽你這樣說，我彷彿也看到了當時的畫面"
@@ -4297,7 +4458,10 @@ class TherapyOrchestrator:
             f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
             f"判斷依據：（一句話列出你在長者這句反應裡看到的具體線索，不要空泛"
-            f"帶過）\n"
+            f"帶過。只能引用長者這次【反應內容】裡實際出現的字詞，禁止編造、"
+            f"改寫或想像長者沒說過的話——如果反應內容很簡短、籠統，看不出"
+            f"明確線索，就老實寫「反應內容簡短，看不出明確線索」，不要為了"
+            f"湊出一個依據硬掰內容）\n"
             f"分類：（只能填1、2、3、4其中一個數字，對應上面4種分類）\n"
             f"承接語：（1-2句，30字以內，依上面判斷依據與分類撰寫）\n"
             f"問題：（≤25字，開放式，開頭要有具體錨點，畫面物件或長者生圖前分享的"
@@ -4613,6 +4777,16 @@ class TherapyOrchestrator:
         跟每次呼叫都會直接看到、具體可照做的 user_content 任務指示相比分量
         差很多，本地基底模型幾乎不會自己回頭套用。補上一句明講可以用感官記憶
         切入、依主題挑貼近的感官，讓這個選項具體出現在任務指示裡。
+
+        2026-08-17稽核（實測後補）：長者這輪答得很薄（例如「就是豆沙餡」）時，
+        模型把承接語寫成了問句（「吃月餅的時候，大家都在聊些什麼？」），連續
+        4次重試都生出同一句、最後退回保底句。追查發現「問題」欄位允許在長者
+        滔滔不絕時改用「後來呢？」這種延續句，緊接著才提醒一句「承接語不受
+        這條影響」——這句提醒太單薄，加上這支函式完全沒有範例可以模仿（跟
+        _generate_image_reveal_reaction 那邊「承接語不能是問句」有具體範例
+        撐著不一樣），素材薄的時候模型容易把兩個欄位的語感混在一起。補上一個
+        具體例子，示範素材很薄時承接語（直述句）跟問題（可以是延續句）該怎麼
+        分別寫。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -4672,7 +4846,12 @@ class TherapyOrchestrator:
             f"聊天中真的會脫口而出的簡短延續句（例如「後來呢？」「你們還做了什麼？」），"
             f"順著他的話往下接就好，不用刻意湊出結構完整、以W維度為目標的問題；只有"
             f"長者的敘述明顯停下來、需要換方向時，才自然地把問題帶到【尚未涵蓋的W維度】"
-            f"其中一個上。承接語（同理、具體呼應長者剛才說的內容）不受這條影響，維持原本要求。\n"
+            f"其中一個上。承接語（同理、具體呼應長者剛才說的內容）不受這條影響，維持原本要求，"
+            f"不能因為「問題」允許用延續句、也跟著把承接語寫成問句（例如長者剛才只簡短說"
+            f"「就是切仔麵」，這種內容很薄的情況，承接語仍要寫成直述句，例如「原來是切仔麵，"
+            f"光聽你這樣說就覺得很有味道。」，不要寫成「你們都聊些什麼呢？」這種問句；"
+            f"「問題」欄位才是延續句／新問題該出現的地方，例如接著問「那時候通常都跟誰"
+            f"一起去吃？」）。\n"
             f"把問題帶到某個W維度上時，優先考慮用感官記憶切入（聞到的氣味、聽到的"
             f"聲音、摸起來的感覺、吃起來的味道、看到的樣貌），比直接問事實更容易"
             f"勾起長者的回憶與情緒，用哪一種感官依【今日主題】情境挑最貼近的（例如"

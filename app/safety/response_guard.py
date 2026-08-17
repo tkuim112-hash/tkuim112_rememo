@@ -694,7 +694,15 @@ async def guarded_generate(
         # 承接語／場景文字本身不能被寫成問句（見 scene_text_is_a_question
         # 上方註解）。跟上面 is_generic_acknowledgment 共用同一組 scene_text／
         # reaction_text 判準理由——都是「承接語」性質的欄位。
-        if scene_text_is_a_question(ack_check_text):
+        #
+        # 例外：_generate_image_reveal_reaction 的分類2（長者覺得圖跟記憶
+        # 不一樣、但還沒具體講出哪裡不同）承接語本身就設計成要長者回答的
+        # 問題（例如「哪裡不一樣呢，可以多說一點嗎」），process_response 會
+        # 把這句話直接當這一輪的問題使用（見該分支 image_reveal_deferred
+        # 說明）——這是唯一「承接語本身就該是問句」的情況，其餘3類都不能。
+        # result["classification"] 只有這支函式的輸出才有這個 key，其他
+        # generate_fn 的 result 沒有，not in ("2",) 對它們永遠是 True，不受影響。
+        if result.get("classification") != "2" and scene_text_is_a_question(ack_check_text):
             logger.warning(
                 f"[ResponseGuard] 承接語被寫成問句: {ack_check_text!r}，"
                 f"重新生成 (attempt={attempt})"
