@@ -117,7 +117,20 @@ export default function RoundDetailPage({
 
           {(currentRound.exchanges ?? []).map((ex) => (
             <div key={ex.questionNumber} className="flex flex-col gap-1.5">
-              <p className="text-[14px] text-[#888]">第 {ex.questionNumber} 次提問</p>
+              <div className="flex items-center gap-2">
+                <p className="text-[14px] text-[#888]">第 {ex.questionNumber} 次提問</p>
+                {currentRoundNum === 1 && (
+                  <span
+                    className={`text-[12px] font-medium rounded-full px-2.5 py-0.5 ${
+                      ex.stage === "pre_image"
+                        ? "bg-[#ddeeff] text-[#5b8ac5]"
+                        : "bg-[#f0e6d8] text-[#c08252]"
+                    }`}
+                  >
+                    {ex.stage === "pre_image" ? "生圖前" : "生圖後"}
+                  </span>
+                )}
+              </div>
               <p className="text-[16px] text-[#1a1a1a]">{ex.question}</p>
               {ex.answer != null ? (
                 <div className="bg-[#f5e6d3] rounded-xl px-4 py-2.5 text-[16px] text-[#1a1a1a]">

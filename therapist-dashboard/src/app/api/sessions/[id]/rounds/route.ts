@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     SELECT
       r.id, r.round_number, r.type, r.response_time, r.emotion, r.generated_scene, r.patient_response, r.scene_image,
       s.patient_id,
-      re.id AS exchange_id, re.question_number, re.question, re.answer
+      re.id AS exchange_id, re.question_number, re.question, re.answer, re.stage
     FROM rounds r
     JOIN sessions s ON s.id = r.session_id
     JOIN patients p ON p.id = s.patient_id
@@ -53,6 +53,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       questionNumber: e.question_number,
       question: e.question,
       answer: e.answer ?? "",
+      stage: e.stage ?? null,
     })),
   })));
 }

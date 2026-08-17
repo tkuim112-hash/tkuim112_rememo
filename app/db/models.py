@@ -108,6 +108,9 @@ class RoundExchange(Base):
     question_number: Mapped[int] = mapped_column(Integer, nullable=False)
     question: Mapped[str | None] = mapped_column(Text)
     answer: Mapped[str | None] = mapped_column(Text)
+    # 'pre_image'：生圖前的引導問題（見 orchestrator.py 的 pre_image_q1/pre_image_q2）；
+    # 其餘一律 NULL，代表圖片生成後才問的一般問題。只有第一回合才會有 pre_image。
+    stage: Mapped[str | None] = mapped_column(Text)
 
 
 class AuditLog(Base):

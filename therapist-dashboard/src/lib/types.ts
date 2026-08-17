@@ -49,6 +49,7 @@ export interface RoundExchange {
   questionNumber: number;
   question: string;
   answer?: string;
+  stage?: "pre_image" | null;
 }
 
 export interface SessionRound {
