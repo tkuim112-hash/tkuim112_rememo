@@ -37,7 +37,13 @@ public class KinectAudioSender : MonoBehaviour
 
     void Start()
     {
-        wsStt = new WebSocket(AuthService.AppendToken(sttUrl));
+        // session_id 讓後端 /session/{id}/control 知道要把治療師的重播/跳過/暫停/繼續
+        // 指令轉發到哪一條連線（見 app/ws_registry.py）。跟 GameController 各自從
+        // PlayerPrefs 讀，不靠 GameController 賦值，避免兩個 MonoBehaviour 的
+        // Start() 執行順序不保證先後而漏帶 session_id。
+        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string url = string.IsNullOrEmpty(sessionId) ? sttUrl : $"{sttUrl}?session_id={sessionId}";
+        wsStt = new WebSocket(AuthService.AppendToken(url));
         wsStt.OnOpen    += (s, e) => Debug.Log("[STT WS Kinect] 已連線");
         wsStt.OnError   += (s, e) => Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}");
         wsStt.OnClose   += (s, e) => Debug.Log("[STT WS Kinect] 已關閉");

@@ -218,17 +218,35 @@ def load_lookup_tables() -> tuple[dict, dict, dict, dict]:
     return by_id, track_b_by_id, track_c_by_tone, track_d_by_name
 
 
-def build_context(key: tuple, m: dict, by_id: dict, track_b_by_id: dict, track_c_by_tone: dict, track_d_by_name: dict) -> str:
+# extract_elder_said_from_prompt 已搬到 data_quality.py 共用（
+# train_data_tools.py 的 cmd_refresh_prompts 也需要同一個邏輯）。
+extract_elder_said_from_prompt = dq.extract_elder_said_from_prompt
+
+
+def build_context(
+    key: tuple, m: dict, by_id: dict, track_b_by_id: dict, track_c_by_tone: dict,
+    track_d_by_name: dict, elder_response: str = "",
+) -> str:
+    """
+    elder_response: Track A/STEP3 專用——長者「最近說的話」，2026-08改版後不再
+    是scenarios.json裡固定寫死的elder_step2_response（詳見
+    cd.get_dynamic_elder_response_for_step3 docstring）。呼叫端自行決定怎麼
+    取得這個值：稽核既有pair（cmd_scan）用 extract_elder_said_from_prompt()
+    從該pair已存檔的prompt欄位直接抓（最準確，反映當初實際用的值）；
+    重新生成新pair（_regen_track_a）用 cd.get_dynamic_elder_response_for_step3()
+    現場模擬。沒有值時，checkpoint 3「情境連貫」在Track A身上無從判斷。
+    """
     track = key[0]
     if track == "A":
         sc = by_id.get(key[1])
+        elder_section = f"長者最近說：「{elder_response}」\n" if elder_response else ""
         if sc:
             return (
                 f"【背景】長者：{sc['elder']['name']}，職業：{sc['elder']['main_occupation']}，"
                 f"今日主題：{sc['elder']['today_topic']}，禁忌：{'、'.join(sc['elder'].get('taboos', [])) or '無'}\n"
-                f"畫面元素：{'、'.join(sc['scene']['elements'])}\n步驟：{key[2]}"
+                f"畫面元素：{'、'.join(sc['scene']['elements'])}\n{elder_section}步驟：{key[2]}"
             )
-        return f"步驟：{key[2]}，禁忌：{'、'.join(m.get('taboos', [])) or '無'}"
+        return f"{elder_section}步驟：{key[2]}，禁忌：{'、'.join(m.get('taboos', [])) or '無'}"
     if track == "B":
         sc = track_b_by_id.get(key[1])
         trigger_context = sc.get("context", "") if sc else m.get("trigger_context", "")
@@ -328,12 +346,20 @@ def _regen_track_a(
     elder, scene = sc["elder"], sc["scene"]
     taboos = elder.get("taboos", [])
     key = ("A", sid, step)
-    context = build_context(key, {}, by_id, {}, {}, {})
 
     covered_w = (
         cd.real_covered_w_from_lookup(chosen_lookup, sid, step) if chosen_lookup else []
     )
     target_w = cd._pick_target_w(covered_w) if step == "STEP3" else None
+    # 2026-08：STEP3的「長者最近說的話」改成動態模擬，不再讀scenarios.json
+    # 裡固定寫死的elder_step2_response（見 cd.get_dynamic_elder_response_for_step3
+    # docstring）。context也要用同一個值，不然審查員（validate_full）看到的
+    # 「長者說了什麼」跟這次生成實際用的輸入會對不起來。
+    dynamic_elder_reply = (
+        cd.get_dynamic_elder_response_for_step3(chosen_lookup, sid, sc)
+        if step == "STEP3" and chosen_lookup else ""
+    )
+    context = build_context(key, {}, by_id, {}, {}, {}, elder_response=dynamic_elder_reply)
 
     chosen, feedback = None, ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -341,6 +367,7 @@ def _regen_track_a(
             if step == "STEP3":
                 candidate = cd.call_claude(_STEP_BUILDERS[step](
                     sc, retry_feedback=feedback, covered_w=covered_w, target_w=target_w,
+                    elder_response=dynamic_elder_reply,
                 ))
             else:
                 candidate = cd.call_claude(_STEP_BUILDERS[step](sc, retry_feedback=feedback))
@@ -358,7 +385,7 @@ def _regen_track_a(
     if chosen is None:
         return None
 
-    step_responses = {"STEP1": "", "STEP2": sc.get("elder_step1_response", ""), "STEP3": sc.get("elder_step2_response", "")}
+    step_responses = {"STEP1": "", "STEP2": sc.get("elder_step1_response", ""), "STEP3": dynamic_elder_reply}
     inference_prompt = cd.build_inference_prompt(
         step, elder, scene, covered_w,
         topic_category=sc.get("topic_category"), elder_response=step_responses[step], taboos=taboos,
@@ -530,7 +557,14 @@ def cmd_scan(args) -> None:
         for i, (key, p) in enumerate(seen.items(), 1):
             m = p["meta"]
             chosen = p["chosen"][0]["content"]
-            context = build_context(key, m, by_id, track_b_by_id, track_c_by_tone, track_d_by_name)
+            # Track A/STEP3 才用得到，其他track的build_context分支不讀這個參數，
+            # 直接傳不影響——從這個pair已存檔的prompt裡抓「長者最近說的話」，
+            # 反映當初生成這筆chosen時實際用的值（見extract_elder_said_from_prompt）。
+            elder_response = extract_elder_said_from_prompt(p.get("prompt"))
+            context = build_context(
+                key, m, by_id, track_b_by_id, track_c_by_tone, track_d_by_name,
+                elder_response=elder_response,
+            )
             prompt = build_audit_prompt(chosen, context)
             try:
                 result = cd.call_claude(prompt, system=AUDIT_SYSTEM, model=cd.MODEL_CHOSEN)

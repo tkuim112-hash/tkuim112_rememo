@@ -37,6 +37,15 @@ BASE_MODEL = str(Path(__file__).parent / "models" / "taiwan-llama")
 DATA_FILE = Path(__file__).parent / "data" / "train.jsonl"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
+# 2026-08-17：使用者決定這一輪訓練只練 Track B（情緒引導）／C（承接＋追問）
+# 這兩軌「承接情緒」的核心行為，Track A（問題生成格式）／D（收尾引導）
+# 整個排除。train.jsonl 裡 A/D 的資料原樣保留、不刪除，只是這次訓練不會
+# 讀取——因為每次訓練都是從 BASE_MODEL 重新練起、不是接續舊 adapter
+# 繼續練（見 load_model_and_tokenizer），被排除的 track 這次訓練完全不會
+# 反映在新 adapter 上，退回純 prompt 指示＋app/safety/response_guard.py
+# 的 regex 防護。之後若要恢復，把這個集合改回 {"A", "B", "C", "D"} 即可。
+TRACKS_TO_TRAIN = {"B", "C"}
+
 MAX_SEQ_LENGTH = 512
 DPO_BETA = 0.1
 LEARNING_RATE = 5e-7
@@ -62,22 +71,30 @@ LORA_TARGET_MODULES = [
 
 def load_dataset_from_jsonl(path: Path) -> Dataset:
     records = []
+    skipped_by_track: dict[str, int] = {}
     with path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
+            track = rec["meta"]["track"]
+            if track not in TRACKS_TO_TRAIN:
+                skipped_by_track[track] = skipped_by_track.get(track, 0) + 1
+                continue
             records.append({
                 "prompt": rec["prompt"],
                 "chosen": rec["chosen"],
                 "rejected": rec["rejected"],
                 # 只留 track/scenario_id 字串（不是整個 meta dict），給下面的分層
                 # 切分用，切分完後會移除，不會進到 DPOTrainer。
-                "track": rec["meta"]["track"],
+                "track": track,
                 "scenario_id": rec["meta"]["scenario_id"],
             })
 
+    if skipped_by_track:
+        skipped_desc = "、".join(f"{t}={n}筆" for t, n in sorted(skipped_by_track.items()))
+        print(f"依 TRACKS_TO_TRAIN={sorted(TRACKS_TO_TRAIN)} 排除：{skipped_desc}")
     print(f"載入 {len(records)} 筆訓練對")
     return Dataset.from_list(records)
 

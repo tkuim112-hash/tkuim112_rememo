@@ -66,7 +66,7 @@ def load_speaker_centroid(model_dir: str):
     if os.path.exists(centroid_path):
         centroids = torch.load(centroid_path, map_location="cpu", weights_only=True)
         speaker_ids = centroids["speaker_ids"]
-        target = "female_voice" if "female_voice" in speaker_ids else "hung_yi_lee"
+        target = "hung_yi_lee" if "hung_yi_lee" in speaker_ids else "female_voice"
         vec = centroids["centroids"][speaker_ids.index(target)]
         logger.info(f"載入內建語者向量 ({target})")
         return vec
@@ -79,10 +79,37 @@ def count_cjk(text: str) -> int:
     return len(re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf]', text))
 
 
+TARGET_RATE = float(os.environ.get("TARGET_RATE", "3.8"))
+
+
+def rubberband_stretch(audio: np.ndarray, sample_rate: int, n_chars: int) -> np.ndarray:
+    """用 rubberband 把音訊拉慢到目標語速，比 WSOLA 更自然不失真"""
+    try:
+        import pyrubberband as rb
+        duration = len(audio) / sample_rate
+        if duration < 0.5 or n_chars == 0:
+            return audio
+        current_rate = n_chars / duration
+        if abs(current_rate - TARGET_RATE) / TARGET_RATE < 0.15:
+            return audio
+        time_ratio = TARGET_RATE / current_rate  # <1 拉慢，>1 加快（pyrubberband rate 越高越快）
+        time_ratio = max(0.85, min(1.4, time_ratio))
+        logger.info(f"Rubberband: {current_rate:.2f} -> {TARGET_RATE:.2f} 字/秒 (ratio={time_ratio:.2f}x)")
+        stretched = rb.time_stretch(audio.astype(np.float64), sample_rate, time_ratio)
+        return stretched.astype(np.float32)
+    except Exception as e:
+        logger.warning(f"Rubberband 失敗，跳過語速校正: {e}")
+        return audio
+
+
 def to_wav_bytes(audio, sample_rate: int, text: str = "") -> bytes:
     if hasattr(audio, "detach"):
         audio = audio.detach().cpu().numpy()
     audio = audio.squeeze().astype(np.float32)
+    if text:
+        n = count_cjk(text)
+        if n > 0:
+            audio = rubberband_stretch(audio, sample_rate, n)
     audio = np.clip(audio, -1.0, 1.0)
     buf = io.BytesIO()
     sf.write(buf, audio, sample_rate, format="WAV", subtype="PCM_16")
@@ -155,9 +182,12 @@ def _synthesize(text: str):
 
 
 def _synthesize_with_centroid(text: str, centroid):
+    import numpy as np
     n = count_cjk(text)
     cfg = 3.0 if n <= 25 else CFG_VALUE
-    return bm_model.generate(
+
+    # 暖機：在前面加句號讓模型先穩定，生完後截掉前 0.3 秒的暖機音訊
+    audio = bm_model.generate(
         target_text="。" + text,
         speaker_centroid=centroid,
         cfg_value=cfg,
@@ -165,6 +195,17 @@ def _synthesize_with_centroid(text: str, centroid):
         max_len=2000,
         retry_badcase=True,
     )
+    if hasattr(audio, "detach"):
+        audio_np = audio.detach().cpu().numpy().squeeze()
+    else:
+        audio_np = np.array(audio).squeeze()
+
+    # 截掉前 0.3 秒（暖機音）
+    warmup_samples = int(bm_model.sample_rate * 0.3)
+    if len(audio_np) > warmup_samples * 2:
+        audio_np = audio_np[warmup_samples:]
+
+    return audio_np
 
 
 if __name__ == "__main__":

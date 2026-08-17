@@ -38,6 +38,10 @@ public class ShareController : MonoBehaviour
     [Tooltip("每個字之間的秒數，建議 0.02~0.05")]
     public float charInterval = 0.03f;
 
+    [Header("心得環節收尾")]
+    [Tooltip("長者送出心得後，畫面顯示承接語＋收尾肯定語的秒數，之後才轉場到 ThankYouScene")]
+    public float closingMessageDisplaySeconds = 6f;
+
     private WebSocket ws;
     private AudioClip micClip;
     private string micDevice;
@@ -62,6 +66,9 @@ public class ShareController : MonoBehaviour
     [System.Serializable]
     private class STTMessage { public string type; public string text; public bool isFinal; }
 
+    [System.Serializable]
+    private class ClosingResponse { public bool ok; public string closing_message; }
+
     private bool UseKinect => kinectAudioSender != null;
 
     void Start()
@@ -81,7 +88,14 @@ public class ShareController : MonoBehaviour
         if (closingText == null) return;
         string text = PlayerPrefs.GetString("ClosingText", "");
         string question = PlayerPrefs.GetString("ClosingQuestion", "");
-        closingFullText = string.IsNullOrEmpty(question) ? text : $"{text}\n{question}";
+        // 心得環節開場邀請語（build_closing_invitation）只有 question、沒有 text，
+        // 避免 text 是空字串時還是接了一個換行，畫面上多出一行空白。
+        if (string.IsNullOrEmpty(text))
+            closingFullText = question;
+        else if (string.IsNullOrEmpty(question))
+            closingFullText = text;
+        else
+            closingFullText = $"{text}\n{question}";
         closingText.text = closingFullText;
         // 收尾問題顯示完畢 → 啟動反應時間計時
         kinectSensorSender?.OnQuestionAsked();
@@ -136,15 +150,32 @@ public class ShareController : MonoBehaviour
     {
         // 心得回答存進 rounds/round_exchanges（第4回合，type='心得'）並觸發療程評估寫入，
         // 跟前三回合的 PostTranscript（純統計用）不同，這裡是心得回合唯一的持久化寫入路徑。
+        // 一律呼叫（即使長者沒說話也送空字串）：後端 build_closing_receiving 會把沉默
+        // 分類成 thin_or_silent 挑對應的承接語，而且評估寫入本來就不能因為長者沒回應
+        // 這題就跳過。
+        submitButton.interactable = false;
+        if (micButton != null) micButton.interactable = false;
+
         string sessionId = PlayerPrefs.GetString("session_id", "");
-        if (!string.IsNullOrEmpty(sessionId) && !string.IsNullOrWhiteSpace(displayedText))
-            yield return PostClosingAnswer(sessionId, displayedText);
+        string closingMessage = "";
+        string answerText = string.IsNullOrWhiteSpace(displayedText) ? "" : displayedText;
+        if (!string.IsNullOrEmpty(sessionId))
+            yield return PostClosingAnswer(sessionId, answerText, msg => closingMessage = msg);
+
+        // 承接語＋收尾肯定語（見 app/services/closing_templates.py）顯示給長者看幾秒，
+        // 讓療程有好好被送出去的感覺，再轉場，不是送出後畫面立刻消失。
+        if (!string.IsNullOrEmpty(closingMessage) && closingText != null)
+        {
+            if (replayCoroutine != null) StopCoroutine(replayCoroutine);
+            closingText.text = closingMessage;
+            yield return new WaitForSeconds(closingMessageDisplaySeconds);
+        }
 
         PlayerPrefs.SetString("NextScene", "ThankYouScene");
         SceneManager.LoadScene("LoadingScene");
     }
 
-    IEnumerator PostClosingAnswer(string sessionId, string text)
+    IEnumerator PostClosingAnswer(string sessionId, string text, System.Action<string> onMessage)
     {
         byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/closing", "POST");
@@ -154,7 +185,15 @@ public class ShareController : MonoBehaviour
         AuthService.AttachAuthHeader(req);
         yield return req.SendWebRequest();
         if (req.result != UnityWebRequest.Result.Success)
+        {
             Debug.LogWarning($"[Share Closing] POST 失敗: {req.error}");
+            yield break;
+        }
+        ClosingResponse resp;
+        try { resp = JsonUtility.FromJson<ClosingResponse>(req.downloadHandler.text); }
+        catch { yield break; }
+        if (resp != null && !string.IsNullOrEmpty(resp.closing_message))
+            onMessage(resp.closing_message);
     }
 
     void OnMicToggle()

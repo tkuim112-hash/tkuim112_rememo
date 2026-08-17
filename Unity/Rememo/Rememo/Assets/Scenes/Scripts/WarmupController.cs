@@ -5,11 +5,6 @@ using System.Collections;
 
 public class WarmupController : MonoBehaviour
 {
-    [Header("後端設定")]
-    public string backendUrl = "https://api.re-memo.com";
-    [Tooltip("等治療師啟動療程時，每隔幾秒 poll 一次後端狀態")]
-    public float therapistPollInterval = 2f;
-
     [Header("UI 元件")]
     public Button startButton;
     public Image statusBadge;
@@ -22,50 +17,32 @@ public class WarmupController : MonoBehaviour
 
     void Start()
     {
-        // 預設禁用開始按鈕，等校正完成且治療師端按下「啟動療程」才放行
         startButton.interactable = false;
         startButton.onClick.AddListener(OnStart);
 
         calibrationManager = Object.FindFirstObjectByType<KinectCalibrationManager>();
-        StartCoroutine(WaitForCalibrationAndTherapistStart());
+        StartCoroutine(WaitForCalibration());
     }
 
-    IEnumerator WaitForCalibrationAndTherapistStart()
+    IEnumerator WaitForCalibration()
     {
-        // 等待校正完成
         while (calibrationManager != null && !calibrationManager.IsCalibrated)
         {
             statusBadge.sprite = detectingSprite;
             yield return null;
         }
 
-        // 校正完成
+        // 校正完成。等治療師端按下「啟動療程」、後端生成第一回合內容這段真正花時間的
+        // 過程交給 InstructionScene 的進度條呈現，這裡校正一完成就直接過去，
+        // 不再讓長者端停在 WarmupScene 乾等。
         statusBadge.sprite = successSprite;
-
-        // 等待治療師控制端確認：poll 後端直到治療師按下「啟動療程」（/session/start 已被呼叫）。
-        // sessionId 若拿不到（例如換取 pending session 失敗、離線 demo），
-        // 就沿用舊行為直接放行，不讓這個環節卡住展示。
-        string sessionId = PlayerPrefs.GetString("session_id", "");
-        var wait = new WaitForSeconds(therapistPollInterval);
-        while (!string.IsNullOrEmpty(sessionId))
-        {
-            bool started = false;
-            yield return StartCoroutine(SessionService.FetchStatus(
-                backendUrl,
-                sessionId,
-                result => started = result,
-                error => Debug.LogWarning(error)
-            ));
-            if (started) break;
-            yield return wait;
-        }
-
         startButton.interactable = true;
+        OnStart();
     }
 
     void OnStart()
     {
         PlayerPrefs.SetString("NextScene", "GameScene-1");
-        SceneManager.LoadScene("LoadingScene");
+        SceneManager.LoadScene("InstructionScene");
     }
 }

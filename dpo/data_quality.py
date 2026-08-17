@@ -95,6 +95,23 @@ extract_question_a = extract_question
 extract_question_c = extract_question
 extract_question_d = extract_question
 
+_ELDER_SAID_RE = re.compile(r"【長者(?:剛才|最近)說的話】\n(.+?)\n", re.S)
+
+
+def extract_elder_said_from_prompt(stored_prompt: list[dict] | None) -> str:
+    """從已存檔的 inference prompt（train.jsonl 的 "prompt" 欄位）裡抓出
+    「【長者剛才/最近說的話】」那一段——不管這段值當初是怎麼來的（舊資料讀
+    scenarios.json 固定劇本、新資料讀 cd.simulate_elder_response 動態模擬），
+    存進 prompt 裡的就是「那次生成實際用的值」，直接抓出來最準，不用另外
+    猜測或重新模擬一次。給 semantic_audit.py（cmd_scan 稽核既有pair）跟
+    train_data_tools.py（cmd_refresh_prompts 重新渲染既有pair的prompt格式，
+    不該連帶改變原本用的elder_response值）共用。"""
+    if not stored_prompt:
+        return ""
+    user_content = next((m["content"] for m in stored_prompt if m.get("role") == "user"), "")
+    match = _ELDER_SAID_RE.search(user_content)
+    return match.group(1).strip() if match else ""
+
 
 def extract_scene_text(content: str) -> str | None:
     """Track A：從「場景文字：」行取出場景描述文字。"""
@@ -694,6 +711,7 @@ EVAL_STEP_CONTEXT = {
 
 def build_eval_inference_prompt(
     step: str, scenario: dict, covered_w: list[str] | None = None, target_w: str | None = None,
+    elder_response: str | None = None,
 ) -> list[dict]:
     """
     委派給 dpo/collect_data.py 的 build_inference_prompt，system prompt 直接讀
@@ -703,10 +721,18 @@ def build_eval_inference_prompt(
 
     covered_w/target_w 改由呼叫端（evaluate()）依序評測 STEP1→STEP3 時動態
     算出並傳入，不再用寫死的固定假設值。
+
+    elder_response: STEP3專用，2026-08改版由呼叫端（evaluate()）用
+    cd.simulate_elder_response() 根據「這次評測時模型STEP1實際生成的問題」
+    現場模擬後傳入——不再退回 EVAL_STEP_CONTEXT 裡 scenarios.json 的固定
+    劇本，那份劇本沒有對應到任何一次真正生成的STEP1問題，會讓STEP3的評測
+    輸入跟模型自己在這次評測裡實際問出來的內容對不上。沒有傳值時（呼叫端
+    還沒更新）才退回舊的 EVAL_STEP_CONTEXT 查表，保持向後相容。
     """
     elder = scenario["elder"]
     ctx = EVAL_STEP_CONTEXT[step]
-    elder_response = scenario.get(ctx["elder_response_key"], "") if ctx["elder_response_key"] else ""
+    if elder_response is None:
+        elder_response = scenario.get(ctx["elder_response_key"], "") if ctx["elder_response_key"] else ""
 
     return cd.build_inference_prompt(
         step=step,
@@ -885,10 +911,14 @@ def evaluate(model: str, scenarios: list[dict]) -> dict:
         # covered_w 是「STEP1結束後」的真實狀態，STEP1呼叫模型拿到 content
         # 後才更新。
         covered_w: list[str] = []
+        dynamic_elder_reply = ""
         for step in ("STEP1", "STEP3"):
             total += 1
             target_w = _pick_target_w_eval(covered_w) if step == "STEP3" else None
-            messages = build_eval_inference_prompt(step, sc, covered_w=covered_w, target_w=target_w)
+            messages = build_eval_inference_prompt(
+                step, sc, covered_w=covered_w, target_w=target_w,
+                elder_response=dynamic_elder_reply if step == "STEP3" else None,
+            )
             try:
                 content = call_ollama(model, messages)
             except (urllib.error.URLError, TimeoutError, KeyError) as e:
@@ -902,6 +932,20 @@ def evaluate(model: str, scenarios: list[dict]) -> dict:
             new_covered = cd._extract_covered_w(content)
             if new_covered:
                 covered_w = new_covered
+
+            # STEP1評測完後，用這次模型「真正問出來」的問題模擬長者會怎麼
+            # 回答，給下一步STEP3當「長者剛才說的話」——跟generate_track_a
+            # 用的是同一套邏輯（見cd.simulate_elder_response docstring），
+            # 確保評測時STEP3看到的輸入跟這次STEP1實際問的內容對得上。
+            if step == "STEP1":
+                q1 = extract_question(content)
+                st1 = extract_scene_text(content)
+                if q1 and st1:
+                    try:
+                        dynamic_elder_reply = cd.simulate_elder_response(sc, q1, st1)
+                    except Exception as e:
+                        print(f"  [WARN] {sc['id']} 模擬長者回答失敗（{e}），STEP3將退回無長者回應")
+                        dynamic_elder_reply = ""
 
             q = extract_question(content)
             elements = sc["scene"]["elements"]
@@ -1430,10 +1474,20 @@ def regenerate_track_a_scenario_step(
         if chosen_lookup else []
     )
     target_w = cd._pick_target_w(covered_w) if step == "STEP3" else None
+    # 2026-08：STEP3的「長者最近說的話」改成動態模擬（見
+    # get_dynamic_elder_response_for_step3 docstring），不再讀scenarios.json
+    # 裡固定寫死的elder_step2_response——固定劇本沒有對應到這次真正生成的
+    # STEP1問題，容易兜不上。
+    dynamic_elder_reply = (
+        cd.get_dynamic_elder_response_for_step3(chosen_lookup, sc["id"], sc)
+        if step == "STEP3" and chosen_lookup else ""
+    )
 
     print(f"  [{sc['id']}] {step} — 重新生成 chosen...")
     if step == "STEP3":
-        user_prompt = prompt_builders[step](sc, covered_w=covered_w, target_w=target_w)
+        user_prompt = prompt_builders[step](
+            sc, covered_w=covered_w, target_w=target_w, elder_response=dynamic_elder_reply,
+        )
     else:
         user_prompt = prompt_builders[step](sc)
     try:
@@ -1476,7 +1530,7 @@ def regenerate_track_a_scenario_step(
     step_responses = {
         "STEP1": "",
         "STEP2": sc.get("elder_step1_response", ""),
-        "STEP3": sc.get("elder_step2_response", ""),
+        "STEP3": dynamic_elder_reply,
     }
     inference_prompt = cd.build_inference_prompt(
         step, elder, scene, covered_w,

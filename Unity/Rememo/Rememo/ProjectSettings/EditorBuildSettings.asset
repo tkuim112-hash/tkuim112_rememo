@@ -21,6 +21,9 @@ EditorBuildSettings:
     path: Assets/Scenes/WarmupScene.unity
     guid: 6e11ebc8b35e74f42b164081e8598636
   - enabled: 1
+    path: Assets/Scenes/InstructionScene.unity
+    guid: 8abe7a595dbca4a50a8dd85d773c7cf1
+  - enabled: 1
     path: Assets/Scenes/GameScene-1.unity
     guid: 2e2223adba5244044b82ecc45c3bf9c3
   - enabled: 1

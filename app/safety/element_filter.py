@@ -16,12 +16,15 @@
 互動設計應用於失智老人懷舊治療之研究一文的原型 v1 失敗經驗也記錄了
 「物件顯示太小」導致長者無法辨識，跟小人物是同一類問題，一併擋掉。
 
-架構比照 taboo_checker.py：
-  Layer 1 關鍵詞黑名單：同步、零延遲，濾掉字面明顯落入不可靠類別的元素。
-  被濾掉後元素數量不足時，用安全備援元素池補足，不額外呼叫 LLM。
+架構比照 taboo_checker.py 的 Layer 1 關鍵詞黑名單：同步、零延遲，濾掉字面明顯
+落入不可靠類別的元素。2026-08 曾經在濾掉之後用一個固定的安全備援元素池
+（跟長者職業、情境完全無關的舊台灣農村意象）把數量補回 4 個，結果反而
+是「元素彼此不相關」的主要來源——例如郵差情境濾掉「路牌」後，補進去的
+是跟送信毫無關聯的「稻田」「水缸」，這種硬湊出來的組合後面不管怎麼修
+問題生成的 prompt 都救不回來。改成不補：濾掉後剩幾個就是幾個，寧可
+少一點元素、彼此都跟長者情境相關，也不要湊數量湊出不相關的元素。
 """
 import logging
-import random
 
 logger = logging.getLogger(__name__)
 
@@ -39,39 +42,25 @@ UNRELIABLE_ELEMENT_KEYWORDS = [
     "零件", "鈕扣", "指針", "刻度", "細節", "花紋", "紋路", "小物件", "小型",
 ]
 
-# 濾掉不可靠元素後，若元素數量不足，從這個安全備援池隨機補足
-# （形狀明確、不需要辨識文字或人臉細節，各年代場景都適用的大範圍實體物件）
-SAFE_FALLBACK_ELEMENTS = [
-    "腳踏車", "灶", "竹籃", "稻田", "老樹", "磚牆", "木桌", "扁擔",
-    "斗笠", "水缸", "紅磚道", "曬穀場", "木窗", "石階", "鐵皮屋頂", "菜園",
-]
-
 
 def has_unreliable_category(element: str) -> bool:
     """判斷元素是否落入「需要讀取文字」「需要辨識特定人物/表情」或「太小太瑣碎」這幾類不可靠類別。"""
     return any(kw in element for kw in UNRELIABLE_ELEMENT_KEYWORDS)
 
 
-def filter_scene_elements(elements: list[str], min_count: int = 4) -> list[str]:
+def filter_scene_elements(elements: list[str]) -> list[str]:
     """
-    濾掉不可靠類別的元素，數量不足時用安全備援元素補足。
+    濾掉不可靠類別的元素，不足額也不硬湊——剩幾個算幾個，避免補進跟
+    長者情境不相關的元素。
 
     Args:
         elements: _plan_image() 規劃出的原始元素清單
-        min_count: 至少要保留的元素數量（對齊 _plan_image prompt 要求的 4 個）
 
     Returns:
-        濾掉不可靠元素、且數量足夠的新元素清單
+        濾掉不可靠元素後的清單，長度可能小於原始清單、甚至是空的
     """
     kept = [e for e in elements if not has_unreliable_category(e)]
     removed = [e for e in elements if e not in kept]
     if removed:
         logger.warning(f"[ElementFilter] 濾除不可靠場景元素: {removed}")
-
-    if len(kept) >= min_count:
-        return kept
-
-    pool = [e for e in SAFE_FALLBACK_ELEMENTS if e not in kept]
-    random.shuffle(pool)
-    kept.extend(pool[: min_count - len(kept)])
     return kept

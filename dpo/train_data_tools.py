@@ -32,13 +32,37 @@ train.jsonl 維護工具合集（診斷／報告／格式重算／一次性修�
                   會呼叫 Claude API 並寫回 train.jsonl，會重算 stats.json。
 
   backfill-track-c-rules
-                  補上 TRACK_C_REJECTION_RULES 2026-08 新增的 7 條規則
-                  （too_clinical/over_dramatize/give_advice/compare_suffering/
-                  false_positivity/over_identify/focus_on_loss）在既有 Track C
-                  情境上的訓練對。既有 chosen／inference prompt 不變，只針對
-                  「這個情境還沒生成過這條新規則的 rejected」的組合呼叫 API，
-                  新 pair 附加進 train.jsonl，不動任何既有資料。可重複執行
-                  （已存在的組合會自動跳過）。會呼叫 Claude API，預設預覽模式。
+                  補上 TRACK_C_REJECTION_RULES 陸續新增、但既有 Track C 情境
+                  還沒有對應訓練對的規則（too_clinical/over_dramatize/
+                  give_advice/compare_suffering/false_positivity/over_identify/
+                  focus_on_loss/dwell_on_taboo/argues_image_accuracy/
+                  fabricates_elder_facts）。既有 chosen／inference prompt
+                  不變，只針對「這個情境還沒生成過這條新規則的 rejected」的
+                  組合呼叫 API，新 pair 附加進 train.jsonl，不動任何既有資料。
+                  可重複執行（已存在的組合會自動跳過）。dwell_on_taboo 只在
+                  情境有設 taboos 時生成；argues_image_accuracy 只在
+                  image_mismatch 系列情境生成，但這幾個情境目前連 chosen 都
+                  沒有，實際上還生不出東西（見 2026-08-09 稽核記錄）。會呼叫
+                  Claude API，預設預覽模式。
+
+  backfill-track-a-rules
+                  補上 QUESTION_REJECTION_RULES 裡 Track A 完全沒有訓練資料
+                  的 3 條規則（fabricates_elder_facts/image_description/
+                  precise_fact，2026-08-09 稽核發現）。邏輯跟
+                  backfill-track-c-rules 相同，差別是 Track A 的參考單位是
+                  (scenario_id, step) 而不是單一 tone——同一個情境的 STEP1／
+                  STEP3 各自有自己的 chosen，要分開查缺補漏。既有 chosen／
+                  inference prompt 不變，只對缺的 (scenario_id, step, 規則)
+                  組合呼叫 API 生成 rejected，附加進 train.jsonl，不動既有
+                  資料，可重複執行。會呼叫 Claude API，預設預覽模式。
+
+  remove-step2-a  移除 Track A STEP2（已棄用格式）的所有 pair。2026-08 確認
+                  正式環境 orchestrator 從不會用到「場景文字＋問題、無承接語」
+                  這個格式，STEP1 之後一律走 Track C（自由追問）或 STEP3
+                  （補問），collect_data.generate_track_a() 早已停止生成新的
+                  STEP2，但 train.jsonl 裡的舊資料一直沒清掉（1310 筆，佔
+                  Track A 總筆數 1/3）。不呼叫 API，執行前會先完整備份
+                  train.jsonl。預設預覽模式。
 
 執行範例：
   python dpo/train_data_tools.py diversity
@@ -51,14 +75,20 @@ train.jsonl 維護工具合集（診斷／報告／格式重算／一次性修�
   python dpo/train_data_tools.py fix-grief-a
   python dpo/train_data_tools.py backfill-track-c-rules           # 預覽
   python dpo/train_data_tools.py backfill-track-c-rules --apply   # 實際呼叫 API 並寫回
+  python dpo/train_data_tools.py backfill-track-a-rules           # 預覽
+  python dpo/train_data_tools.py backfill-track-a-rules --apply   # 實際呼叫 API 並寫回
+  python dpo/train_data_tools.py remove-step2-a           # 預覽
+  python dpo/train_data_tools.py remove-step2-a --apply   # 先備份，再移除並寫回
 """
 
 import argparse
 import json
 import random
+import shutil
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import date
 from pathlib import Path
 
 DATA_FILE = Path(__file__).parent / "data" / "train.jsonl"
@@ -335,12 +365,12 @@ def cmd_review(args: argparse.Namespace) -> None:
 _STEP_RESPONSE_FIELD = {
     "STEP1": None,
     "STEP2": "elder_step1_response",
-    "STEP3": "elder_step2_response",
 }
 
 
 def cmd_refresh_prompts(args: argparse.Namespace) -> None:
     import collect_data as cd
+    from data_quality import extract_elder_said_from_prompt
 
     scenarios = json.loads(cd.SCENARIOS_FILE.read_text(encoding="utf-8"))
     by_id = {sc["id"]: sc for sc in scenarios}
@@ -369,8 +399,15 @@ def cmd_refresh_prompts(args: argparse.Namespace) -> None:
 
         elder = sc["elder"]
         scene = sc["scene"]
-        response_field = _STEP_RESPONSE_FIELD[step]
-        elder_response = sc.get(response_field, "") if response_field else ""
+        if step == "STEP3":
+            # 重新渲染格式，不該連帶改變原本用的elder_response值——不管
+            # 當初是讀scenarios.json固定劇本（舊資料）還是動態模擬（新資料，
+            # 見cd.get_dynamic_elder_response_for_step3），直接從這個pair
+            # 已存檔的prompt裡抓出「那次生成實際用的值」，保持一致。
+            elder_response = extract_elder_said_from_prompt(p.get("prompt"))
+        else:
+            response_field = _STEP_RESPONSE_FIELD[step]
+            elder_response = sc.get(response_field, "") if response_field else ""
 
         covered_w = cd.real_covered_w_from_lookup(chosen_by_step, sid, step)
         target_w = cd._pick_target_w(covered_w) if step == "STEP3" else None
@@ -435,10 +472,19 @@ def _fix_leaked_regenerate_scenario_step(
         cd.real_covered_w_from_lookup(chosen_lookup, sc["id"], step) if chosen_lookup else []
     )
     target_w = cd._pick_target_w(covered_w) if step == "STEP3" else None
+    # 2026-08：STEP3的「長者最近說的話」改成動態模擬，不再讀scenarios.json
+    # 裡固定寫死的elder_step2_response（見 cd.get_dynamic_elder_response_for_step3
+    # docstring——固定劇本沒有對應到這次真正生成的STEP1問題，容易兜不上）。
+    dynamic_elder_reply = (
+        cd.get_dynamic_elder_response_for_step3(chosen_lookup, sc["id"], sc)
+        if step == "STEP3" and chosen_lookup else ""
+    )
 
     print(f"  [{sc['id']}] {step} — 重新生成 chosen...")
     if step == "STEP3":
-        user_prompt = prompt_builders[step](sc, covered_w=covered_w, target_w=target_w)
+        user_prompt = prompt_builders[step](
+            sc, covered_w=covered_w, target_w=target_w, elder_response=dynamic_elder_reply,
+        )
     else:
         user_prompt = prompt_builders[step](sc)
     try:
@@ -455,7 +501,7 @@ def _fix_leaked_regenerate_scenario_step(
     step_responses = {
         "STEP1": "",
         "STEP2": sc.get("elder_step1_response", ""),
-        "STEP3": sc.get("elder_step2_response", ""),
+        "STEP3": dynamic_elder_reply,
     }
     taboos = elder.get("taboos", [])
     inference_prompt = cd.build_inference_prompt(
@@ -725,12 +771,16 @@ def cmd_fix_grief_a(args: argparse.Namespace) -> None:
 
 
 # ============================================================
-# backfill-track-c-rules — 補上 TRACK_C_REJECTION_RULES 2026-08 新增的 7 條規則
+# backfill-track-c-rules — 補上 TRACK_C_REJECTION_RULES 2026-08 新增的規則
+# （最早 7 條情緒類規則 + 2026-08-09 陸續補上的 dwell_on_taboo／
+#  argues_image_accuracy／fabricates_elder_facts，共 10 條。precise_fact／
+#  image_description 這兩條還沒放進來——這兩條有 response_guard.py 的正則
+#  即時防護頂著，風險比其他缺口低，是否要一起補訓練資料還沒跟使用者確認過）
 # ============================================================
 
 _TRACK_C_NEW_RULES = {
     "too_clinical", "over_dramatize", "give_advice", "compare_suffering",
-    "false_positivity", "over_identify", "focus_on_loss",
+    "false_positivity", "over_identify", "focus_on_loss", "dwell_on_taboo",
 }
 
 
@@ -763,11 +813,19 @@ def cmd_backfill_track_c_rules(args: argparse.Namespace) -> None:
         name: desc for name, desc in cd.TRACK_C_REJECTION_RULES.items()
         if name in _TRACK_C_NEW_RULES
     }
+    # dwell_on_taboo 示範「長者自己帶出禁忌邊緣、AI沒退開」，情境本身沒設
+    # taboos 就沒有禁忌可以示範追問，比照 Track B（generate_track_b）的
+    # 同名判斷跳過，不要生出語意牽強的範例。
+    #
+    # 2026-08-17：範圍收斂成「承接情緒」核心規則，只留這8條，不含
+    # argues_image_accuracy／fabricates_elder_facts（事實正確性/畫面糾正，
+    # 跟承接情緒是不同性質，已從 _TRACK_C_NEW_RULES 移除）。
     to_generate = [
         (tone, rule_name)
         for tone in ref_by_tone
         for rule_name in new_rules
         if (tone, rule_name) not in already_have
+        and not (rule_name == "dwell_on_taboo" and not ref_by_tone[tone]["meta"].get("taboos"))
     ]
 
     print(f"需要新生成的 (情境, 規則) 組合：{len(to_generate)} 筆")
@@ -831,6 +889,155 @@ def cmd_backfill_track_c_rules(args: argparse.Namespace) -> None:
 
 
 # ============================================================
+# backfill-track-a-rules — 補上 QUESTION_REJECTION_RULES 裡 Track A 完全
+# 沒有訓練資料的規則（2026-08-09 稽核發現 fabricates_elder_facts／
+# image_description／precise_fact 三條零資料）。邏輯比照
+# backfill-track-c-rules，差別是 Track A 用 (scenario_id, step) 當參考單位
+# ——同一個 scenario_id 的 STEP1/STEP3 各自有自己的 chosen，不能共用。
+# ============================================================
+
+_TRACK_A_NEW_RULES = {
+    "fabricates_elder_facts", "image_description", "precise_fact",
+}
+
+
+def cmd_backfill_track_a_rules(args: argparse.Namespace) -> None:
+    import collect_data as cd
+    from data_quality import load_existing
+
+    existing = load_existing()
+    print(f"現有 train.jsonl：{len(existing)} 筆")
+
+    # 每個 (scenario_id, step) 只需要一筆參考 pair 就能拿到 chosen／prompt／
+    # taboos（同一個 scenario_id+step 的所有 pair 共用同一個 chosen，只有
+    # rejected 不同）。
+    ref_by_key: dict[tuple[str, str], dict] = {}
+    for p in existing:
+        meta = p["meta"]
+        if meta["track"] != "A":
+            continue
+        key = (meta.get("scenario_id"), meta.get("step"))
+        if key not in ref_by_key:
+            ref_by_key[key] = p
+    print(f"現有 Track A 情境×步驟：{len(ref_by_key)} 組")
+
+    already_have = {
+        (p["meta"].get("scenario_id"), p["meta"].get("step"), p["meta"]["rejection_rule"])
+        for p in existing
+        if p["meta"]["track"] == "A"
+    }
+
+    new_rules = {
+        name: desc for name, desc in cd.QUESTION_REJECTION_RULES.items()
+        if name in _TRACK_A_NEW_RULES
+    }
+    # 這三條規則（捏造事實／描述畫面內容／要求精確事實）都不像 touches_taboo
+    # 那樣需要看情境有沒有設 taboos，任何 scenario_id/step 都適用，不用過濾。
+    to_generate = [
+        (key, rule_name)
+        for key in ref_by_key
+        for rule_name in new_rules
+        if (key[0], key[1], rule_name) not in already_have
+    ]
+
+    print(f"需要新生成的 (情境, 步驟, 規則) 組合：{len(to_generate)} 筆")
+    for (scenario_id, step), rule_name in to_generate[:10]:
+        print(f"  - {scenario_id}/{step} / {rule_name}")
+    if len(to_generate) > 10:
+        print(f"  ...共 {len(to_generate)} 筆")
+
+    if not args.apply:
+        print("\n（預覽模式，未呼叫 API、未寫入檔案。加上 --apply 才會實際執行並花費 API 額度。）")
+        return
+
+    new_pairs = []
+    for (scenario_id, step), rule_name in to_generate:
+        ref = ref_by_key[(scenario_id, step)]
+        chosen = ref["chosen"][0]["content"]
+        taboos = ref["meta"].get("taboos", [])
+        rule_desc = new_rules[rule_name]
+
+        print(f"  [{scenario_id}/{step}] [{rule_name}] 生成 rejected...")
+        rejection_prompt = cd.build_rejection_prompt(chosen, rule_name, rule_desc, taboos=taboos)
+        rejected = None
+        for attempt in range(3):
+            try:
+                candidate = cd.call_claude(rejection_prompt, model=cd.MODEL_REJECTED)
+                time.sleep(cd.REQUEST_DELAY)
+            except Exception as e:
+                print(f"    ✗ rejected 失敗（attempt {attempt + 1}）：{e}")
+                continue
+            if candidate == chosen:
+                print(f"    ⚠ rejected==chosen，重試（attempt {attempt + 1}）...")
+                continue
+            rejected = candidate
+            break
+
+        if rejected is None:
+            print(f"    ✗ [{scenario_id}/{step}/{rule_name}] 三次均失敗或 chosen==rejected，跳過")
+            continue
+
+        new_pairs.append({
+            "prompt": ref["prompt"],
+            "chosen": [{"role": "assistant", "content": chosen}],
+            "rejected": [{"role": "assistant", "content": rejected}],
+            "meta": {
+                "scenario_id": scenario_id,
+                "step": step,
+                "rejection_rule": rule_name,
+                "track": "A",
+                "taboos": taboos,
+            },
+        })
+
+    all_pairs = existing + new_pairs
+    with cd.OUTPUT_FILE.open("w", encoding="utf-8") as f:
+        for p in all_pairs:
+            f.write(json.dumps(p, ensure_ascii=False) + "\n")
+
+    print(f"\n完成：新增 {len(new_pairs)} 筆，train.jsonl 總計 {len(all_pairs)} 筆")
+    print(f"輸出：{cd.OUTPUT_FILE}")
+
+
+# ============================================================
+# remove-step2-a — 移除 Track A STEP2（已棄用格式）的所有 pair
+# ============================================================
+
+def cmd_remove_step2_a(args: argparse.Namespace) -> None:
+    if not DATA_FILE.exists():
+        print(f"找不到 {DATA_FILE}")
+        sys.exit(1)
+
+    lines = [line for line in DATA_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [json.loads(line) for line in lines]
+    print(f"現有 train.jsonl：{len(records)} 筆")
+
+    is_step2_a = lambda r: r["meta"]["track"] == "A" and r["meta"]["step"] == "STEP2"
+    to_remove = [r for r in records if is_step2_a(r)]
+    keep = [r for r in records if not is_step2_a(r)]
+
+    print(f"找到 {len(to_remove)} 筆 Track A STEP2（已棄用格式，正式環境從不會用到）")
+    affected_scenarios = sorted({r["meta"]["scenario_id"] for r in to_remove})
+    print(f"涉及 {len(affected_scenarios)} 個 scenario_id：{affected_scenarios[:10]}"
+          f"{'...' if len(affected_scenarios) > 10 else ''}")
+
+    if not args.apply:
+        print(f"\n（預覽模式，未寫入檔案。移除後將剩餘 {len(keep)} 筆。加上 --apply 才會實際備份並寫回。）")
+        return
+
+    backup_path = DATA_FILE.parent / f"train.jsonl.bak_before_remove_step2a_{date.today().isoformat()}"
+    shutil.copy(DATA_FILE, backup_path)
+    print(f"已備份完整 train.jsonl 至：{backup_path}")
+
+    with DATA_FILE.open("w", encoding="utf-8") as f:
+        for r in keep:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print(f"\n完成：移除 {len(to_remove)} 筆，train.jsonl 剩餘 {len(keep)} 筆")
+    print(f"輸出：{DATA_FILE}")
+
+
+# ============================================================
 # entry point
 # ============================================================
 
@@ -871,10 +1078,24 @@ def main() -> None:
 
     p_backfill_c = sub.add_parser(
         "backfill-track-c-rules",
-        help="補上 TRACK_C_REJECTION_RULES 2026-08 新增的 7 條規則（呼叫 API）",
+        help="補上 TRACK_C_REJECTION_RULES 陸續新增、Track C 還沒有訓練對的規則（呼叫 API）",
     )
     p_backfill_c.add_argument("--apply", action="store_true", help="實際呼叫 API 並寫回 train.jsonl")
     p_backfill_c.set_defaults(func=cmd_backfill_track_c_rules)
+
+    p_backfill_a = sub.add_parser(
+        "backfill-track-a-rules",
+        help="補上 QUESTION_REJECTION_RULES 裡 Track A 零資料的 3 條規則（呼叫 API）",
+    )
+    p_backfill_a.add_argument("--apply", action="store_true", help="實際呼叫 API 並寫回 train.jsonl")
+    p_backfill_a.set_defaults(func=cmd_backfill_track_a_rules)
+
+    p_remove_step2 = sub.add_parser(
+        "remove-step2-a",
+        help="移除 Track A STEP2（已棄用格式，1310筆）。不呼叫API，會先備份",
+    )
+    p_remove_step2.add_argument("--apply", action="store_true", help="實際備份並寫回 train.jsonl")
+    p_remove_step2.set_defaults(func=cmd_remove_step2_a)
 
     args = parser.parse_args()
     args.func(args)

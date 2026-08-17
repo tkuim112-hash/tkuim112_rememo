@@ -127,6 +127,30 @@ def scene_text_addresses_elder(scene_text: str, elder_name: str = "") -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 場景文字把畫面講成「這是一幅畫/示意圖」，用後設視角拉開距離
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-08 orchestrator.py 開始把生圖時的 image_prompt 英文原文（脫敏、濾掉
+# 畫風片語後）直接傳給問題生成步驟當構圖參考，實測發現本地模型偶爾還是會把
+# 畫風描述的殘留語感翻譯進場景文字，變成「一幅水彩畫描繪了1970年代台灣煤礦
+# 場景」這種用後設視角描述「這是一幅畫」的句子——跟「場景文字不能寫成長者
+# 站在畫面裡」是同一種問題的相反方向：不是把長者拉進畫面裡，是把畫面本身
+# 講成一件被觀賞的作品，一樣會讓長者聽起來像在聽別人介紹一幅畫，而不是
+# 沉浸式的場景描述，跟「像在描述一幅畫」這句規則裡的比喻本意（客觀、第三
+# 人稱）恰恰相反。已經從源頭把 image_prompt 裡的畫風片語濾掉（見
+# orchestrator.py _strip_style_descriptors），這裡加一道事後防護，避免模型
+# 自己聯想出其他「這是一幅畫/示意圖」的講法。
+_ARTWORK_FRAME_RE = re.compile(r"水彩畫|這是一幅畫|一幅.{0,4}畫作|插畫|示意圖|畫面描繪|畫中")
+
+
+def scene_text_frames_as_artwork(scene_text: str) -> bool:
+    """True 代表場景文字把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的距離，需要重新生成。"""
+    if not scene_text:
+        return False
+    return bool(_ARTWORK_FRAME_RE.search(scene_text))
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 把 prompt 裡的範例句子原句照抄當答案
 # ══════════════════════════════════════════════════════════════════════
 #
@@ -150,12 +174,111 @@ _KNOWN_PROMPT_EXAMPLES = {
     "紡織廠的大門在黃昏的光線下顯得格外寧靜，工人們陸續走出廠門，往各自的方向散去。",
     "聽起來那段跟阿珠姐一起做工的日子很熱鬧呢。",
     "廟口的攤販剛擺出來，香氣混著人聲，好不熱鬧。",
+    # 2026-08-16稽核：_generate_image_reveal_reaction 自己的4類反應分類範例句
+    # （orchestrator.py）2026-08一度加進這份清單，但實測發現這條檢查會跟新
+    # 加的 judgment_evidence_unsupported 檢查搶同一份重試額度——長者反應
+    # 訊號很弱時，模型常常同時撞到「編造判斷依據」跟「照抄分類範例」兩條
+    # 規則，3次重試很容易被兩條規則輪流吃光，反而更常掉到完全通用的保底句。
+    # 使用者判斷「照抄範例」本身不是問題（承接語內容跟範例像，只要分類跟
+    # 判斷依據是根據長者這次實際說的話推出來的就好），比起「編造依據」是
+    # 更值得攔的問題，決定把這4句從清單移除，把重試額度留給後者。
 }
 
 
 def echoes_prompt_example(text: str) -> bool:
     """True 代表這段文字跟 question_5w1h.txt 裡的範例句子完全一樣，是照抄範例而非真正生成。"""
     return text.strip() in _KNOWN_PROMPT_EXAMPLES
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 承接語／場景文字用千篇一律的空泛套語，沒有具體呼應長者剛才說的內容
+# ══════════════════════════════════════════════════════════════════════
+#
+# question_5w1h.txt【承接語／場景文字規則】明文規定「承接語要具體呼應長者剛才
+# 說的內容（提到誰、提到什麼事），不能只是空泛的稱讚」，dpo/collect_data.py
+# 的 TRACK_C_REJECTION_RULES 也有對應的 generic_formula 規則（訓練資料裡早就
+# 有這條規則的 chosen/rejected 對比），但 runtime 一直沒有對應的事後防護——
+# 2026-08 實測 STEP2 自由追問，10次裡有6次承接語落在「我們接著聊聊這個吧」
+# 這類完全沒提到長者剛才說了什麼人事物的空泛套語，是目前實測命中率最高的
+# 違規模式。這裡用完全比對／子字串比對抓已知的固定套語，跟 echoes_prompt_example
+# 同一種判準取捨：只抓明確訊號，容許有其他還沒抓到的變形漏網，好過模糊比對
+# 誤傷真的有具體呼應內容的承接語。
+_GENERIC_ACK_PATTERNS = (
+    "我們接著聊聊這個吧",
+    "我們繼續聊",
+    "那我們繼續",
+    "好，我們繼續",
+    "謝謝你的分享",
+    "謝謝您的分享",
+    "這真是很棒的回憶",
+)
+
+
+def is_generic_acknowledgment(scene_text: str) -> bool:
+    """True 代表承接語／場景文字是千篇一律的空泛套語，沒有具體呼應長者剛才說的
+    內容（提到誰、提到什麼事），需要重新生成。"""
+    if not scene_text:
+        return False
+    return any(p in scene_text for p in _GENERIC_ACK_PATTERNS)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 承接語／場景文字本身被寫成問句
+# ══════════════════════════════════════════════════════════════════════
+#
+# question_5w1h.txt【承接語規則】明文規定「承接語本身不能寫成問句、不能用
+# 「呢」「嗎」這類疑問語尾詞結尾——承接語的工作是接住長者剛才的話，真正的
+# 提問留給緊接著的「問題：」欄位；承接語裡如果偷埋了一個問句，會跟後面的
+# 「問題：」重複問兩次，語氣也會顯得矛盾」，但這條規則先前只有口頭指示，
+# 沒有對應的事後防護（2026-08 實測抓到「大家烤肉的時候都聊些什麼呢？」這種
+# 承接語，本身就是一句完整的問句，後面又緊接著另一個「問題：」，長者聽起來
+# 會被連問兩次）。跟 is_generic_acknowledgment 同時查 scene_text／reaction_text
+# 這兩個key——都是「承接語」性質的欄位，同一條規則。
+_SCENE_TEXT_QUESTION_RE = re.compile(r"[呢嗎]\s*[？?]?\s*$|[？?]\s*$")
+
+
+def scene_text_is_a_question(scene_text: str) -> bool:
+    """True 代表承接語／場景文字本身被寫成問句（用「呢」「嗎」這類疑問語尾詞
+    結尾，或直接以問號收尾），需要重新生成。"""
+    if not scene_text:
+        return False
+    return bool(_SCENE_TEXT_QUESTION_RE.search(scene_text))
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 「判斷依據」欄位引用了長者沒說過的話
+# ══════════════════════════════════════════════════════════════════════
+#
+# _generate_image_reveal_reaction（orchestrator.py，2026-08-16稽核）要求LLM
+# 先在「判斷依據」欄位列出長者這句反應裡的具體線索，再據此分類、寫承接語
+# ——但實測發現本地弱模型在長者反應訊號很弱/很簡短時（例如長者只說「喔...
+# 嗯...是喔」這種語助詞），會直接編一句長者沒說過的話當依據（例如寫「長者
+# 只籠統說『不太一樣』」，但長者根本沒講過這幾個字），看起來像有在推理，
+# 實際上是套用範例模板／幻覺。這比原本「分類判斷不準」更隱蔽，因為分類
+# 欄位看起來有憑有據，容易被忽略。
+#
+# 判準：只檢查「判斷依據」裡有沒有用「」／『』引號直接引用的片段——沒加
+# 引號的依據可能是合理的語意摘要/改寫（例如「長者語氣中帶著想念」），不
+# 強制逐字比對，避免誤傷正常的改寫式依據；引號代表模型在宣稱「長者說過
+# 這句話」，這種宣稱才需要跟長者原話核對是否存在。
+_QUOTED_RE = re.compile(r"[「『][^」』]{2,}[」』]")
+_PUNCT_STRIP_RE = re.compile(r"[，。！？、\s「」『』]")
+
+
+def judgment_evidence_unsupported(evidence: str, elder_response: str) -> bool:
+    """True 代表「判斷依據」裡用引號引用的內容，長者這次的原話裡實際上
+    沒有出現，是編造出來的，需要重新生成。"""
+    if not evidence or not elder_response:
+        return False
+    quotes = _QUOTED_RE.findall(evidence)
+    if not quotes:
+        return False
+    normalized_response = _PUNCT_STRIP_RE.sub("", elder_response)
+    for quote in quotes:
+        normalized_quote = _PUNCT_STRIP_RE.sub("", quote)
+        if normalized_quote and normalized_quote not in normalized_response:
+            return True
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -178,7 +301,11 @@ def echoes_prompt_example(text: str) -> bool:
 # （同一句明顯的是非題丟給 Haiku 判斷4次只抓到1次），regex 判準反而更穩定。
 _FORMAT_PUNCT_RE = re.compile(r"[，。、！？!?,.\s「」『』（）()]")
 _DOUBLE_QUESTION_RE = re.compile(r"[？?]")
-_MEMORY_TEST_RE = re.compile(r"^你?(還記得|記不記得)")
+# 2026-08 用真正的 production prompt 實測補範例時，額外抓到「你記得」（沒有
+# 「還」字）這個變形（例如「你記得戲院裡放過哪些電影類型？」）——語氣上一樣是
+# 在測長者的記憶力，但原本的字面只抓「還記得／記不記得」，漏放了這個更短的
+# 講法，這裡補上「記得」本身也算命中。
+_MEMORY_TEST_RE = re.compile(r"^你?(還記得|記得|記不記得)")
 
 _XIAN_RE = re.compile(r"(?<!最)先(?!生|夫|父|母|人|前|天)")
 _ZANMEN_RE = re.compile(r"咱")
@@ -199,8 +326,43 @@ _BOOKISH_VC_RE = re.compile(r"做下來|說下去")
 # 說原因、說故事，不是答一個詞就結束；就算這次答得簡短，STEP2 自由追問也會
 # 順著往下接，不會卡住。2026-08 決定只保留下面這組更明確、幾乎不可能展開成
 # 敘事的字面（年份/時間/人名這類答了就結束的死板事實）。
+# check_format_rules 回傳的違規代號裡，只會檢查 question_text（q）本身、
+# 不會檢查 scene_text/reaction_text 等其他欄位的規則——guarded_generate 的
+# question_only_retry_fn 機制（見該函式說明）靠這份清單判斷「這個違規原因
+# 是不是保證跟其他欄位無關」，安全地只重新生成 question、不用讓已經驗證過的
+# 承接語跟著陪葬重生。double_question/memory_test/precise_fact/image_
+# description/comparison_trap/vague_association 都跟 too_long 一樣只查 q
+# （見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
+# scene_text+q 的 combined，不在此列——沒辦法排除是 scene_text 那邊的問題。
+_QUESTION_ONLY_FORMAT_RULES = frozenset({
+    "too_long", "double_question", "memory_test", "precise_fact",
+    "image_description", "comparison_trap", "vague_association",
+})
+
 _PRECISE_FACT_RE = re.compile(r"哪一?年|什麼時候|幾點|叫什麼|哪一?位")
-_IMAGE_DESC_RE = re.compile(r"看到什麼|看見什麼|圖案|造型|內容是什麼|寫著什麼|寫什麼|上面寫")
+# 「看到什麼/圖案/造型」這組字面漏掉了實測最常見的變形：「X裡/上/旁邊有什麼」
+# （例如「菜籃子裡有什麼？」「秤砣上有什麼？」「菜攤旁邊有什麼？」）——這種
+# 問法答案幾乎注定是列舉畫面裡看到的東西，跟「看到什麼」是同一種違規，但下面
+# 這條錯誤訊息文字其實一直都有提到「不要問畫面本身有什麼」，只是 regex 本身
+# 沒把這個講法寫進去，一直漏放。2026-08 第一版只抓「有什麼」緊接句尾（？/?）
+# 的窄版本，漏掉「有什麼」後面還接了具體名詞的變形（例如「有什麼好吃的青菜」），
+# 這裡改用負向後顧排除法：只要「有什麼」後面接的不是「想法/感覺/心情」這類
+# 抽象反思詞，一律算違規——不管後面是句尾問號還是接了具體名詞，判準是同一個
+# （這類抽象詞後面接的問法，例如「心裡有什麼想法」，才是允許的內省提問）。
+_IMAGE_DESC_RE = re.compile(
+    r"看到什麼|看見什麼|圖案|造型|內容是什麼|寫著什麼|寫什麼|上面寫"
+    r"|(?:裡|裡面|上|上面|旁邊|附近)有(?:些)?什麼"
+    r"(?!(?:想法|感覺|心情|回憶|打算|計畫|意義|感受|期待|看法|顧慮|牽掛))"
+)
+
+# 「哪一種/哪一樣…比較受歡迎/常見/多/好」（比較/排序類）跟「X讓你想到什麼」
+# （籠統聯想類）：2026-08 討論時已經寫進 question_5w1h.txt 的自我檢查文字，
+# 但當時只補了 prompt 文字、沒有對應的事後防護，一直是漏放狀態——這兩種問法
+# 答案本質上是「選一個名稱」或「一兩個字帶過」，跟 _PRECISE_FACT_RE／
+# _IMAGE_DESC_RE 是同一類「答案不是敘事」的違規，補在這裡一起用同一套
+# retry_feedback 機制處理。
+_COMPARISON_TRAP_RE = re.compile(r"哪一?[種樣].{0,15}(?:比較|更)")
+_VAGUE_ASSOCIATION_RE = re.compile(r"讓你想到什麼")
 
 # 「您」：question_5w1h.txt 明文規定「稱呼長者一律用「你」...不要用「您」——
 # 「您」念起來太正式，會破壞老朋友聊天的溫暖感」，但這條規則之前也只有口頭
@@ -217,9 +379,9 @@ def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] |
     combined = f"{scene_text or ''}{q}"
 
     length = len(_FORMAT_PUNCT_RE.sub("", q))
-    if length > 20:
+    if length > 30:
         return "too_long", (
-            f"上一次的問題「{q}」共{length}字，超過20字上限。這次請把這句話縮短到20字以內，"
+            f"上一次的問題「{q}」共{length}字，超過30字上限。這次請把這句話縮短到30字以內，"
             "可以拿掉不影響意思的修飾詞。"
         )
 
@@ -246,6 +408,20 @@ def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] |
             f"上一次的問題「{q}」要長者描述這張AI示意圖裡的畫面內容（例如看到什麼、圖案、"
             "造型）。長者根本沒看過這張剛生成的圖，這樣問等於逼他編答案。這次請把畫面元素"
             "當成引子，問長者自己實際經歷過的事，不要問畫面本身有什麼。"
+        )
+
+    if _COMPARISON_TRAP_RE.search(q):
+        return "comparison_trap", (
+            f"上一次的問題「{q}」問「哪一種/哪一樣…比較受歡迎/常見/多」，答案是選一個"
+            "名稱出來，不是敘事。這次請改問過程、感受或互動，例如改問長者怎麼跟客人"
+            "介紹賣得最好的那款、或那件事帶給長者的感受。"
+        )
+
+    if _VAGUE_ASSOCIATION_RE.search(q):
+        return "vague_association", (
+            f"上一次的問題「{q}」問「X讓你想到什麼」，太抽象籠統、沒有具體切入點，長者"
+            "常常只回一兩個字就結束。這次請改用情感/意義、陪伴的人、感官記憶其中一種"
+            "具體角度切入，不要用這種籠統聯想問法。"
         )
 
     if _NIN_RE.search(combined):
@@ -306,6 +482,7 @@ async def guarded_generate(
     max_retry: int = 1,
     text_keys: tuple[str, ...] = ("scene_text", "question"),
     fallback: dict | None = None,
+    question_only_retry_fn=None,
     **generate_kwargs,
 ) -> dict:
     """
@@ -326,6 +503,20 @@ async def guarded_generate(
         fallback:    違規重試後仍失敗時的保底回傳值，須包含與 generate_fn
                      相同的 key。未指定時預設使用 scene_text/question 保底，
                      若 text_keys 有換過，務必也提供對應的 fallback。
+        question_only_retry_fn: 選用。2026-08稽核發現：generate_fn 一次生成
+                     承接語＋問題兩個欄位，只要問題那半段違規（例如too_long），
+                     整包就會被丟掉重新生成——即使承接語當次已經通過所有檢查
+                     （例如已經正確判斷出4類反應之一、寫出很好的承接語），也會
+                     被迫陪著重生一次，實測發現這種「問題違規、承接語其實沒問題」
+                     的情況並不少見。提供這個參數後，一旦違規原因確定只跟
+                     question有關（treats_image_as_real_place／is_yesno_question／
+                     format_rule 屬於 _QUESTION_ONLY_FORMAT_RULES），就鎖住當次
+                     其餘欄位、之後只呼叫這支函式重新生成 question，不用讓
+                     generate_fn 的其他欄位跟著重新賭一次；一旦遇到任何無法排除
+                     是其他欄位問題的違規，立刻解鎖、退回原本整包重新生成。
+                     這支函式必須接受跟 generate_fn 相同的呼叫參數（含
+                     retry_feedback），回傳至少含 "question" 的 dict（有
+                     "covered_w" 就一併採用，沒有則視為空清單）。
         **generate_kwargs: 原封不動轉給 generate_fn 的參數
 
     Returns:
@@ -339,6 +530,10 @@ async def guarded_generate(
 
     attempt = 0
     retry_feedback = ""
+    # 見 question_only_retry_fn 參數說明：非 None 代表「這次違規確定只跟
+    # question 有關」，下一輪改呼叫 question_only_retry_fn 只重生 question，
+    # 其餘欄位沿用這份鎖住的值；None 代表沒有鎖定，走原本整包重新生成。
+    locked_fields: dict | None = None
     while attempt <= max_retry:
         call_kwargs = dict(generate_kwargs)
         if retry_feedback:
@@ -349,7 +544,15 @@ async def guarded_generate(
             # _generate_supplement_question / _generate_closing）都必須支援
             # retry_feedback 這個參數，否則這裡會 TypeError。
             call_kwargs["retry_feedback"] = retry_feedback
-        result = await generate_fn(**call_kwargs)
+        if locked_fields is not None:
+            q_result = await question_only_retry_fn(**call_kwargs)
+            result = {
+                **locked_fields,
+                "question": q_result.get("question", ""),
+                "covered_w": q_result.get("covered_w", []),
+            }
+        else:
+            result = await generate_fn(**call_kwargs)
         retry_feedback = ""
 
         # 不論這位長者有沒有設禁忌詞，都要擋「把AI示意圖當成長者真的去過/
@@ -368,6 +571,11 @@ async def guarded_generate(
                 "這樣問只會讓他困惑。這次請把畫面元素當成某一類經驗、某一種場景的引子，"
                 "改問這一類經驗的普遍情形，不要問長者對眼前這個特定畫面熟不熟悉、認不認得。"
             )
+            # 這條規則只檢查 question_text，跟其他欄位（例如承接語）無關，
+            # 可以安全鎖定其餘欄位、下一輪只重生 question（見 question_only_
+            # retry_fn 參數說明）。
+            if question_only_retry_fn is not None:
+                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
             attempt += 1
             continue
 
@@ -384,6 +592,9 @@ async def guarded_generate(
                 "這次請改成真正開放式的問題，不要用「嗎」結尾，也不要用「有沒有」「是不是」"
                 "「會不會」「認不認得」「熟不熟悉」這類詞（「A還是B」的二選一問法除外）。"
             )
+            # 理由同上：只檢查 question_text，可以安全鎖定其餘欄位。
+            if question_only_retry_fn is not None:
+                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
             attempt += 1
             continue
 
@@ -400,9 +611,31 @@ async def guarded_generate(
             retry_feedback = (
                 f"上一次的場景文字「{scene_text_val}」用了「你」或長者本名，把長者寫成親身"
                 "站在畫面裡（例如「你站在…」「張阿姨站在…」）。這次請改用第三人稱客觀描述"
-                "畫面本身，像在描述一幅畫，這段文字完全不要出現「你」這個字或長者的名字，"
-                "把「你」留到問題那一句再用。"
+                "畫面本身，這段文字完全不要出現「你」這個字或長者的名字，把「你」留到問題"
+                "那一句再用。"
             )
+            # 這條規則查的是承接語／場景文字欄位，不能排除是被鎖定的欄位造成
+            # 違規，解鎖、退回整包重新生成（見 question_only_retry_fn 參數說明）。
+            locked_fields = None
+            attempt += 1
+            continue
+
+        # 場景文字不能把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的
+        # 距離（見 scene_text_frames_as_artwork 上方註解）。只查 scene_text，
+        # 理由同上一個檢查。
+        if scene_text_frames_as_artwork(scene_text_val):
+            logger.warning(
+                f"[ResponseGuard] 場景文字把畫面講成一幅畫/示意圖: {scene_text_val!r}，"
+                f"重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的場景文字「{scene_text_val}」把畫面講成「一幅畫」「示意圖」，"
+                "用後設視角在介紹一件作品，會讓長者覺得有距離感。這次請直接沉浸式描述"
+                "畫面裡的場景本身（例如直接寫「礦坑入口處，煤炭散落一地」），不要提到"
+                "「畫」「畫作」「插畫」「示意圖」這類詞。"
+            )
+            # 理由同上：查的是承接語／場景文字欄位，解鎖退回整包重新生成。
+            locked_fields = None
             attempt += 1
             continue
 
@@ -421,6 +654,86 @@ async def guarded_generate(
                 "沒有根據這次真正的【眼前畫面元素】與長者資料生成。這次請根據這次實際提供的"
                 "資料重新生成全新內容，不要使用範例裡的地點、物件或字句。"
             )
+            # echoed_field 可能是 question 以外的欄位（例如承接語），不能排除
+            # 是被鎖定的欄位照抄範例，解鎖退回整包重新生成。
+            locked_fields = None
+            attempt += 1
+            continue
+
+        # 承接語／場景文字不能是空泛套語，沒有具體呼應長者剛才說的內容
+        # （見 is_generic_acknowledgment 上方註解）。
+        #
+        # 2026-08稽核：這裡原本只查 scene_text_val（寫死 "scene_text" 這個
+        # key），導致 _generate_image_reveal_reaction／_generate_quick_end_recap
+        # 用的 "reaction_text" key完全沒被這條規則覆蓋到——那兩支函式的任務
+        # 說明明明也要求「不能只是空泛的稱讚」（例如 _generate_quick_end_recap
+        # 明講「不能只是空泛的稱讚（例如不寫「謝謝你告訴我這些」...」），卻沒有
+        # 對應的事後防護，是漏放。改成 scene_text_val 為空時退回讀 reaction_text
+        # ——不用像 check_format_rules 那樣完整迭代整個 text_keys，因為
+        # closing_text／emotional_text 的核心內容本來就常常合理包含「謝謝你的
+        # 分享」這類語意（收尾語、情緒支持的本質就是要感謝/肯定），套用這條
+        # 規則會造成大量誤判，只有 reaction_text 跟 scene_text 一樣是「呼應
+        # 長者剛才說的內容」性質的承接語，才適合共用同一條檢查。
+        ack_check_text = scene_text_val or result.get("reaction_text", "")
+        if is_generic_acknowledgment(ack_check_text):
+            logger.warning(
+                f"[ResponseGuard] 承接語是空泛套語: {ack_check_text!r}，"
+                f"重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的承接語「{ack_check_text}」是千篇一律的空泛套語，沒有具體"
+                "呼應長者剛才說的內容（提到誰、提到什麼事）。這次請具體引用長者剛才"
+                "說的話裡提到的人事物，例如「聽起來那段跟○○一起做工的日子很熱鬧呢」"
+                "這種寫法，不要用套語帶過。"
+            )
+            # 這條規則查的正是承接語欄位本身，解鎖退回整包重新生成。
+            locked_fields = None
+            attempt += 1
+            continue
+
+        # 承接語／場景文字本身不能被寫成問句（見 scene_text_is_a_question
+        # 上方註解）。跟上面 is_generic_acknowledgment 共用同一組 scene_text／
+        # reaction_text 判準理由——都是「承接語」性質的欄位。
+        if scene_text_is_a_question(ack_check_text):
+            logger.warning(
+                f"[ResponseGuard] 承接語被寫成問句: {ack_check_text!r}，"
+                f"重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的承接語「{ack_check_text}」本身被寫成一句問句（用「呢」"
+                "「嗎」結尾或直接用問號收尾）。承接語的工作是接住長者剛才的話，"
+                "不是提問，真正的提問要留給緊接著的「問題：」欄位，不然長者會"
+                "被連問兩次、語氣也會顯得矛盾。這次請把承接語改寫成直述句"
+                "（不要用「呢」「嗎」或問號收尾），該問的內容留到「問題：」"
+                "欄位再問。"
+            )
+            # 這條規則查的正是承接語欄位本身，解鎖退回整包重新生成。
+            locked_fields = None
+            attempt += 1
+            continue
+
+        # 「判斷依據」欄位編造了長者沒說過的話（見 judgment_evidence_unsupported
+        # 上方註解）。只有 _generate_image_reveal_reaction 這類有「判斷依據」
+        # 欄位的 generate_fn 會觸發——其餘沒有這個 key，result.get 拿到空字串，
+        # 函式本身直接回 False，不受影響。
+        evidence_val = result.get("judgment_evidence", "")
+        elder_response_val = generate_kwargs.get("elder_response", "")
+        if judgment_evidence_unsupported(evidence_val, elder_response_val):
+            logger.warning(
+                f"[ResponseGuard] 判斷依據引用了長者沒說過的話: {evidence_val!r}"
+                f"（長者原話: {elder_response_val!r}），重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的「判斷依據」欄位寫「{evidence_val}」，但長者這次的原話是"
+                f"「{elder_response_val}」，裡面根本沒有這些內容——不能引用長者沒"
+                "說過的話當依據。這次請只根據長者這次實際說出的字詞判斷；如果長者"
+                "的反應內容很簡短、看不出明確的差異或情緒線索（例如只有語助詞、"
+                "簡短回應），判斷依據就老實寫「反應內容簡短，看不出明確線索」，"
+                "不要編造長者沒說過的話。"
+            )
+            # 判斷依據影響後面分類跟承接語的推理，不能排除是被鎖定的欄位造成，
+            # 解鎖退回整包重新生成。
+            locked_fields = None
             attempt += 1
             continue
 
@@ -437,6 +750,14 @@ async def guarded_generate(
                 f"[ResponseGuard] 格式/內容規則違規({format_rule}): "
                 f"question={question_text!r} scene_text={scene_text_val!r}，重新生成 (attempt={attempt})"
             )
+            # 只有 _QUESTION_ONLY_FORMAT_RULES 裡的規則保證只查 question_text
+            # 本身（見該常數說明），其餘規則（nin/xian/zanmen等）查的是
+            # scene_text_val+question 的 combined，沒辦法排除是被鎖定的欄位
+            # 造成違規，一律解鎖。
+            if question_only_retry_fn is not None and format_rule in _QUESTION_ONLY_FORMAT_RULES:
+                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
+            else:
+                locked_fields = None
             retry_feedback = format_feedback
             attempt += 1
             continue
@@ -452,6 +773,9 @@ async def guarded_generate(
                     f"上一次的輸出談到了長者的禁忌話題（{'、'.join(hits)}）。"
                     "這次請完全避開這個方向，不要提及或暗示相關內容。"
                 )
+                # 禁忌話題查的是所有欄位合併後的 combined，沒辦法排除是被鎖定
+                # 的欄位造成違規，解鎖。
+                locked_fields = None
                 attempt += 1
                 continue
 
@@ -463,6 +787,7 @@ async def guarded_generate(
                     "上一次的輸出在語意上涉及了長者的禁忌話題，即使沒有直接用到禁忌詞字面。"
                     "這次請完全避開那個方向，不要往那個主題引導長者。"
                 )
+                locked_fields = None
                 attempt += 1
                 continue
 
