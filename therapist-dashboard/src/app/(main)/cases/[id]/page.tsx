@@ -29,6 +29,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
   const router = useRouter();
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsError, setSessionsError] = useState(false);
   const [tab, setTab] = useState<"info" | "history">("info");
   const [isEditing, setIsEditing] = useState(false);
 
@@ -48,9 +49,19 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
       .catch(() => {});
 
     fetch(`/api/cases/${id}/sessions`)
-      .then((r) => r.json())
-      .then((data) => setSessions(Array.isArray(data) ? data : []))
-      .catch(() => {});
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`活動紀錄查詢失敗（${r.status}）`);
+        return r.json();
+      })
+      .then((data) => {
+        setSessions(Array.isArray(data) ? data : []);
+        setSessionsError(false);
+      })
+      .catch((err) => {
+        console.error(err);
+        setSessions([]);
+        setSessionsError(true);
+      });
   }, [id]);
 
   function startEditing() {
@@ -311,7 +322,9 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
 
         {tab === "history" && (
           <div className="flex flex-col gap-3">
-            {sessions.length === 0 ? (
+            {sessionsError ? (
+              <div className="bg-white rounded-xl px-6 py-10 text-center text-[#e05c3a] text-[15px]">活動紀錄載入失敗，請重新整理頁面再試一次</div>
+            ) : sessions.length === 0 ? (
               <div className="bg-white rounded-xl px-6 py-10 text-center text-[#888] text-[15px]">尚無活動記錄</div>
             ) : (
               sessions.map((s, idx) => {
