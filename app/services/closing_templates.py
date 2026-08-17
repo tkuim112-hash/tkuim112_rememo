@@ -33,11 +33,23 @@ WARM_TOPICS = {
 
 
 # ── 心得環節開場：邀請長者先分享 ──────────────────────────────
-def build_closing_invitation(topics: list[str]) -> str:
+def build_closing_invitation(topics: list[str]) -> dict:
     """
-    心得環節開場，先邀請長者自己分享感覺，系統不搶先下結論。
+    心得環節開場，邀請長者自己分享感覺，系統不搶先下結論。Returns:
+    {"scene_text": str, "question": str}——scene_text 留空，整句合併寫在
+    question 一個欄位裡，不分兩段顯示（呼叫端仍要讀兩個 key，只是 scene_text
+    固定是空字串）。
+
+    2026-08-17：原本問「你現在心裡是什麼感覺呢？」，跟回合3收尾（closing.txt／
+    _generate_closing，見 orchestrator.py _start_round3_closing）問的「現在
+    感受或正向回憶」性質重複——長者才剛答過一次感覺，馬上又被問一次同性質的
+    問題。改問「回想整場聊下來」，把切入點從「當下感覺」換成「回顧整場」，
+    跟回合3那句不撞。
     """
-    return "今天聊了這麼多，你現在心裡是什麼感覺呢？"
+    return {
+        "scene_text": "",
+        "question": "今天聊了這麼多，回想整場聊下來，你有什麼想跟我分享的呢？",
+    }
 
 
 # ── 長者回應分類 ──────────────────────────────

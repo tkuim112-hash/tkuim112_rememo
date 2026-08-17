@@ -1129,8 +1129,9 @@ async def session_respond(
                 # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
                 # 實際分類到的16大主題（見 _append_session_topic）。
                 topics = await _get_session_topics(r, body.state.session_id)
-                result["scene_text"] = ""
-                result["question"] = build_closing_invitation(topics)
+                invitation = build_closing_invitation(topics)
+                result["scene_text"] = invitation["scene_text"]
+                result["question"] = invitation["question"]
             if result.get("action") == "end_round" and body.state.round in (1, 2):
                 # round 2/3 開場需要承接這裡：round 1 結束時記畫面元素／話題／
                 # 生圖前訪談內容＋這句話，round 2 結束時只需要這句話（round 3
@@ -1152,10 +1153,11 @@ async def session_respond(
             # state 是 None 代表 end_round/end_session，問題本身留給下一回合開場或
             # /session/{id}/closing 處理，這裡只負責播音檔。
             next_qn = body.state.question_number + 1
-            # 第二回合（自由追問）全程不合成語音，STT 仍照常。第三回合的唯一
-            # 一題在 /session/round 開場就問完了，這裡只會是 end_session 時
-            # 「心得」那題（既有機制，這次刻意不變），所以不用在這裡另外排除。
-            if body.state.round != 2:
+            # 第二回合（自由追問）全程不合成語音，STT 仍照常。end_session 的
+            # scene_text/question 是 build_closing_invitation 補上的心得環節
+            # 收尾語＋開場問題（見上面 action=="end_session" 分支），這一段
+            # 全部不需要語音，只當畫面上的文字。
+            if body.state.round != 2 and result.get("action") != "end_session":
                 tts = request.app.state.tts_service
                 if result.get("scene_text"):
                     scene_audio_path = await _synthesize_safe(
