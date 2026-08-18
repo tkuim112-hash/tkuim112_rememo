@@ -776,7 +776,7 @@ async def session_round(
         raise HTTPException(status_code=500, detail=f"回合開場失敗: {str(e)}")
 
 
-_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume"}
+_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume", "end"}
 
 
 class ControlPayload(BaseModel):
