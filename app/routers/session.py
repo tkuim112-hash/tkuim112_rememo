@@ -776,7 +776,7 @@ async def session_round(
         raise HTTPException(status_code=500, detail=f"回合開場失敗: {str(e)}")
 
 
-_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume"}
+_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume", "end"}
 
 
 class ControlPayload(BaseModel):
@@ -795,12 +795,20 @@ async def session_control(
       replay_audio → 重播目前這一題的語音
       skip_scene   → 跳過目前這一題（不是跳過整個回合），視同長者未回應直接進下一步
       pause/resume → 暫停/繼續本回合（暫停時取消反應逾時、鎖住麥克風與送出鈕）
+      end          → 治療師按「結束活動」，Unity 收到後 Application.Quit()
 
     長者端如果目前沒有連線（例如療程還沒進到 GameScene），delivered 會是 false，
     不當錯誤處理——網頁不需要特別跳錯誤訊息給治療師。
+
+    action=="end" 先呼叫 mark_ending：Unity Quit() 之後 /ws/stt 連線隨即斷線，
+    ws_stt.py 的 finally 區塊要知道這次斷線是治療師主動結束、不是不正常斷線
+    （見該檔 _mark_abnormal_end 說明），才不會把治療師稍後在 /activity/{id}/end
+    頁面選的「稍後填寫」（故意留著 in_progress）蓋回去。
     """
     if body.action not in _CONTROL_ACTIONS:
         raise HTTPException(status_code=400, detail=f"不支援的控制動作: {body.action}")
+    if body.action == "end":
+        ws_registry.mark_ending(session_id)
     delivered = await ws_registry.send_control(session_id, body.action)
     return {"ok": True, "delivered": delivered}
 
@@ -1181,6 +1189,15 @@ async def session_respond(
                 patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
             )
             if result.get("action") == "end_session":
+                # 三回合正常跑完、準備轉場到 ShareScene 問心得——GameController 的
+                # /ws/stt 連線會在轉場時斷線（ShareController 開的是另一條沒帶
+                # session_id 的連線，見該檔 ConnectWebSocket），這個斷線不是治療師
+                # 按「結束活動」、也不是不正常斷線，是正常流程的一部分，這裡先標記
+                # 起來供 ws_stt.py 的 finally 區塊排除，避免誤判成不正常結束。
+                await r.set(
+                    f"session:{body.state.session_id}:reached_closing",
+                    "1", ex=3600,
+                )
                 # 心得問題出現的時間點，供 /session/{id}/closing 計算心得回合的反應時間
                 await r.set(
                     f"session:{body.state.session_id}:closing_asked_at",
