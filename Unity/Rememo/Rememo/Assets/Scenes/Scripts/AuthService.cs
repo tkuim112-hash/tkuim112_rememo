@@ -92,9 +92,11 @@ public static class AuthService
 
         if (req.result != UnityWebRequest.Result.Success)
         {
+            // 半形冒號：專案用的 Readme 字型 asset 沒有全形冒號「：」的字符，
+            // 顯示在 TMP_Text 上會變成 □（見 ErrorSmallText 的 font warning）。
             string message = req.responseCode == 401
                 ? "電子信箱或密碼錯誤"
-                : $"登入失敗：{req.error}";
+                : $"登入失敗: {req.error}";
             onFail?.Invoke(message);
             yield break;
         }

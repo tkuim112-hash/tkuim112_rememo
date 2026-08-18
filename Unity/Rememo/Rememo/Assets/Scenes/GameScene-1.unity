@@ -231,7 +231,6 @@ GameObject:
   - component: {fileID: 231164213}
   - component: {fileID: 231164212}
   - component: {fileID: 231164211}
-  - component: {fileID: 231164215}
   - component: {fileID: 231164216}
   - component: {fileID: 231164217}
   m_Layer: 5
@@ -331,29 +330,6 @@ RectTransform:
   m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 0, y: 0}
   m_Pivot: {x: 0, y: 0}
---- !u!114 &231164215
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 231164210}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 905680cbc877b4929a9ecc76ab7c016c, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::MicController
-  micButton: {fileID: 695202855}
-  micButtonImage: {fileID: 695202856}
-  aiText: {fileID: 1133395053}
-  sceneImage: {fileID: 0}
-  inputText: {fileID: 1676628713}
-  kinectAudioSender: {fileID: 1034624761}
-  serverUrl: wss://api.re-memo.com/ws/stt
-  sampleRate: 16000
-  maxRecordSeconds: 60
-  charInterval: 0.03
-  testImages: []
 --- !u!114 &231164216
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1046,7 +1022,6 @@ GameObject:
   - component: {fileID: 644969013}
   - component: {fileID: 644969015}
   - component: {fileID: 644969014}
-  - component: {fileID: 644969016}
   m_Layer: 5
   m_Name: Background
   m_TagString: Untagged
@@ -1111,29 +1086,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 644969012}
   m_CullTransparentMesh: 1
---- !u!114 &644969016
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 644969012}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 905680cbc877b4929a9ecc76ab7c016c, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::MicController
-  micButton: {fileID: 0}
-  micButtonImage: {fileID: 0}
-  aiText: {fileID: 0}
-  sceneImage: {fileID: 0}
-  inputText: {fileID: 0}
-  kinectAudioSender: {fileID: 0}
-  serverUrl: wss://api.re-memo.com/ws/stt
-  sampleRate: 16000
-  maxRecordSeconds: 60
-  charInterval: 0.03
-  testImages: []
 --- !u!1 &695202853
 GameObject:
   m_ObjectHideFlags: 0
