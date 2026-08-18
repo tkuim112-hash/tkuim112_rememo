@@ -19,6 +19,16 @@ import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
 
+# patient:{patient_id}:active（見 /session/pending、/session/{id}/metrics、
+# /session/{id}/control）採心跳式續命，不是設一次就管 2 小時：
+# _ACTIVE_INITIAL_TTL 是 Unity 選定病患當下先給的緩衝時間，撐到治療師端「活動
+# 觀察頁」開始 polling metrics 接手續命為止（校正+啟動流程跑完可能要一兩分鐘）；
+# 之後只要 /metrics 還在被 2 秒一次正常 polling，就會不斷刷新成 _ACTIVE_HEARTBEAT_TTL，
+# 視窗關掉／斷線／Unity 當機只要停止 polling，最多這麼多秒後就會自動消失，
+# 不用等完整 2 小時、也不用依賴任何一方乾淨地送出「結束」訊號。
+_ACTIVE_INITIAL_TTL = 180
+_ACTIVE_HEARTBEAT_TTL = 30
+
 
 def _to_int(val) -> int | None:
     try:
@@ -551,7 +561,7 @@ async def session_pending(
     candidate = str(uuid.uuid4())
     was_set = await r.set(key, candidate, ex=7200, nx=True)
     if source == "unity":
-        await r.set(f"patient:{patient_id}:active", "1", ex=7200)
+        await r.set(f"patient:{patient_id}:active", "1", ex=_ACTIVE_INITIAL_TTL)
     if was_set:
         return {"session_id": candidate}
     existing = await r.get(key)
@@ -785,6 +795,7 @@ class ControlPayload(BaseModel):
 
 @router.post("/{session_id}/control", summary="治療師網頁即時控制療程（重播/跳過/暫停/繼續）")
 async def session_control(
+    request: Request,
     session_id: str,
     body: ControlPayload,
     therapist_id: int = Depends(get_current_therapist_id),
@@ -798,10 +809,20 @@ async def session_control(
 
     長者端如果目前沒有連線（例如療程還沒進到 GameScene），delivered 會是 false，
     不當錯誤處理——網頁不需要特別跳錯誤訊息給治療師。
+
+    action=="end" 時順便清掉 patient:{patient_id}:active（見 /session/pending），
+    治療師手動結束療程不用等 2 小時 TTL 到期，個案列表的「活動中」徽章能立刻消失。
     """
     if body.action not in _CONTROL_ACTIONS:
         raise HTTPException(status_code=400, detail=f"不支援的控制動作: {body.action}")
     delivered = await ws_registry.send_control(session_id, body.action)
+    if body.action == "end":
+        r = request.app.state.redis
+        meta_raw = await r.get(f"session:{session_id}:meta")
+        if meta_raw:
+            patient_id = json.loads(meta_raw).get("patient_id")
+            if patient_id:
+                await r.delete(f"patient:{patient_id}:active")
     return {"ok": True, "delivered": delivered}
 
 
@@ -812,6 +833,17 @@ async def session_metrics(
     therapist_id: int = Depends(get_current_therapist_id),
 ):
     r = request.app.state.redis
+
+    # 心跳續命：只要治療師端「活動觀察頁」還在正常 polling 這支 API，就代表
+    # 這場療程還活著，把 patient:{patient_id}:active 的存活時間刷新回短 TTL。
+    # 用 EXPIRE 不用 SET，key 不存在（例如已經被 /session/{id}/control 的
+    # action=="end" 清掉）就不會誤把它救回來。
+    meta_raw = await r.get(f"session:{session_id}:meta")
+    if meta_raw:
+        patient_id = json.loads(meta_raw).get("patient_id")
+        if patient_id:
+            await r.expire(f"patient:{patient_id}:active", _ACTIVE_HEARTBEAT_TTL)
+
     data: dict = await r.hgetall(f"session:{session_id}:metrics")
     try:
         suggestions = json.loads(data.get("ai_suggestions", "[]"))
