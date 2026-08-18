@@ -1298,8 +1298,8 @@ MonoBehaviour:
   audioSource: {fileID: 1186508246}
   kinectAudioSender: {fileID: 1806627863}
   kinectSensorSender: {fileID: 1806627864}
-  backendUrl: http://localhost:8000
-  serverUrl: ws://localhost:8000/ws/stt
+  backendUrl: https://api.re-memo.com
+  serverUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
   charInterval: 0.03
@@ -1769,7 +1769,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ac18c23a827f4bd449621411bd592aec, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::KinectSensorSender
-  backendUrl: http://localhost:8000
+  backendUrl: https://api.re-memo.com
   sendInterval: 2
   gameController: {fileID: 0}
   audioSender: {fileID: 1806627863}

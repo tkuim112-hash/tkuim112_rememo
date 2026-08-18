@@ -8,7 +8,7 @@ using Windows.Kinect;
 public class KinectAudioSender : MonoBehaviour
 {
     [Header("WebSocket 設定")]
-    public string sttUrl = "ws://localhost:8000/ws/stt";
+    public string sttUrl = "wss://api.re-memo.com/ws/stt";
 
     // MicController 設定此 callback 以接收 STT 回傳訊息（在 WS 背景執行緒呼叫）
     public System.Action<string> OnSttMessage;
@@ -44,6 +44,7 @@ public class KinectAudioSender : MonoBehaviour
         string sessionId = PlayerPrefs.GetString("session_id", "");
         string url = string.IsNullOrEmpty(sessionId) ? sttUrl : $"{sttUrl}?session_id={sessionId}";
         wsStt = new WebSocket(AuthService.AppendToken(url));
+        wsStt.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         wsStt.OnOpen    += (s, e) => Debug.Log("[STT WS Kinect] 已連線");
         wsStt.OnError   += (s, e) => Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}");
         wsStt.OnClose   += (s, e) => Debug.Log("[STT WS Kinect] 已關閉");

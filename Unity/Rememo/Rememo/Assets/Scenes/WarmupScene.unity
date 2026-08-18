@@ -220,7 +220,7 @@ MonoBehaviour:
   statusIndicator: {fileID: 1003764036}
   spriteDetecting: {fileID: 21300000, guid: bfcc35757442e4872975490f825d5802, type: 3}
   spriteSuccess: {fileID: 21300000, guid: 2ac2eba71a2ac42619f6797e38b65b4d, type: 3}
-  calibrationUrl: ws://localhost:8000/ws/calibration
+  calibrationUrl: wss://api.re-memo.com/ws/calibration
   audioSender: {fileID: 1868257042}
 --- !u!1 &239257343
 GameObject:

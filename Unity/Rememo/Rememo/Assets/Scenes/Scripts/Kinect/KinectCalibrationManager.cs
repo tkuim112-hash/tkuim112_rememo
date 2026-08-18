@@ -18,7 +18,7 @@ public class KinectCalibrationManager : MonoBehaviour
     public Sprite spriteSuccess;
 
     [Header("WebSocket 設定")]
-    public string calibrationUrl = "ws://localhost:8000/ws/calibration";
+    public string calibrationUrl = "wss://api.re-memo.com/ws/calibration";
 
     private readonly Color COLOR_ORANGE = new Color(1f, 0.6f, 0f);
     private readonly Color COLOR_GREEN = new Color(0.2f, 0.8f, 0.2f);
@@ -68,6 +68,7 @@ public class KinectCalibrationManager : MonoBehaviour
         wsUrl = AuthService.AppendToken(wsUrl);
 
         ws = new WebSocket(wsUrl);
+        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen += (s, e) => Debug.Log("[Calibration WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Calibration WS] 錯誤: {e.Message}");
         ws.ConnectAsync();

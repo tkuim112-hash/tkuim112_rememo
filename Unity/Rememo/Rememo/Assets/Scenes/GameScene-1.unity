@@ -349,7 +349,7 @@ MonoBehaviour:
   sceneImage: {fileID: 0}
   inputText: {fileID: 1676628713}
   kinectAudioSender: {fileID: 1034624761}
-  serverUrl: ws://localhost:8000/ws/stt
+  serverUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
   charInterval: 0.03
@@ -367,7 +367,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GameController
   totalRounds: 3
-  backendUrl: http://localhost:8000
+  backendUrl: https://api.re-memo.com
   userId: user_001
   sessionId: sess_001
   roundNumber: {fileID: 475891553}
@@ -384,7 +384,7 @@ MonoBehaviour:
   photoDisplay: {fileID: 1056907271}
   kinectAudioSender: {fileID: 1034624761}
   kinectSensorSender: {fileID: 1034624762}
-  sttServerUrl: ws://localhost:8000/ws/stt
+  sttServerUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
 --- !u!82 &231164217
@@ -1129,7 +1129,7 @@ MonoBehaviour:
   sceneImage: {fileID: 0}
   inputText: {fileID: 0}
   kinectAudioSender: {fileID: 0}
-  serverUrl: ws://localhost:8000/ws/stt
+  serverUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
   charInterval: 0.03
@@ -1802,7 +1802,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ac18c23a827f4bd449621411bd592aec, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::KinectSensorSender
-  backendUrl: http://localhost:8000
+  backendUrl: https://api.re-memo.com
   sendInterval: 2
   gameController: {fileID: 231164216}
   audioSender: {fileID: 1034624761}
