@@ -494,12 +494,11 @@ public class GameController : MonoBehaviour
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         RefreshSubmitButton();
 
+        string userSpeech = displayedText;
+
         ResetInputText();
         aiText.gameObject.SetActive(false);
         loadingSpinner.SetActive(true);
-
-        string userSpeech = displayedText;
-        displayedText = "";
 
         yield return StartCoroutine(SendResponse(userSpeech));
 

@@ -17,6 +17,10 @@ services:
       - db
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+      # 容器預設是 UTC，date.today()（見 app/routers/session.py 記錄
+      # sessions.date）算出來的「今天」會比台灣時間慢 8 小時，半夜測試
+      # 容易記成前一天。明確指定台灣時區，跟長者/治療師實際感受的日期一致。
+      - TZ=Asia/Taipei
     env_file:
       - .env
     restart: unless-stopped
@@ -149,6 +153,10 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
+      # created_at 這類欄位是資料庫自己算的時間戳（func.now()），跟 app 服務
+      # 同理需要明確設台灣時區，不然預設 UTC 會跟實際台灣時間差 8 小時。
+      - TZ=Asia/Taipei
+      - PGTZ=Asia/Taipei
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
     restart: always
