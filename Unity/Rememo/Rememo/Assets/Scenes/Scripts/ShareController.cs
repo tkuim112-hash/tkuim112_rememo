@@ -87,15 +87,16 @@ public class ShareController : MonoBehaviour
     {
         if (closingText == null) return;
         string text = PlayerPrefs.GetString("ClosingText", "");
+        string thanks = PlayerPrefs.GetString("ClosingThanks", "");
         string question = PlayerPrefs.GetString("ClosingQuestion", "");
-        // 心得環節開場邀請語（build_closing_invitation）只有 question、沒有 text，
-        // 避免 text 是空字串時還是接了一個換行，畫面上多出一行空白。
-        if (string.IsNullOrEmpty(text))
-            closingFullText = question;
-        else if (string.IsNullOrEmpty(question))
-            closingFullText = text;
-        else
-            closingFullText = $"{text}\n{question}";
+        // 三段（承接語／感謝語／問題）各自可能是空字串（例如心得環節開場
+        // 邀請語只有 question，沒有 text/thanks），只把有內容的段落接起來，
+        // 避免空字串還是接了一個換行、畫面上多出空行。
+        var segments = new List<string>();
+        if (!string.IsNullOrEmpty(text)) segments.Add(text);
+        if (!string.IsNullOrEmpty(thanks)) segments.Add(thanks);
+        if (!string.IsNullOrEmpty(question)) segments.Add(question);
+        closingFullText = string.Join("\n", segments);
         closingText.text = closingFullText;
         // 收尾問題顯示完畢 → 啟動反應時間計時
         kinectSensorSender?.OnQuestionAsked();

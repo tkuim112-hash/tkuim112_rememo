@@ -4,8 +4,10 @@
 只打真的服務：
   - LLMService  → 原生 Ollama app（.env 的 OLLAMA_HOST=http://localhost:11434，
     OLLAMA_MODEL=cwchang/llama-3-taiwan-8b-instruct:q4_k_m，未經DPO訓練的基底模型）
-  - OpenAIImageService → 真的打 OpenAI Images API 生圖（只有回合1會生圖，
-    回合2/3不生圖，見 orchestrator.py start_round 說明）
+
+不生圖：FakeImageService 頂替 OpenAIImageService，不打 OpenAI Images API，
+直接回空字串——orchestrator._start_scene_after_detail 生圖失敗本來就有既有
+的降級路徑（見該處說明），這裡就是刻意觸發那條路徑，只測LLM文字生成。
 
 RAG（Qdrant）、user_profile（Postgres）用假的 in-memory 實作頂替，不連任何
 資料庫，長者資料直接寫死在 TEST_USER。回合之間承接的 carryover、主題紀錄
@@ -14,12 +16,13 @@ _append_session_topic）這裡改用本地變數頂替，組法照抄該檔
 session_respond 對 action=="end_round"/"end_session" 的處理。
 
 三回合跑完後接著跑心得環節（app/services/closing_templates.py：
-build_closing_invitation → 長者回答 → build_closing_message），跟正式部署
-行為一致，全程只用LLM，不生圖。
+build_closing_invitation 產生的收尾語已經呼應過回合3的回答、接系統整合肯定
+與感謝語，長者對這句開場邀請語的回答只記錄不再另外生成收尾訊息），跟正式
+部署行為一致，全程只用LLM，不生圖。
 
 用法：在 app/ 目錄下執行 `python manual_test_full_round.py`，每一題會印出
 scene_text/question，接著在終端機手動輸入「長者」的回答，Enter 空白代表
-長者沒回應（沉默逾時）。全部跑完（心得環節收尾語印出後）自動停止。
+長者沒回應（沉默逾時）。全部跑完（心得環節問完最後一題並記錄回答後）自動停止。
 """
 import os
 import sys
@@ -37,8 +40,7 @@ import asyncio
 
 from config import settings
 from services.llm import LLMService
-from services.image import OpenAIImageService
-from services.closing_templates import build_closing_invitation, build_closing_message
+from services.closing_templates import build_closing_invitation
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator, _NO_RESPONSE_MARKER
 
@@ -63,6 +65,22 @@ class FakeRAGClient:
         return []
 
     async def save_memory(self, **kwargs) -> None:
+        pass
+
+
+class FakeImageService:
+    """頂替 OpenAIImageService，不打 OpenAI Images API。orchestrator._start_scene_
+    after_detail 呼叫 self.image.generate(...) 本身就包在 try/except 裡（生圖失敗
+    不影響對話主流程，見該處說明），直接回空字串就能讓它自然走「這回合沒有配圖」
+    的既有降級路徑，不用真的生一張圖。"""
+
+    def __init__(self) -> None:
+        self.output_dir = Path(".")
+
+    async def generate(self, prompt: str, session_id: str, round_number: int) -> str:
+        return ""
+
+    async def close(self) -> None:
         pass
 
 
@@ -127,11 +145,7 @@ async def main() -> None:
           "問題生成品質不代表正式部署行為。\n")
 
     llm = LLMService()
-    image = OpenAIImageService()
-    # image.py 的 output_dir 寫死容器內路徑 /media/images，本機（非docker）
-    # 對應到 repo 的 ./media/images，這裡覆寫成正確的本機路徑。
-    image.output_dir = Path(__file__).resolve().parent.parent / "media" / "images"
-    image.output_dir.mkdir(parents=True, exist_ok=True)
+    image = FakeImageService()
 
     orchestrator = TherapyOrchestrator(
         llm=llm,
@@ -144,6 +158,7 @@ async def main() -> None:
     try:
         topics: list[str] = []
         carryover: dict | None = None
+        round3_response = ""
 
         for round_number in (1, 2, 3):
             result, last_state, last_elder_response = await run_round(
@@ -161,29 +176,44 @@ async def main() -> None:
                         "scene_composition": last_state["scene_composition"],
                         "pre_image_detail": last_state.get("pre_image_detail", ""),
                         "topic_category": last_state.get("topic_category"),
+                        "round1_covered_w": last_state.get("covered_w", []),
+                        # 照抄 session.py round==1 carryover 的
+                        # round1_last_question（2026-08-18稽核，第四次，使用者
+                        # 提案）——round 1 最後一題問了什麼，round 2 開場生成時
+                        # 當參考資訊。原本這裡帶的是round 1整份round_qa_log，
+                        # 實測回報累積的內容越長承接語／問題品質越差，已改成
+                        # 只帶最後一題的單一字串。
+                        "round1_last_question": last_state.get("last_question_text", ""),
+                        # 照抄 session.py round==1 carryover 的
+                        # round1_covered_senses（2026-08-18新增，見
+                        # orchestrator.py _start_round2_free_followup 的
+                        # known_senses 說明）——round 1 已涵蓋的感官，避免
+                        # round 2 開場又問一次已經答過的感官（實測案例：
+                        # round 1 問過「七星潭邊有什麼味道」，round 2 開場
+                        # 原句又問了一次）。
+                        "round1_covered_senses": last_state.get("covered_senses", []),
                     })
                 if last_state.get("topic_category"):
                     topics.append(last_state["topic_category"])
 
             if action == "end_session":
+                round3_response = last_elder_response
                 break
 
         # 三回合結束，接心得環節（見 app/services/closing_templates.py，
         # app/routers/session.py session_respond 對 end_session 的處理）。
+        # 收尾語呼應長者剛才在回合3的回答，emotion 這裡沒有 Kinect 資料，傳空值。
         print("\n=== 心得環節 ===")
-        invitation = build_closing_invitation(topics)
+        invitation = await build_closing_invitation(topics, round3_response, "", llm)
         if invitation["scene_text"]:
             print(f"[場景/承接語] {invitation['scene_text']}")
+        if invitation["thanks_text"]:
+            print(f"[感謝語] {invitation['thanks_text']}")
         print(f"[問題] {invitation['question']}")
-        # 心得環節不經過 orchestrator.process_response，_NO_RESPONSE_MARKER
-        # 只有 orchestrator 內部認得，這裡沒回應要傳空字串給
-        # classify_closing_response 才會正確判成 thin_or_silent。
-        closing_response = input("\n長者回答（直接 Enter 表示沒回應）：").strip()
-        closing_message = await build_closing_message(
-            text=closing_response, emotion="", topics=topics, llm_service=llm,
-        )
-        print(f"[收尾語] {closing_message}")
-
+        # 承接語＋系統整合肯定＋感謝語已經在上面的開場邀請語呼應過回合3的回答了
+        # （見 build_closing_invitation），長者這題的回答只需要記錄，不再另外
+        # 生成第二段收尾訊息（見 app/routers/session.py session_closing 說明）。
+        input("\n長者回答（直接 Enter 表示沒回應）：").strip()
         print("\n=== 療程全部結束 ===")
     finally:
         await llm.close()

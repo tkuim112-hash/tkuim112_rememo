@@ -501,6 +501,7 @@ public class GameController : MonoBehaviour
         if (resp.action == "end_session")
         {
             PlayerPrefs.SetString("ClosingText", resp.scene_text ?? "");
+            PlayerPrefs.SetString("ClosingThanks", resp.thanks_text ?? "");
             PlayerPrefs.SetString("ClosingQuestion", resp.question ?? "");
             PlayerPrefs.SetString("session_id", sessionId);
             PlayerPrefs.SetString("NextScene", "ShareScene");
@@ -590,6 +591,7 @@ public class GameController : MonoBehaviour
     {
         public string action;
         public string scene_text;
+        public string thanks_text;
         public string question;
         public string audio_path;
         public int next_round;
