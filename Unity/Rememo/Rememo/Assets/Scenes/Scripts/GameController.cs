@@ -566,6 +566,13 @@ public class GameController : MonoBehaviour
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
 
+        // /session/start、/session/round 回傳時 image_path 一定是空字串（見
+        // ApplyRoundResponse 上方註解），圖片是長者答完生圖前引導問題、這支
+        // /session/respond 才第一次真的生出來，所以載入圖片要放在這裡，不是
+        // ApplyRoundResponse。
+        if (!string.IsNullOrEmpty(resp.image_path))
+            StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
+
         var uris = new List<string>();
         uris.AddRange(LocalAudioPlayer.BuildUris(
             string.IsNullOrEmpty(resp.scene_audio_path) ? null : BuildAudioUrl(resp.scene_audio_path),
@@ -649,6 +656,9 @@ public class GameController : MonoBehaviour
     {
         public string action;
         public string scene_text;
+        // action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次真的
+        // 生出圖片（見 app/routers/session.py session_respond 的同一段說明）。
+        public string image_path;
         public string scene_audio_path;
         public string scene_audio_key;
         // scene_audio_keys／thanks_audio_keys／question_audio_keys：只有

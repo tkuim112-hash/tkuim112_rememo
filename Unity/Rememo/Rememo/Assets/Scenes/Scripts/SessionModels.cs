@@ -1,3 +1,15 @@
+// 對應 app/services/rag_client.py MemoryResult：純量欄位（無巢狀結構），
+// JsonUtility 才能正確接住陣列裡的每一筆。
+[System.Serializable]
+public class RagMemory
+{
+    public string text;
+    public string summary;
+    public string emotion_tag;
+    public float importance;
+    public string timestamp;
+}
+
 [System.Serializable]
 public class SessionStateData
 {
@@ -23,6 +35,14 @@ public class SessionStateData
     public int question_count;
     public int supplement_count;
     public string topic_category;
+    // start_round 一開始就撈好的 RAG 候選記憶（見 app/orchestrator.py
+    // _retrieve_candidate_memories），長者生圖前引導問題答得太空洞時，
+    // _start_scene_after_detail 會退回讀這裡當生圖記憶來源。這個 class
+    // 原本沒宣告這個欄位，導致跟上面 question_count 那次一樣的坑：後端
+    // 傳來的候選記憶在 Unity 反序列化時就被丟棄，state 傳回後端時自然
+    // 也不含這個欄位，退回 RAG 記憶的生圖分支永遠只拿到空 list，個人化
+    // 記憶從未真正生效過。
+    public RagMemory[] cached_rag_memories;
     public string pre_image_q1_answer;
     public string pre_image_detail;
     public string[] known_facts_w;
