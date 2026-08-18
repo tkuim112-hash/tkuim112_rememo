@@ -376,6 +376,8 @@ MonoBehaviour:
   submitButton: {fileID: 995634905}
   micButton: {fileID: 695202855}
   micButtonImage: {fileID: 0}
+  replayButton: {fileID: 741093189}
+  audioSource: {fileID: 231164217}
   aiText: {fileID: 1133395053}
   inputText: {fileID: 1676628713}
   loadingSpinner: {fileID: 1376622245}
@@ -385,9 +387,6 @@ MonoBehaviour:
   sttServerUrl: ws://localhost:8000/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
-  charInterval: 0.03
-  replayButton: {fileID: 741093189}
-  audioSource: {fileID: 231164217}
 --- !u!82 &231164217
 AudioSource:
   m_ObjectHideFlags: 0
@@ -1952,7 +1951,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: "\u4E0D\u904E\u914D\u7684\u7167\u7247\u770B\u8D77\u4F86\u5F88\u50CF\u96FB\u5F71\u6216\u97D3\u5287\u7684\u622A\u5716\u53EA\u662F\u7D14\u7CB9\u62FF\u4F86\u7576\u60C5\u5883\u914D\u5716\u7528,\u547C\u61C9\u6587\u5B57\u88E1\u4F60\u597D\u7684\u610F\u8C61\u8DDF\u6587\u5B57\u5167\u5BB9\u8B1B\u7684\u6545\u4E8B\u4E26\u6C92\u6709\u76F4\u63A5\u95DC\u806F\u4F60\u597D\u8CBC\u6587\u672C\u8EAB\u6C92\u6709\u63D0\u5230\u4EFB\u4F55\u5287\u914D\u7684\u7167\u7247\u770B"
+  m_text: 
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 7b0848de019d74b028f80380e3f38bbe, type: 2}
   m_sharedMaterial: {fileID: 9175543853248863310, guid: 7b0848de019d74b028f80380e3f38bbe, type: 2}
