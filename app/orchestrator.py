@@ -2182,7 +2182,10 @@ class TherapyOrchestrator:
         # 說明。
         safe_prompt = _strip_people_clauses(safe_prompt)
         safe_prompt = _add_no_people_directive(safe_prompt, chinese=is_direct_detail)
-        print(f"  → [DEBUG] safe_prompt（去識別化後，實際送給Stability）: {safe_prompt}")
+        print(
+            f"  → [DEBUG] safe_prompt（去識別化後，實際送給"
+            f"{type(self.image).__name__}）: {safe_prompt}"
+        )
         try:
             image_path = await self.image.generate(
                 prompt=safe_prompt,

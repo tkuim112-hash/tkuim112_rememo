@@ -74,7 +74,17 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="Rememo Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Rememo Backend",
+    version="0.1.0",
+    lifespan=lifespan,
+    # 正式環境關掉自動產生的 API 文件——這個後端會被公開網域直接呼叫
+    # （見 NEXT_PUBLIC_API_URL），/docs 開著等於把完整路由/欄位結構攤給
+    # 任何人看，見 config.py Settings.is_production 說明。
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
