@@ -6,7 +6,6 @@ using System.Collections;
 public class WarmupController : MonoBehaviour
 {
     [Header("UI 元件")]
-    public Button startButton;
     public Image statusBadge;
 
     [Header("圖片")]
@@ -17,9 +16,6 @@ public class WarmupController : MonoBehaviour
 
     void Start()
     {
-        startButton.interactable = false;
-        startButton.onClick.AddListener(OnStart);
-
         calibrationManager = Object.FindFirstObjectByType<KinectCalibrationManager>();
         StartCoroutine(WaitForCalibration());
     }
@@ -36,7 +32,6 @@ public class WarmupController : MonoBehaviour
         // 過程交給 InstructionScene 的進度條呈現，這裡校正一完成就直接過去，
         // 不再讓長者端停在 WarmupScene 乾等。
         statusBadge.sprite = successSprite;
-        startButton.interactable = true;
         OnStart();
     }
 
