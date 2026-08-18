@@ -60,6 +60,7 @@ public class ShareController : MonoBehaviour
     private Coroutine typingCoroutine;
     private Coroutine replayCoroutine;
     private bool isWaitingForStt = false;
+    private bool isPaused = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
 
@@ -67,7 +68,7 @@ public class ShareController : MonoBehaviour
     private class ControlPayload { public string type; }
 
     [System.Serializable]
-    private class STTMessage { public string type; public string text; public bool isFinal; }
+    private class STTMessage { public string type; public string text; public bool isFinal; public string action; }
 
     [System.Serializable]
     private class ClosingResponse { public bool ok; public string closing_message; }
@@ -82,7 +83,12 @@ public class ShareController : MonoBehaviour
         ResetInputText();
         LoadClosingText();
 
-        if (!UseKinect)
+        if (UseKinect)
+            // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/重播/結束
+            // 指令隨時可能在長者第一次按麥克風之前就送到，這裡要先掛好才不會漏接
+            // （比照 GameController.cs 的作法）。
+            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
+        else
             ConnectWebSocket();
     }
 
@@ -143,7 +149,11 @@ public class ShareController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(AuthService.AppendToken(serverUrl));
+        // session_id 讓後端 /session/{id}/control 知道要把治療師的暫停/繼續等
+        // 指令轉發到哪一條連線（見 app/ws_registry.py），比照 GameController.ConnectWebSocket。
+        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string url = string.IsNullOrEmpty(sessionId) ? serverUrl : $"{serverUrl}?session_id={sessionId}";
+        ws = new WebSocket(AuthService.AppendToken(url));
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Share STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Share STT WS] 錯誤: {e.Message}");
@@ -239,7 +249,6 @@ public class ShareController : MonoBehaviour
 
         if (UseKinect)
         {
-            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
             kinectAudioSender.StartSTT();
         }
         else
@@ -346,7 +355,33 @@ public class ShareController : MonoBehaviour
         try { msg = JsonUtility.FromJson<STTMessage>(json); }
         catch { Debug.LogWarning("[Share STT] 無法解析: " + json); return; }
 
-        if (msg == null || msg.type != "transcript") return;
+        if (msg == null) return;
+
+        if (msg.type == "control")
+        {
+            switch (msg.action)
+            {
+                case "pause":
+                    isPaused = true;
+                    micButton.interactable = false;
+                    submitButton.interactable = false;
+                    break;
+                case "resume":
+                    isPaused = false;
+                    micButton.interactable = true;
+                    RefreshSubmitButton();
+                    break;
+                case "replay_audio":
+                    OnReplay();
+                    break;
+                case "end":
+                    Application.Quit();
+                    break;
+            }
+            return;
+        }
+
+        if (msg.type != "transcript") return;
 
         if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
@@ -373,7 +408,7 @@ public class ShareController : MonoBehaviour
 
     void RefreshSubmitButton()
     {
-        submitButton.interactable = !isRecording && !isWaitingForStt;
+        submitButton.interactable = !isRecording && !isWaitingForStt && !isPaused;
     }
 
     IEnumerator TypeCharByChar(string target)
