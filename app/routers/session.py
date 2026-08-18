@@ -1168,9 +1168,13 @@ async def session_respond(
         metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
         emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
         # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話
+        # rounds.emotion 給治療師頁面顯示用，要存中文標籤（見 sensor.py 的
+        # emotion_label），不能存這裡的英文 emotion_raw——上面 emotion 變數
+        # 保留英文原值是因為下面 orchestrator.process_response 內部（含
+        # closing_templates 判斷情緒是否觸發安撫）是拿英文值做比對。
         await _save_round_response(
             db, body.state.session_id, body.state.round,
-            text=body.elder_response, emotion=emotion,
+            text=body.elder_response, emotion=metrics.get("emotion", ""),
             patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
         )
         # 補上長者剛剛回答的那一題的 answer
