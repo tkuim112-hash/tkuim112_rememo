@@ -68,6 +68,14 @@ public class GameController : MonoBehaviour
     private readonly object queueLock = new object();
     private string displayedText = "";
 
+    // 內建麥克風模式的 STT WebSocket 斷線重連（見 ConnectWebSocket 內的 OnClose/OnError）。
+    // 治療師的暫停/跳過等指令要靠這條連線才送得到，斷線後若不重連，按鈕會永久失效
+    // 直到長者重開 App。
+    private volatile bool needsWsReconnect = false;
+    private float wsReconnectTimer = 0f;
+    private bool isQuitting = false;
+    private const float WsReconnectDelay = 3f;
+
     private bool UseKinect => kinectAudioSender != null;
 
     [System.Serializable]
@@ -123,8 +131,8 @@ public class GameController : MonoBehaviour
         ws = new WebSocket(AuthService.AppendToken(url));
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
-        ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
-        ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
+        ws.OnError += (s, e) => { Debug.LogError($"[Game STT WS] 錯誤: {e.Message}"); needsWsReconnect = true; };
+        ws.OnClose += (s, e) => { Debug.Log("[Game STT WS] 已關閉"); if (!isQuitting) needsWsReconnect = true; };
         ws.OnMessage += (s, e) => {
             if (!e.IsText) return;
             lock (queueLock) incomingMessages.Enqueue(e.Data);
@@ -223,6 +231,18 @@ public class GameController : MonoBehaviour
     {
         if (!UseKinect && isRecording) StreamMicAudio();
         DrainIncomingMessages();
+        if (!UseKinect) TickWsReconnect();
+    }
+
+    void TickWsReconnect()
+    {
+        if (!needsWsReconnect) return;
+        wsReconnectTimer += Time.deltaTime;
+        if (wsReconnectTimer < WsReconnectDelay) return;
+        wsReconnectTimer = 0f;
+        needsWsReconnect = false;
+        Debug.Log("[Game STT WS] 嘗試重新連線");
+        ConnectWebSocket();
     }
 
     void StreamMicAudio()
@@ -600,6 +620,7 @@ public class GameController : MonoBehaviour
 
     void OnDestroy()
     {
+        isQuitting = true;
         if (!UseKinect && isRecording)
             Microphone.End(micDevice);
         ws?.Close();

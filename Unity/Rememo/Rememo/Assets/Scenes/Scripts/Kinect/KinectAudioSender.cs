@@ -20,6 +20,13 @@ public class KinectAudioSender : MonoBehaviour
 
     private WebSocket wsStt;
 
+    // 斷線重連（見 ConnectWebSocket 內的 OnClose/OnError）：治療師的暫停/跳過/重播/
+    // 繼續指令要靠這條連線送到 Unity，斷線後若不重連，按鈕會永久失效直到長者重開 App。
+    private volatile bool needsReconnect = false;
+    private float reconnectTimer = 0f;
+    private bool isQuitting = false;
+    private const float ReconnectDelay = 3f;
+
     private KinectSensor sensor;
     private AudioBeamFrameReader audioReader;
     private MemoryStream audioAccumulator = new MemoryStream();
@@ -37,6 +44,11 @@ public class KinectAudioSender : MonoBehaviour
 
     void Start()
     {
+        ConnectWebSocket();
+    }
+
+    void ConnectWebSocket()
+    {
         // session_id 讓後端 /session/{id}/control 知道要把治療師的重播/跳過/暫停/繼續
         // 指令轉發到哪一條連線（見 app/ws_registry.py）。跟 GameController 各自從
         // PlayerPrefs 讀，不靠 GameController 賦值，避免兩個 MonoBehaviour 的
@@ -46,8 +58,8 @@ public class KinectAudioSender : MonoBehaviour
         wsStt = new WebSocket(AuthService.AppendToken(url));
         wsStt.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         wsStt.OnOpen    += (s, e) => Debug.Log("[STT WS Kinect] 已連線");
-        wsStt.OnError   += (s, e) => Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}");
-        wsStt.OnClose   += (s, e) => Debug.Log("[STT WS Kinect] 已關閉");
+        wsStt.OnError   += (s, e) => { Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}"); needsReconnect = true; };
+        wsStt.OnClose   += (s, e) => { Debug.Log("[STT WS Kinect] 已關閉"); if (!isQuitting) needsReconnect = true; };
         wsStt.OnMessage += (s, e) => { if (e.IsText) OnSttMessage?.Invoke(e.Data); };
         wsStt.ConnectAsync();
     }
@@ -103,6 +115,18 @@ public class KinectAudioSender : MonoBehaviour
     {
         TryInitAudio();
         PollAudio();
+        TickReconnect();
+    }
+
+    void TickReconnect()
+    {
+        if (!needsReconnect) return;
+        reconnectTimer += Time.deltaTime;
+        if (reconnectTimer < ReconnectDelay) return;
+        reconnectTimer = 0f;
+        needsReconnect = false;
+        Debug.Log("[STT WS Kinect] 嘗試重新連線");
+        ConnectWebSocket();
     }
 
     private void PollAudio()
@@ -214,6 +238,7 @@ public class KinectAudioSender : MonoBehaviour
 
     void OnDestroy()
     {
+        isQuitting = true;
         audioReader?.Dispose();
         audioReader = null;
         audioAccumulator?.Dispose();
