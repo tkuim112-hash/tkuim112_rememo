@@ -394,10 +394,21 @@ public class GameController : MonoBehaviour
         ApplyRoundResponse(resp);
     }
 
+    // scene_text（開場白／承接語）跟 question 接成一段一起顯示，跟
+    // ShareController.cs LoadClosingText 同一套做法——scene_text 之前只被
+    // 打包進音檔序列播放語音，畫面上完全沒有顯示，長者只看得到問題本身，
+    // 沒有前面的暖場鋪墊（2026-08-19 稽核發現）。
+    static string BuildAiText(string sceneText, string question)
+    {
+        if (string.IsNullOrEmpty(sceneText)) return question;
+        if (string.IsNullOrEmpty(question)) return sceneText;
+        return $"{sceneText}\n{question}";
+    }
+
     void ApplyRoundResponse(StartRoundResponse resp)
     {
         currentState = resp.state;
-        aiText.text = resp.question;
+        aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
 
@@ -548,7 +559,7 @@ public class GameController : MonoBehaviour
         }
 
         currentState = resp.state;
-        aiText.text = resp.question;
+        aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
 
