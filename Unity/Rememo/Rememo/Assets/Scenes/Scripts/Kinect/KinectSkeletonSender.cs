@@ -6,7 +6,7 @@ using WebSocketSharp;
 public class KinectSkeletonSender : MonoBehaviour
 {
     [Header("WebSocket 設定")]
-    public string serverUrl = "ws://localhost:8000/ws/skeleton";
+    public string serverUrl = "wss://api.re-memo.com/ws/skeleton";
 
     private WebSocket ws;
     private KinectManager kinectManager;
@@ -16,6 +16,7 @@ public class KinectSkeletonSender : MonoBehaviour
         kinectManager = KinectManager.Instance;
 
         ws = new WebSocket(serverUrl);
+        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Skeleton WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Skeleton WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Skeleton WS] 已關閉");

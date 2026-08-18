@@ -19,7 +19,7 @@ public class MicController : MonoBehaviour
     public KinectAudioSender kinectAudioSender;
 
     [Header("WebSocket 設定（內建麥克風模式用）")]
-    public string serverUrl = "ws://localhost:8000/ws/stt";
+    public string serverUrl = "wss://api.re-memo.com/ws/stt";
 
     [Header("錄音設定（內建麥克風模式用）")]
     public int sampleRate = 16000;
@@ -77,6 +77,7 @@ public class MicController : MonoBehaviour
     void ConnectWebSocket()
     {
         ws = new WebSocket(AuthService.AppendToken(serverUrl));
+        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[STT WS] 已關閉");

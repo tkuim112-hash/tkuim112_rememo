@@ -19,7 +19,7 @@ public class KinectSensorSender : MonoBehaviour
     public float LastMouthMoved  { get; private set; }
 
     [Header("後端設定")]
-    public string backendUrl   = "http://localhost:8000";
+    public string backendUrl   = "https://api.re-memo.com";
     public float  sendInterval = 2f;
 
     [Header("外部參考")]

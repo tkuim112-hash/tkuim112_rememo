@@ -40,7 +40,7 @@ public class GameController : MonoBehaviour
     public KinectSensorSender kinectSensorSender;
 
     [Header("WebSocket STT 設定（內建麥克風模式用）")]
-    public string sttServerUrl = "ws://localhost:8000/ws/stt";
+    public string sttServerUrl = "wss://api.re-memo.com/ws/stt";
     public int sampleRate = 16000;
     public int maxRecordSeconds = 60;
 
@@ -119,6 +119,7 @@ public class GameController : MonoBehaviour
         // 指令轉發到哪一條連線（見 app/ws_registry.py）。
         string url = string.IsNullOrEmpty(sessionId) ? sttServerUrl : $"{sttServerUrl}?session_id={sessionId}";
         ws = new WebSocket(AuthService.AppendToken(url));
+        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
