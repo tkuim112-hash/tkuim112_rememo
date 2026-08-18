@@ -83,7 +83,12 @@ public class ShareController : MonoBehaviour
         ResetInputText();
         LoadClosingText();
 
-        if (!UseKinect)
+        if (UseKinect)
+            // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/重播/結束
+            // 指令隨時可能在長者第一次按麥克風之前就送到，這裡要先掛好才不會漏接
+            // （比照 GameController.cs 的作法）。
+            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
+        else
             ConnectWebSocket();
     }
 
@@ -244,7 +249,6 @@ public class ShareController : MonoBehaviour
 
         if (UseKinect)
         {
-            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
             kinectAudioSender.StartSTT();
         }
         else
