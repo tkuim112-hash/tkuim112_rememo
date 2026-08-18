@@ -4,11 +4,39 @@ import json
 import wave
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy import update
 
 from auth import get_therapist_id_from_ws_token
+from db.models import TherapySession
+from db.session import AsyncSessionLocal
 import ws_registry
 
 router = APIRouter()
+
+
+async def _mark_abnormal_end(session_id: str) -> None:
+    """/ws/stt 斷線，但既不是治療師按「結束活動」（ws_registry.consume_ending）、
+    也不是三回合正常跑完轉場去問心得（session:{id}:reached_closing，見
+    session.py session_respond 對 end_session 的處理）——代表長者端 App 或
+    治療師網頁被直接關掉、當機、斷線，療程不正常中止。status 卡在 in_progress
+    會讓治療師頁面（cases/[id]/page.tsx）誤判成「還在進行中」、把治療師導去
+    永遠不會再更新的即時監控頁，這裡把它視同已結束。只在還是 in_progress 時
+    才動（避免蓋掉本來就是 completed / scheduled 的資料）。"""
+    if not session_id:
+        return
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(TherapySession)
+                .where(
+                    TherapySession.session_uuid == session_id,
+                    TherapySession.status == "in_progress",
+                )
+                .values(status="completed")
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[WS/STT] 標記不正常結束失敗: {e}")
 
 
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> bytes:
@@ -51,6 +79,7 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
         return
 
     stt_service = websocket.app.state.stt_service
+    r = websocket.app.state.redis
 
     await websocket.accept()
     ws_registry.register(session_id, websocket)
@@ -118,3 +147,8 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
         print(f"[WS/STT] {e}")
     finally:
         ws_registry.unregister(session_id, websocket)
+        ended_via_control = ws_registry.consume_ending(session_id)
+        if not ended_via_control:
+            reached_closing = await r.get(f"session:{session_id}:reached_closing")
+            if not reached_closing:
+                await _mark_abnormal_end(session_id)
