@@ -5,6 +5,11 @@ using System.Collections;
 
 public class WarmupController : MonoBehaviour
 {
+    [Header("後端設定")]
+    public string backendUrl = "https://api.re-memo.com";
+    [Tooltip("校正完成後，等治療師按下「啟動療程」，每隔幾秒 poll 一次後端狀態")]
+    public float therapistPollInterval = 2f;
+
     [Header("UI 元件")]
     public Image statusBadge;
 
@@ -13,14 +18,16 @@ public class WarmupController : MonoBehaviour
     public Sprite successSprite;    // 設備偵測成功
 
     private KinectCalibrationManager calibrationManager;
+    private string sessionId;
 
     void Start()
     {
+        sessionId = PlayerPrefs.GetString("session_id", "");
         calibrationManager = Object.FindFirstObjectByType<KinectCalibrationManager>();
-        StartCoroutine(WaitForCalibration());
+        StartCoroutine(WaitForCalibrationThenTherapistStart());
     }
 
-    IEnumerator WaitForCalibration()
+    IEnumerator WaitForCalibrationThenTherapistStart()
     {
         while (calibrationManager != null && !calibrationManager.IsCalibrated)
         {
@@ -28,10 +35,30 @@ public class WarmupController : MonoBehaviour
             yield return null;
         }
 
-        // 校正完成。等治療師端按下「啟動療程」、後端生成第一回合內容這段真正花時間的
-        // 過程交給 InstructionScene 的進度條呈現，這裡校正一完成就直接過去，
-        // 不再讓長者端停在 WarmupScene 乾等。
         statusBadge.sprite = successSprite;
+
+        // 校正完成，等治療師端按下「啟動療程」（後端 /session/start 一被呼叫就馬上標記
+        // requested=true，不等 LLM 分類／RAG 檢索／TTS 合成跑完）就立刻切去
+        // InstructionScene——真正耗時的生成過程改到說明頁用進度條呈現，不讓長者
+        // 停在 WarmupScene 乾等。sessionId 拿不到（離線 demo、換取 pending session
+        // 失敗）就沿用舊行為直接放行，不讓這個環節卡住展示。
+        if (!string.IsNullOrEmpty(sessionId))
+        {
+            var wait = new WaitForSeconds(therapistPollInterval);
+            bool requested = false;
+            while (!requested)
+            {
+                yield return StartCoroutine(SessionService.FetchRequested(
+                    backendUrl,
+                    sessionId,
+                    result => requested = result,
+                    error => Debug.LogWarning(error)
+                ));
+                if (requested) break;
+                yield return wait;
+            }
+        }
+
         OnStart();
     }
 
