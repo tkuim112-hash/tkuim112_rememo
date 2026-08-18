@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # === CORS（允許呼叫這個後端的前端來源，逗號分隔）===
     cors_origins: str = "http://localhost:3000,https://re-memo.com"
 
+    # === 執行環境 ===
+    # 預設 production（fail-safe）：漏設這個變數時寧可docs被關掉，也不要
+    # 一台忘記設定的機器意外把 /docs、/redoc、/openapi.json 曝露給公開網域
+    # （這個後端會被 NEXT_PUBLIC_API_URL 指到的公開網域直接呼叫，見
+    # main.py FastAPI() 建構）。本機開發要看 Swagger UI 就在 .env 設
+    # ENVIRONMENT=development。
+    environment: str = "production"
+
     # === 治療師後台的瀏覽器 session cookie（Next.js 簽的另一組 HS256 JWT）===
     # /session、/sensor 有些端點同時被 Unity（帶 Authorization: Bearer）跟
     # 治療師後台瀏覽器（帶 rememo_session cookie）呼叫，這裡驗證後者用。
@@ -55,6 +63,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() != "development"
 
     @model_validator(mode="after")
     def build_urls(self) -> "Settings":

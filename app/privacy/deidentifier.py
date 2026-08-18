@@ -188,6 +188,14 @@ class Deidentifier:
             Deidentifier._ner_load_failed = True
             return None
         try:
+            # 壓掉 transformers 載入權重的 tqdm 進度條，跟 huggingface_hub
+            # 沒設 HF_TOKEN 時印的「unauthenticated requests」警告——這個
+            # process 只在第一次用到脫敏時載入一次模型，這些是一次性的
+            # stdout雜訊，不是真的錯誤，留著只會洗版log。
+            import transformers.utils.logging as _hf_transformers_logging
+            import huggingface_hub.utils.logging as _hf_hub_logging
+            _hf_transformers_logging.disable_progress_bar()
+            _hf_hub_logging.set_verbosity_error()
             Deidentifier._ner_chunker = CkipNerChunker(model="albert-base", device=-1)
         except Exception as e:
             print(f"[Deidentifier] CKIP NER模型載入失敗（{e!r}），姓名脫敏退回regex heuristic")
@@ -210,7 +218,7 @@ class Deidentifier:
         if chunker is None:
             return self._remove_chinese_names_regex_fallback(text)
         try:
-            tokens = chunker([text])[0]
+            tokens = chunker([text], show_progress=False)[0]
         except Exception as e:
             print(f"[Deidentifier] CKIP NER推論失敗（{e!r}），這段文字退回regex heuristic")
             return self._remove_chinese_names_regex_fallback(text)
