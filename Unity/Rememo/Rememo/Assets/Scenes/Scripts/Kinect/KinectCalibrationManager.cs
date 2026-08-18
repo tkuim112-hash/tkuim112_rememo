@@ -9,7 +9,14 @@ public class KinectCalibrationManager : MonoBehaviour
     [Header("校正設定")]
     public float calibrationDuration = 15f;
     public float stabilityThreshold = 0.05f;
+    [Tooltip("頭/雙肩/雙髖這幾個關鍵關節，至少要在這個比例的影格裡被追蹤到，才代表整個人都在鏡頭範圍內")]
+    public float minKeyJointTrackedRatio = 0.8f;
     public bool IsCalibrated { get; private set; }
+
+    static readonly string[] KeyJointsForCompleteness =
+    {
+        "Head", "ShoulderLeft", "ShoulderRight", "HipLeft", "HipRight",
+    };
 
     [Header("UI 元件")]
     public Slider progressBar;
@@ -71,6 +78,9 @@ public class KinectCalibrationManager : MonoBehaviour
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen += (s, e) => Debug.Log("[Calibration WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Calibration WS] 錯誤: {e.Message}");
+        // 後端存成功/失敗都會回一個 JSON（見 ws_calibration.py）；SendCalibrationData() 裡的
+        // SendAsync 只代表送出動作沒出錯，不代表後端真的收到、存進 Redis，這裡才是送達確認。
+        ws.OnMessage += (s, e) => Debug.Log($"[Calibration WS] 後端回應: {e.Data}");
         ws.ConnectAsync();
 
         StartCoroutine(CalibrationRoutine());
@@ -107,7 +117,10 @@ public class KinectCalibrationManager : MonoBehaviour
             yield return null;
         }
 
-        bool isStable = CheckStability();
+        // CheckStability 只看 SpineBase 這一點晃不晃，就算只有半個人在鏡頭裡、
+        // 其他關節整場都沒被追蹤到，只要 SpineBase 穩定就會判定通過。
+        // CheckJointCompleteness 補上「人有沒有完整在鏡頭範圍內」的檢查。
+        bool isStable = CheckStability() && CheckJointCompleteness();
 
         if (isStable)
         {
@@ -122,7 +135,7 @@ public class KinectCalibrationManager : MonoBehaviour
         }
         else
         {
-            Debug.Log("[Calibration] 數據不穩定，重新校正");
+            Debug.Log("[Calibration] 數據不穩定或關節追蹤不完整，重新校正");
             skeletonBuffer.Clear();
             happyBuffer.Clear();
             lookingAwayBuffer.Clear();
@@ -214,6 +227,35 @@ public class KinectCalibrationManager : MonoBehaviour
 
         Debug.Log($"[Calibration] 骨架穩定度: {stdDev}（閾值: {stabilityThreshold}）");
         return stdDev < stabilityThreshold;
+    }
+
+    /// <summary>
+    /// CheckStability 只驗證 SpineBase 有沒有晃，沒驗證整個人是不是都在鏡頭範圍內——
+    /// 只要 SpineBase 追蹤得到又夠穩，就算頭、肩膀、髖部整場都沒被追蹤到也會判定通過。
+    /// 這裡另外檢查幾個關鍵關節，要求在夠高比例的影格裡都有被追蹤到，
+    /// 確保「校正完成」代表的是完整的人，不是只有半個人在畫面裡剛好沒動。
+    /// </summary>
+    bool CheckJointCompleteness()
+    {
+        if (skeletonBuffer.Count == 0) return false;
+
+        foreach (string jointName in KeyJointsForCompleteness)
+        {
+            int trackedCount = 0;
+            foreach (var frame in skeletonBuffer)
+            {
+                if (frame.ContainsKey(jointName)) trackedCount++;
+            }
+
+            float ratio = (float)trackedCount / skeletonBuffer.Count;
+            if (ratio < minKeyJointTrackedRatio)
+            {
+                Debug.Log($"[Calibration] 關節 {jointName} 追蹤率不足：{ratio:P0}（需要 {minKeyJointTrackedRatio:P0}），可能只有部分身體在鏡頭範圍內");
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // ── 新增：游標映射推算，結果寫入 CalibrationData ───
@@ -308,7 +350,7 @@ public class KinectCalibrationManager : MonoBehaviour
         };
 
         ws.SendAsync(JsonUtility.ToJson(payload), null);
-        Debug.Log("[Calibration] 基準值已送出");
+        Debug.Log("[Calibration] 基準值已送出（送達確認見上面的 [Calibration WS] 後端回應）");
     }
 
     float Average(List<float> list)

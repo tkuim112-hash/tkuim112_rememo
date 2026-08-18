@@ -1,0 +1,26 @@
+# Cloudflare Tunnel 設定檔範本
+#
+# 使用方式：
+#   1. 複製這份檔案成 config.yml，放到 cloudflared 讀取設定的位置
+#      （Windows 預設是 %USERPROFILE%\.cloudflared\config.yml）
+#   2. 把 <TUNNEL_ID> 換成 `cloudflared tunnel create rememo-tunnel` 產生的 Tunnel ID
+#   3. credentials-file 換成該 Tunnel 對應的憑證檔實際路徑
+#      （建立 tunnel 時預設會存在 %USERPROFILE%\.cloudflared\<TUNNEL_ID>.json）
+#
+# 這份 config.yml 本身不含機密內容，但憑證檔 (*.json) 含有存取金鑰，
+# 不要把 config.yml 或 *.json 放進 git（見專案根目錄 .gitignore）。
+
+tunnel: <TUNNEL_ID>
+credentials-file: C:\Users\<WINDOWS_USER>\.cloudflared\<TUNNEL_ID>.json
+
+ingress:
+  # 前端 (Next.js, docker-compose 已把 3000 對外開放到 host)
+  - hostname: re-memo.com
+    service: http://localhost:3000
+
+  # 後端 API (FastAPI, docker-compose 已把 8000 對外開放到 host)
+  - hostname: api.re-memo.com
+    service: http://localhost:8000
+
+  # 其餘一律回 404（cloudflared 規定 ingress 規則最後一定要有這條 catch-all）
+  - service: http_status:404

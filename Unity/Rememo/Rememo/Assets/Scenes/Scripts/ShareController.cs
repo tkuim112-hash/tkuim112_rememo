@@ -143,7 +143,7 @@ public class ShareController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(serverUrl);
+        ws = new WebSocket(AuthService.AppendToken(serverUrl));
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Share STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Share STT WS] 錯誤: {e.Message}");

@@ -54,6 +54,10 @@ models/
 **/venv/
 .venv/
 
+# Cloudflare Tunnel（正式設定與憑證含存取金鑰，只留範本 config.yml.example 入版控）
+cloudflared/config.yml
+cloudflared/*.json
+
 test/
 
 # Unity (Rememo 專案)
