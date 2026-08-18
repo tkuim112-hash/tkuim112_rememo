@@ -880,6 +880,11 @@ async def session_metrics(
         "ai_suggestions": suggestions,
         "current_round": _to_int(data.get("current_round")) or 1,
         "total_rounds": _to_int(data.get("total_rounds")) or 3,
+        # session:{id}:meta 只有在 _compute_and_save_assessment 算完評估分數、
+        # 療程真正結束時才會被清掉（見該函式），前端「活動觀察頁」還在 polling
+        # 的當下 meta 一定存在，一旦這裡變 false 就代表心得已經答完、評估算完了，
+        # 可以自動跳轉到結束頁面，不用等治療師自己按「結束活動」。
+        "session_completed": not meta_raw,
     }
 
 
