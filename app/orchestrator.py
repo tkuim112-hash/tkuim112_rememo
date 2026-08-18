@@ -2541,8 +2541,17 @@ class TherapyOrchestrator:
         # 差了……」），如果先跑 quick_end，這類句子會被誤判成單純放棄話題，
         # 跳過情緒支持直接進下一題——正好是 Track B 的 ignore_emotion／rush_topic
         # 規則要懲罰的行為，所以這個判斷必須放在最前面。
+        # 2026-08-18稽核（實測後補）：原本只排除精確等於 _NO_RESPONSE_MARKER
+        # 的情況，長者真的沒開口、前端傳的是純空字串（不是這個固定marker）時
+        # 沒被排除，會把空字串原樣塞進 _detect_emotional_trigger 的 prompt
+        # 問LLM「這句話有沒有情緒訊號」——對空白內容問這種問題是未定義行為，
+        # 量化基底模型不保證每次都答NO；一旦誤判YES，這題會直接不受
+        # _MAX_QUESTIONS_PER_ROUND／_MAX_SUPPLEMENT_PER_ROUND限制（見下面
+        # is_emotional_trigger分支），實測案例：一個長者全程沉默的回合最後
+        # 問了8題才收尾，遠超過設計上限（5題／補問2次），改成空白字串同樣
+        # 短路成False，不再交給LLM判斷。
         is_emotional_trigger = (
-            False if elder_response.strip() == _NO_RESPONSE_MARKER
+            False if (not elder_response.strip()) or elder_response.strip() == _NO_RESPONSE_MARKER
             else await self._detect_emotional_trigger(elder_response)
         )
         print(f"  → 情緒觸發偵測: {is_emotional_trigger}")
