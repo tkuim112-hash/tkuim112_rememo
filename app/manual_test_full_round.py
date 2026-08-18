@@ -177,6 +177,21 @@ async def main() -> None:
                         "pre_image_detail": last_state.get("pre_image_detail", ""),
                         "topic_category": last_state.get("topic_category"),
                         "round1_covered_w": last_state.get("covered_w", []),
+                        # 照抄 session.py round==1 carryover 的
+                        # round1_last_question（2026-08-18稽核，第四次，使用者
+                        # 提案）——round 1 最後一題問了什麼，round 2 開場生成時
+                        # 當參考資訊。原本這裡帶的是round 1整份round_qa_log，
+                        # 實測回報累積的內容越長承接語／問題品質越差，已改成
+                        # 只帶最後一題的單一字串。
+                        "round1_last_question": last_state.get("last_question_text", ""),
+                        # 照抄 session.py round==1 carryover 的
+                        # round1_covered_senses（2026-08-18新增，見
+                        # orchestrator.py _start_round2_free_followup 的
+                        # known_senses 說明）——round 1 已涵蓋的感官，避免
+                        # round 2 開場又問一次已經答過的感官（實測案例：
+                        # round 1 問過「七星潭邊有什麼味道」，round 2 開場
+                        # 原句又問了一次）。
+                        "round1_covered_senses": last_state.get("covered_senses", []),
                     })
                 if last_state.get("topic_category"):
                     topics.append(last_state["topic_category"])

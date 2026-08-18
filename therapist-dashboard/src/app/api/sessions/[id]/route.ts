@@ -73,7 +73,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       AND p.organization_id = ${session.organizationId}
   `;
 
-  if (!s) return NextResponse.json({ error: "找不到療程" }, { status: 404 });
+  if (!s) return NextResponse.json({ error: "找不到活動" }, { status: 404 });
 
   await logAccess({
     therapistId: session.therapistId,

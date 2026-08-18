@@ -14,6 +14,7 @@ from auth import get_current_therapist_id
 from db.deps import get_db
 from db.models import TherapySession, TherapyRound, RoundExchange
 from services.closing_templates import build_closing_invitation
+from services.audio_bank import lookup_audio_key
 import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -35,6 +36,28 @@ async def _synthesize_safe(tts, **kwargs) -> str | None:
     except Exception as e:
         print(f"[TTS] 語音合成失敗（不影響主流程，長者端這段沒有語音）: {e}")
         return None
+
+
+async def _synthesize_or_key(tts, text: str, **kwargs) -> tuple[str | None, str | None]:
+    """
+    2026-08-18新增：orchestrator.py 產出的固定字串模板（非LLM即時生成，見
+    app/services/audio_bank.py 開頭說明）改成前端播放內建預錄音檔，後端不用
+    再為這些句子即時呼叫TTS。text 若命中 audio_bank 的對照表，直接回傳
+    (None, key)，跳過TTS；查無對應（LLM動態生成的內容，或還沒收錄進
+    audio_bank 的固定句，見 audio_bank.py 說明）就照舊呼叫 _synthesize_safe，
+    回傳 (path, None)——同一個欄位只會有 path 或 key 其中一個有值，呼叫端
+    （Unity）兩個都要檢查：有 key 就播內建音檔，沒有才退回下載 audio_path
+    播放。
+
+    五感/W維度保底問句、出示圖片承接語保底句這三處不用在這裡另外判斷——
+    全部屬於回合2「自由追問」才會生成的內容，回合2/3的呼叫端（本檔案的
+    session_round／session_respond）本來就整段跳過 TTS/audio_key，這支
+    函式根本不會被叫到，見 audio_bank.py 檔頭說明。
+    """
+    key = lookup_audio_key(text)
+    if key:
+        return None, key
+    return await _synthesize_safe(tts, text=text, **kwargs), None
 
 
 async def _init_session_meta(
@@ -271,9 +294,12 @@ async def _save_round_exchange(
     round_type: str | None = None,
     patient_id: int | None = None,
     therapist_id: int | None = None,
+    stage: str | None = None,
 ) -> None:
     """AI 每問一個新問題就新增一筆 round_exchanges（answer 先留空，長者回答後由
-    _fill_round_exchange_answer 補上）。"""
+    _fill_round_exchange_answer 補上）。stage="pre_image" 代表這題是生圖前的
+    引導問題（見 orchestrator.py 的 pre_image_q1/pre_image_q2），供歷史療程
+    檢視頁區分第一回合的問題是生圖前還是生圖後問的。"""
     try:
         round_row = await _get_or_create_round(
             db, session_id, round_number, patient_id, therapist_id, round_type
@@ -285,6 +311,7 @@ async def _save_round_exchange(
             round_id=round_row.id,
             question_number=question_number,
             question=question,
+            stage=stage,
         ))
         await db.commit()
         print(f"[DB] round_exchanges 新增問題: round={round_number} q#={question_number}")
@@ -463,14 +490,36 @@ class SessionState(BaseModel):
     # 過渡句（見 orchestrator.py _start_scene_after_detail、
     # _generate_quick_end_recap）。同樣需要宣告在這裡才能透過 API 往返存活。
     pre_image_detail: str = ""
-    # 長者看完圖後反應被分類成「有差異但還沒具體講出哪裡不一樣」（分類2）
-    # 時，承接語本身就是追問「哪裡不一樣」的問題，這輪不接STEP1問題，
-    # state 留在 image_reveal 等長者先回答；這個欄位標記「已經追問過一次」，
-    # 避免長者第二次還是講得很籠統時無限追問下去（見 orchestrator.py
-    # process_response 的 image_reveal 分支）。跟上面其他欄位一樣，必須
-    # 宣告在這裡才能透過 API 往返存活，否則會被 FastAPI 驗證丟棄，導致
-    # 每次都判斷成「沒追問過」而無限循環。
-    image_reveal_deferred: bool = False
+    # round 1 結束時已經自然涵蓋的 W 維度，round 2 開場用來排除補問候選、
+    # 避免重複問長者上一回合已經明確答過的事實（見 orchestrator.py
+    # _start_round2_free_followup 的 known_facts_w 說明）。2026-08-17稽核
+    # （實測後補）：這個欄位當初漏宣告在這裡——只在 manual_test_full_round.py
+    # （不走這個 pydantic model，直接傳裸 dict）測試時有效，透過正式 API
+    # 其實從一開始就被 FastAPI 驗證悄悄丟棄，round 2 一直沒真的用上，是跟
+    # 上面這幾個欄位同一種踩過的坑，這裡一併補上。
+    known_facts_w: list[str] = []
+    # 上一題問了什麼，當模型生成下一題時的參考資訊（2026-08-18稽核，第四次，
+    # 使用者提案：原本這裡還有一個 round_qa_log 欄位，累積整場療程的Q&A摘要
+    # 塞進prompt，但實測回報累積的內容越長，承接語／問題品質反而越差——
+    # 本地量化基底模型對長prompt的指令遵循本來就不穩定。已移除，改成只留
+    # 這個單一字串。第十次稽核：一度加上生成後事後核對＋重打，比對commit
+    # 版本後發現那套機制本身也會拖累品質，已經拿掉，這裡純粹是參考資訊，
+    # 不驅動任何強制核對）。同樣必須宣告在這裡才能透過 API 往返存活。
+    last_question_text: str = ""
+    # 這回合到目前為止已經自然涵蓋哪些感官（視覺/聽覺/嗅覺/味覺/觸覺），
+    # 供 STEP2/3 選感官切入角度時避免重複問同一種、或問跟主題不相關的
+    # 感官（見 orchestrator.py process_response 對 covered_senses 的說明、
+    # _relevant_uncovered_senses）。同樣必須宣告在這裡才能透過 API 往返存活。
+    covered_senses: list[str] = []
+    # 2026-08-18新增：跟 covered_w／skipped_w 對稱——covered_senses 只記錄
+    # 「長者的回答有沒有自然涵蓋某個感官」，last_sense_asked／skipped_senses
+    # 補上「這題問了哪個感官、長者有沒有答到」的追蹤（見 orchestrator.py
+    # _relevant_uncovered_senses 的 skipped_senses 說明）。同樣必須宣告在這裡
+    # 才能透過 API 往返存活，否則會被 FastAPI 驗證悄悄丟棄——這幾個新欄位
+    # 剛加時就是因為漏宣告在這裡，透過正式 API 完全沒生效過（question_count
+    # 等欄位都踩過同一個坑，見上面說明）。
+    last_sense_asked: str = ""
+    skipped_senses: list[str] = []
 
 
 class RespondRequest(BaseModel):
@@ -571,24 +620,32 @@ async def session_start(
         result["state"]["question_number"] = 1
         result["state"]["question_asked_at"] = int(time.time() * 1000)
         tts = request.app.state.tts_service
-        scene_audio_path = None
+        scene_audio_path = scene_audio_key = None
         if result.get("scene_text"):
-            scene_audio_path = await _synthesize_safe(
+            scene_audio_path, scene_audio_key = await _synthesize_or_key(
                 tts,
-                text=result["scene_text"],
+                result["scene_text"],
                 session_id=session_id,
                 round_number=1,
                 turn_number=None,
             )
-        question_audio_path = await _synthesize_safe(
+        # Q1邀請語帶著治療師自由輸入的今日主題，orchestrator.start_round
+        # 已經拆好 question_tts_text（該即時TTS的動態部分）跟
+        # question_audio_key（後半段邀請語的預錄音檔key，見 orchestrator.py
+        # _build_pre_image_question 說明）——沒有這兩個欄位（理論上不會，
+        # round 1 一定是走 Q1）才退回對整句 question 查表/即時TTS。
+        question_audio_path, _lookup_key = await _synthesize_or_key(
             tts,
-            text=result["question"],
+            result.get("question_tts_text", result["question"]),
             session_id=session_id,
             round_number=1,
             turn_number=1,
         )
+        question_audio_key = result.get("question_audio_key") or _lookup_key
         result["scene_audio_path"] = scene_audio_path
+        result["scene_audio_key"] = scene_audio_key
         result["question_audio_path"] = question_audio_path
+        result["question_audio_key"] = question_audio_key
         result["audio_path"] = question_audio_path  # 向下相容
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id), topic=topic)
         await request.app.state.redis.delete(f"case:{user_id}:pending_session")
@@ -612,9 +669,11 @@ async def session_start(
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
         if result.get("question"):
+            last_type = (result.get("state") or {}).get("last_question_type", "")
             await _save_round_exchange(
                 db, session_id, 1, question_number=1, question=result["question"],
                 patient_id=_to_int(user_id), therapist_id=therapist_id,
+                stage="pre_image" if last_type.startswith("pre_image") else None,
             )
         await _cache_start_result(r, session_id, result)
         return result
@@ -664,24 +723,30 @@ async def session_round(
         # 第二回合自由追問、第三回合 closing 都只靠畫面文字＋長者口說回應。
         if result.get("question") and round_number not in (2, 3):
             tts = request.app.state.tts_service
-            scene_audio_path = None
+            scene_audio_path = scene_audio_key = None
             if result.get("scene_text"):
-                scene_audio_path = await _synthesize_safe(
+                scene_audio_path, scene_audio_key = await _synthesize_or_key(
                     tts,
-                    text=result["scene_text"],
+                    result["scene_text"],
                     session_id=session_id,
                     round_number=round_number,
                     turn_number=None,
                 )
-            question_audio_path = await _synthesize_safe(
+            # 這個分支 round_number 一定是 1（round 2/3 被上面的
+            # not in (2, 3) 擋掉），一定是 Q1 邀請語，見 session_start 那份
+            # 一樣的說明。
+            question_audio_path, _lookup_key = await _synthesize_or_key(
                 tts,
-                text=result["question"],
+                result.get("question_tts_text", result["question"]),
                 session_id=session_id,
                 round_number=round_number,
                 turn_number=1,
             )
+            question_audio_key = result.get("question_audio_key") or _lookup_key
             result["scene_audio_path"] = scene_audio_path
+            result["scene_audio_key"] = scene_audio_key
             result["question_audio_path"] = question_audio_path
+            result["question_audio_key"] = question_audio_key
             result["audio_path"] = question_audio_path  # 向下相容
         await _init_session_meta(request.app.state.redis, session_id, user_id, str(therapist_id))
         await _update_live_view(
@@ -698,9 +763,11 @@ async def session_round(
             patient_id=_to_int(user_id), therapist_id=therapist_id,
         )
         if result.get("question"):
+            last_type = (result.get("state") or {}).get("last_question_type", "")
             await _save_round_exchange(
                 db, session_id, round_number, question_number=1, question=result["question"],
                 patient_id=_to_int(user_id), therapist_id=therapist_id,
+                stage="pre_image" if last_type.startswith("pre_image") else None,
             )
         return result
     except ValueError as e:
@@ -1132,6 +1199,13 @@ async def session_respond(
                 result["scene_text"] = invitation["scene_text"]
                 result["thanks_text"] = invitation["thanks_text"]
                 result["question"] = invitation["question"]
+                # 心得環節的音檔全部是前端內建預錄音檔（見 audio_bank.py／
+                # closing_templates.py），不用即時TTS，直接把 key 列表帶過去
+                # 給前端；下面 1233 行那個 action=="end_session" 就跳過TTS的
+                # 分支維持不動，這裡是唯一填入這三個欄位的地方。
+                result["scene_audio_keys"] = invitation["scene_audio_keys"]
+                result["thanks_audio_keys"] = invitation["thanks_audio_keys"]
+                result["question_audio_keys"] = invitation["question_audio_keys"]
             if result.get("action") == "end_round" and body.state.round in (1, 2):
                 # round 2/3 開場需要承接這裡：round 1 結束時記畫面元素／話題／
                 # 生圖前訪談內容＋這句話，round 2 結束時只需要這句話（round 3
@@ -1148,6 +1222,22 @@ async def session_respond(
                         # （見 orchestrator.py _start_round2_free_followup 的
                         # known_facts_w 說明）。
                         "round1_covered_w": body.state.covered_w,
+                        # round 1 最後一題問了什麼——round 2 開場生成時當
+                        # 參考資訊（見 orchestrator.py _start_round2_free_
+                        # followup 說明）。2026-08-18稽核（第四次，使用者
+                        # 提案）：這裡原本帶的是round 1整份round_qa_log，
+                        # 改成只帶最後一題的單一字串，理由見
+                        # SessionState.last_question_text 上方註解。
+                        "round1_last_question": body.state.last_question_text,
+                        # round 1 結束時已經自然涵蓋的感官——round 2 開場用來排除
+                        # 感官選項，不要再問長者已經在 round 1 答過的感官（例如
+                        # 味覺/嗅覺），跟上面 round1_covered_w 同一個問題、同一種
+                        # 修法（見 orchestrator.py _start_round2_free_followup 的
+                        # known_senses 說明）。只帶 covered_senses、不帶
+                        # skipped_senses——skipped_senses 是「問了但長者沒答到」，
+                        # round 2 沒理由跟著避開，跟 round1_covered_w 只帶
+                        # covered_w、不帶 skipped_w 是同一個理由。
+                        "round1_covered_senses": body.state.covered_senses,
                     })
                 await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
                 await _append_session_topic(r, body.state.session_id, body.state.topic_category)
@@ -1165,22 +1255,34 @@ async def session_respond(
             if body.state.round != 2 and result.get("action") != "end_session":
                 tts = request.app.state.tts_service
                 if result.get("scene_text"):
-                    scene_audio_path = await _synthesize_safe(
+                    scene_audio_path, scene_audio_key = await _synthesize_or_key(
                         tts,
-                        text=result["scene_text"],
+                        result["scene_text"],
                         session_id=body.state.session_id,
                         round_number=body.state.round,
                         turn_number=None,
                     )
                     result["scene_audio_path"] = scene_audio_path
-                question_audio_path = await _synthesize_safe(
-                    tts,
-                    text=result["question"],
-                    session_id=body.state.session_id,
-                    round_number=body.state.round,
-                    turn_number=next_qn if result.get("state") is not None else None,
-                )
+                    result["scene_audio_key"] = scene_audio_key
+                # orchestrator.process_response 的生圖前Q2情境2分支（
+                # get_scenario2_followup，_FIVE_W1H_BANK 題庫）已經直接算好
+                # question_audio_key 放進 result 了（同一句話在不同主題下
+                # 可能重複出現，沒辦法只靠文字比對查表，見 audio_bank.py
+                # five_w1h_key 說明）——這裡如果已經有值就不用再耗一次TTS
+                # 呼叫，直接沿用；其餘情況才照舊查表/即時TTS。
+                existing_question_key = result.get("question_audio_key")
+                if existing_question_key:
+                    question_audio_path, question_audio_key = None, existing_question_key
+                else:
+                    question_audio_path, question_audio_key = await _synthesize_or_key(
+                        tts,
+                        result["question"],
+                        session_id=body.state.session_id,
+                        round_number=body.state.round,
+                        turn_number=next_qn if result.get("state") is not None else None,
+                    )
                 result["question_audio_path"] = question_audio_path
+                result["question_audio_key"] = question_audio_key
                 result["audio_path"] = question_audio_path  # 向下相容
             await _update_live_view(
                 request.app.state.redis, body.state.session_id,
@@ -1190,10 +1292,12 @@ async def session_respond(
             if result.get("state") is not None:
                 result["state"]["question_number"] = next_qn
                 result["state"]["question_asked_at"] = int(time.time() * 1000)
+                last_type = (result.get("state") or {}).get("last_question_type", "")
                 await _save_round_exchange(
                     db, body.state.session_id, body.state.round,
                     question_number=next_qn, question=result["question"],
                     patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                    stage="pre_image" if last_type.startswith("pre_image") else None,
                 )
         return result
     except ValueError as e:
