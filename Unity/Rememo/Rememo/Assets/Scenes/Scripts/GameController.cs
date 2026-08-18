@@ -301,7 +301,9 @@ public class GameController : MonoBehaviour
             switch (msg.action)
             {
                 case "replay_audio":
-                    OnReplayAudio();
+                    // 暫停中不重播：重播會重新排反應逾時倒數，等於讓暫停中的療程自己繼續跑。
+                    if (!isPaused)
+                        OnReplayAudio();
                     break;
                 case "skip_scene":
                     // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
@@ -315,11 +317,13 @@ public class GameController : MonoBehaviour
                     CancelReactionTimeout();
                     micButton.interactable = false;
                     submitButton.interactable = false;
+                    if (replayButton != null) replayButton.interactable = false;
                     break;
                 case "resume":
                     isPaused = false;
                     RefreshSubmitButton();
                     micButton.interactable = true;
+                    if (replayButton != null) replayButton.interactable = true;
                     StartReactionTimeout();
                     break;
                 case "end":

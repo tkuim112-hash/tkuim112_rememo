@@ -5,12 +5,31 @@ public class SessionStateData
     public string session_id;
     public int round;
     public string[] scene_elements;
+    public string scene_composition;
     public string[] covered_w;
     public string[] skipped_w;
     public string last_question_type;
     public string last_w_asked;
     public int question_number;
     public long question_asked_at;
+    // question_count/supplement_count 是 orchestrator 的回合題數上限/補問上限
+    // 計數器（見 app/orchestrator.py _MAX_SUPPLEMENT_PER_ROUND）。這個 class
+    // 之前沒宣告這兩個欄位，JsonUtility 序列化/反序列化時會直接忽略掉 JSON
+    // 裡對應不到欄位的資料，導致每次長者答完話、Unity 把 state 傳回後端時
+    // 這兩個計數器都被丟棄、後端只能套用預設值 0，補問上限因此從未真正生效
+    // 過（無限追問的根因）。跟 session.py SessionState pydantic model 的欄位
+    // 保持同步是這裡的原則——後端每加一個要跨回合存活的 state 欄位，這裡就
+    // 要跟著補上，不然就是同一種坑。
+    public int question_count;
+    public int supplement_count;
+    public string topic_category;
+    public string pre_image_q1_answer;
+    public string pre_image_detail;
+    public string[] known_facts_w;
+    public string last_question_text;
+    public string[] covered_senses;
+    public string last_sense_asked;
+    public string[] skipped_senses;
 }
 
 [System.Serializable]
