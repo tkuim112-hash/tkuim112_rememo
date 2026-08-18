@@ -21,6 +21,27 @@ app/routers/session.py session_closing 說明）。
 """
 import random
 
+from services.audio_bank import lookup_audio_key
+
+# 2026-08-18：心得環節這批固定句全部併入 audio_bank.py 的預錄音檔對照表
+# （SHARING_TEXT_KEYS），跟其餘 fixed_/q1_inv_/... 用同一套「前端依 key 播放
+# 內建音檔、後端不再即時TTS」機制——這份檔案本來的註解說前端已經在播預錄
+# 音檔了，但實際查過 Unity 專案（GameController.cs／ShareController.cs）
+# 後發現前端目前完全沒有這個機制，是規劃、不是現況，這次才真的接上。
+#
+# 這裡選字串用的仍然是 random.choice，不是自己維護一份「index -> key」
+# 對照——選完之後直接拿選中的文字去 lookup_audio_key() 查，是同一套資料
+# 來源（audio_bank.py 裡逐句核對過的 SHARING_TEXT_KEYS），不會有文字/key
+# 兜不起來的風險。查無對應（例如下面 round3_response 缺值時的通用保底句
+# 「今天聊了這麼多。」，這句不在錄音清單裡）就回傳空list，呼叫端維持現況
+# ——心得環節本來就不會另外即時TTS，查無key就是沒有語音，跟現在的行為
+# 一致，不是新增的缺陷。
+
+
+def _audio_keys(text: str) -> list[str]:
+    key = lookup_audio_key(text)
+    return [key] if key else []
+
 # ── 主題分類 ──────────────────────────────
 HARDSHIP_TOPICS = {"奮鬥經歷", "軍旅", "哀傷之事"}
 
@@ -72,15 +93,24 @@ async def build_closing_invitation(
     tuple，這裡拆成 scene_text／thanks_text 兩個獨立欄位。
     """
     if round3_response and llm_service is not None:
-        scene_text, thanks_text = await build_closing_message(
+        scene_text, scene_audio_keys, thanks_text, thanks_audio_keys = await build_closing_message(
             round3_response, emotion, topics, llm_service,
         )
     else:
-        scene_text, thanks_text = "今天聊了這麼多。", ""
+        scene_text, scene_audio_keys, thanks_text, thanks_audio_keys = "今天聊了這麼多。", [], "", []
+    question = "回想整場聊下來，你有什麼想跟我分享的呢？"
     return {
         "scene_text": scene_text,
+        # scene_text 可能是「承接語＋系統整合肯定」兩句拼接（見
+        # build_closing_message），對應前端要接續播放的兩個音檔，所以是
+        # list 不是單一 key；system_complaint分類時只有承接語一句，list只有
+        # 一個元素；round3_response/llm_service缺值的中性保底句不在錄音
+        # 清單裡，list是空的，跟現況一樣不播語音，不是新增的缺陷。
+        "scene_audio_keys": scene_audio_keys,
         "thanks_text": thanks_text,
-        "question": "回想整場聊下來，你有什麼想跟我分享的呢？",
+        "thanks_audio_keys": thanks_audio_keys,
+        "question": question,
+        "question_audio_keys": _audio_keys(question),
     }
 
 
@@ -247,7 +277,7 @@ CLOSING_TAIL_VARIANTS = [
 ]
 
 
-def build_closing_affirmation(topics: list[str]) -> str:
+def build_closing_affirmation(topics: list[str]) -> tuple[str, str | None]:
     """
     長者分享完之後，系統接住並放大，依這場實際聊過的主題
     決定用「撐過來」還是「美好時光」的收尾語氣，每個版本隨機挑一句，
@@ -257,17 +287,24 @@ def build_closing_affirmation(topics: list[str]) -> str:
     2026-08-17（第二次）：感謝語原本直接接在核心肯定語後面回傳同一個字串，
     使用者說感謝語會是另一段獨立的音檔，需要拆成獨立欄位——這裡改成只回
     核心肯定語本身，感謝語交給呼叫端另外處理。
+
+    2026-08-18：回傳改成 (text, audio_key) tuple——audio_key 是這句在
+    audio_bank.py SHARING_TEXT_KEYS 裡對應的預錄音檔 key（sharing_affirm_
+    hard_1~4／sharing_affirm_warm_1~4 之一），直接對隨機選中的那句文字查表，
+    保證 key 跟文字是同一句，不用另外維護一份 index 對照。
     """
     has_hardship_content = any(t in HARDSHIP_TOPICS for t in topics)
-    return random.choice(HARDSHIP_CORE_VARIANTS if has_hardship_content else WARM_CORE_VARIANTS)
+    text = random.choice(HARDSHIP_CORE_VARIANTS if has_hardship_content else WARM_CORE_VARIANTS)
+    return text, lookup_audio_key(text)
 
 
 async def build_closing_message(
     text: str, emotion: str, topics: list[str], llm_service,
-) -> tuple[str, str]:
+) -> tuple[str, list[str], str, list[str]]:
     """
     長者回答完開場邀請語後，組出「承接語（含系統整合肯定，若適用）」與
-    「結尾感謝語」兩段，分開回傳。Returns: (receiving_text, thanks_text)。
+    「結尾感謝語」兩段，分開回傳。Returns: (receiving_text,
+    receiving_audio_keys, thanks_text, thanks_audio_keys)。
 
     抱怨/不滿系統或AI本身時（system_complaint）：receiving_text 只是抱怨
     對應的承接語，不接 build_closing_affirmation 那段「撐過來／美好時光」
@@ -277,11 +314,22 @@ async def build_closing_message(
     2026-08-17（第二次）：原本回傳合併成一個字串的收尾訊息，使用者要求
     感謝語要拆成獨立欄位（會是另一個音檔，見 build_closing_invitation
     呼叫處），改成回傳 tuple，兩段內容分開、由呼叫端自行決定怎麼組裝/顯示。
+
+    2026-08-18：receiving_audio_keys 是前端要依序播放的音檔 key 列表——
+    system_complaint 分類只有一個key（純抱怨承接語）；其餘分類是「承接語
+    ＋系統整合肯定」兩句拼接成一個 receiving_text 字串，對應兩個要接續播放
+    的音檔，所以是list不是單一key。receiving_text 本身故意不在承接語跟
+    肯定語中間加分隔符（維持原本的行為），前端播放兩個音檔本身自然有間隔，
+    不需要文字上的分隔符。
     """
     category, subtype = await classify_closing_response(text, emotion, llm_service)
     thanks_text = random.choice(CLOSING_TAIL_VARIANTS)
+    thanks_audio_keys = _audio_keys(thanks_text)
     if category == "system_complaint":
         receiving_text = random.choice(SYSTEM_COMPLAINT_RECEIVING_PHRASES[subtype])
-        return receiving_text, thanks_text
-    receiving_text = random.choice(CLOSING_RECEIVING_PHRASES[category]) + build_closing_affirmation(topics)
-    return receiving_text, thanks_text
+        return receiving_text, _audio_keys(receiving_text), thanks_text, thanks_audio_keys
+    ack_text = random.choice(CLOSING_RECEIVING_PHRASES[category])
+    affirmation_text, affirmation_key = build_closing_affirmation(topics)
+    receiving_text = ack_text + affirmation_text
+    receiving_audio_keys = _audio_keys(ack_text) + ([affirmation_key] if affirmation_key else [])
+    return receiving_text, receiving_audio_keys, thanks_text, thanks_audio_keys

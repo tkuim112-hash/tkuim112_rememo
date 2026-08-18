@@ -17,6 +17,8 @@ public class ShareController : MonoBehaviour
     public Image micButtonImage;
     public TMP_Text inputText;
     public TMP_Text closingText;    // 線條區：顯示 LLM 收尾語
+    [Tooltip("心得環節開場語音（承接語／感謝語／問句，見 LoadClosingText）播放用")]
+    public AudioSource audioSource;
 
     [Header("Kinect 整合")]
     [Tooltip("拖入場景中的 KinectAudioSender；若留空則退回使用內建麥克風")]
@@ -54,6 +56,7 @@ public class ShareController : MonoBehaviour
     private readonly string placeholderText = "想到什麼就說什麼，按下麥克風可以用說的…";
     private string displayedText = "";
     private string closingFullText = "";
+    private List<string> closingAudioUris;
     private Coroutine typingCoroutine;
     private Coroutine replayCoroutine;
     private bool isWaitingForStt = false;
@@ -100,6 +103,23 @@ public class ShareController : MonoBehaviour
         closingText.text = closingFullText;
         // 收尾問題顯示完畢 → 啟動反應時間計時
         kinectSensorSender?.OnQuestionAsked();
+
+        // 承接語／感謝語／問句三段都是前端內建預錄音檔（見 audio_bank.py，
+        // GameController.SendResponse 存進 PlayerPrefs 時已經用 '|' 串好），
+        // 依序接起來播——這裡沒有需要即時TTS的動態內容，全部是本地 key，
+        // 不用像 GameController 那樣還要組後端下載的 audio_path。
+        closingAudioUris = new List<string>();
+        closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingSceneAudioKeys")));
+        closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingThanksAudioKeys")));
+        closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingQuestionAudioKeys")));
+        if (closingAudioUris.Count > 0)
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, closingAudioUris));
+    }
+
+    static string[] SplitAudioKeys(string playerPrefsKey)
+    {
+        string joined = PlayerPrefs.GetString(playerPrefsKey, "");
+        return string.IsNullOrEmpty(joined) ? System.Array.Empty<string>() : joined.Split('|');
     }
 
     void OnReplay()
@@ -108,6 +128,8 @@ public class ShareController : MonoBehaviour
         if (replayCoroutine != null) StopCoroutine(replayCoroutine);
         closingText.text = "";
         replayCoroutine = StartCoroutine(TypeClosingText(closingFullText));
+        if (closingAudioUris != null && closingAudioUris.Count > 0)
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, closingAudioUris));
     }
 
     IEnumerator TypeClosingText(string target)

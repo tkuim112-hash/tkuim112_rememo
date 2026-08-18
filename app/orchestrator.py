@@ -126,6 +126,7 @@ from services.llm import LLMService
 from services.image import OpenAIImageService
 from services.rag_client import RealRAGClient
 from services.user_profile_db import DBUserProfileClient
+from services.audio_bank import q1_invitation_key, five_w1h_key
 from privacy.deidentifier import Deidentifier
 from safety.response_guard import guarded_generate
 from safety.element_filter import filter_scene_elements
@@ -745,7 +746,7 @@ def get_scenario2_followup(
     covered_w: list[str],
     named_person: str = "",
     skipped_w: list[str] | None = None,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str | None] | None:
     """
     生圖前 Q2・情境2專用：依 _PRE_IMAGE_PRIORITY_ORDER 找下一個該問的W維度，
     直接複用 _FIVE_W1H_BANK 裡已經核對過、排除過不適用欄位的那份題庫——
@@ -763,9 +764,13 @@ def get_scenario2_followup(
     差別是 covered_w 代表「已經答對」，skipped_w 代表「問過但沒答到，不再
     重問」，兩者都要排除。
 
-    回傳值改成 (question, w)：多回傳這次挑中的是哪個維度，讓呼叫端知道
-    「這題在問哪個W」，下一輪核對長者答了沒有時才能對得上（否則呼叫端只有
-    問題文字，沒辦法回推是哪個維度，就沒辦法在沒答到時把它加進 skipped_w）。
+    回傳值改成 (question, w, audio_key)：多回傳這次挑中的是哪個維度，讓
+    呼叫端知道「這題在問哪個W」，下一輪核對長者答了沒有時才能對得上（否則
+    呼叫端只有問題文字，沒辦法回推是哪個維度，就沒辦法在沒答到時把它加進
+    skipped_w）。audio_key（2026-08-18新增）是 question 對應的前端內建
+    預錄音檔 key（見 services/audio_bank.py five_w1h_key），查無對應（例如
+    variants[i] 剛好是「哀傷之事→親人死亡」那個帶 {person} 稱謂詞的變體，
+    audio_bank 故意沒收錄，見該函式說明）就是 None，呼叫端要退回即時TTS。
     回傳 None 代表該問的都問完了（扣掉 excluded_fields、covered_w、skipped_w
     後，_PRE_IMAGE_PRIORITY_ORDER 已經沒有欄位可問）——呼叫端據此結束情境2的
     追問迴圈，進生圖。theme 不在題庫裡、或 sub_item 分類失敗（該主題是
@@ -791,14 +796,20 @@ def get_scenario2_followup(
         variants = field.get("variants") if field else None
         if not variants:
             continue
-        question = random.choice(variants)
+        variant_index = random.randrange(len(variants))
+        question = variants[variant_index]
+        # audio_key 一定要在 .format(person=...) 代換之前查——代換後的文字
+        # 含實際稱謂詞，跟 audio_bank 收錄的原始 variants[i] 不會相等；
+        # five_w1h_key 對這個{person}變體本來就沒收錄，代換前後查都是
+        # None，這裡固定寫代換前是為了不管未來題庫怎麼改都成立。
+        audio_key = five_w1h_key(theme, w, variant_index, sub_item)
         if field.get("requires") == "named_person":
             question = question.format(person=named_person or "他")
-        return question, w
+        return question, w, audio_key
     return None
 
 
-def _build_pre_image_question(today_topic: str, category: str | None) -> str:
+def _build_pre_image_question(today_topic: str, category: str | None) -> tuple[str, str, str | None]:
     """
     組生圖前破冰問題 Q1（見上方 _PRE_IMAGE_Q1_INTRO 一帶的說明）：「說到
     {today_topic}，」接分類對應的邀請語，本身已經是一句完整的問題。是否
@@ -806,11 +817,24 @@ def _build_pre_image_question(today_topic: str, category: str | None) -> str:
     這裡處理。分類失敗（category是None，或分類結果不在 _PRE_IMAGE_Q1_
     INVITATIONS 裡）時退回完整的 _PRE_IMAGE_Q1_FALLBACK_QUESTION，不勉強
     拼湊。
+
+    Returns: (question, tts_text, audio_key)。
+      question：完整問句，給畫面顯示/log用，跟改動前一樣。
+      tts_text：呼叫端真正該送去即時TTS合成的文字——「說到{today_topic}，」
+        這段治療師自由輸入、無法窮舉，一定要即時TTS；分類成功時只送這段
+        前綴（後半段邀請語改用 audio_key 對應的前端內建預錄音檔），分類
+        失敗時 tts_text 等於 question 整句（沒有可用的預錄音檔，整句都要
+        即時TTS）。
+      audio_key：分類成功時是 _PRE_IMAGE_Q1_INVITATIONS[category] 那句的
+        預錄音檔 key（見 services/audio_bank.py q1_invitation_key），前端
+        要接在 tts_text 那段語音播完之後接著播放；分類失敗時是 None。
     """
     if category and category in _PRE_IMAGE_Q1_INVITATIONS:
         prefix = _PRE_IMAGE_Q1_QUESTION_TEMPLATE.format(today_topic=today_topic)
-        return f"{prefix}{_PRE_IMAGE_Q1_INVITATIONS[category]}"
-    return _PRE_IMAGE_Q1_FALLBACK_QUESTION.format(today_topic=today_topic)
+        question = f"{prefix}{_PRE_IMAGE_Q1_INVITATIONS[category]}"
+        return question, prefix, q1_invitation_key(category)
+    question = _PRE_IMAGE_Q1_FALLBACK_QUESTION.format(today_topic=today_topic)
+    return question, question, None
 
 
 # 生圖完成、圖片第一次出現時的固定「出示圖片」開場白＋問題——不預先打預防針，
@@ -1797,7 +1821,9 @@ class TherapyOrchestrator:
 
         category = await self._classify_topic_category(user["today_topic"])
         scene_text = _PRE_IMAGE_Q1_INTRO
-        question = _build_pre_image_question(user["today_topic"], category)
+        question, question_tts_text, question_audio_key = _build_pre_image_question(
+            user["today_topic"], category,
+        )
         print(f"  → 主題分類: {category!r}，開場語: {scene_text}，生圖前破冰問題: {question}")
 
         state = {
@@ -1823,6 +1849,14 @@ class TherapyOrchestrator:
             "scene_elements": [],
             "image_path": "",
             "question": question,
+            # question_tts_text／question_audio_key：見 _build_pre_image_
+            # question 說明——Q1邀請語一定帶著治療師自由輸入的今日主題，
+            # 沒辦法整句預錄，呼叫端（app/routers/session.py）改送
+            # question_tts_text（動態前綴，或分類失敗時的整句保底問句）去
+            # 即時TTS，播完後接著播 question_audio_key 對應的前端內建
+            # 預錄音檔（分類失敗時是 None，不用接）。
+            "question_tts_text": question_tts_text,
+            "question_audio_key": question_audio_key,
             "memories_used": [],
             "state": state,
         }
@@ -2655,7 +2689,7 @@ class TherapyOrchestrator:
                 return await self._start_scene_after_detail(
                     user, state, elder_detail, detail_is_usable=has_usable_detail,
                 )
-            q2_question, q2_w = picked
+            q2_question, q2_w, q2_audio_key = picked
             print(f"  → 主題分類: {category}（子項目: {sub_item}），"
                   f"情境2（缺維度）追問Q2: {q2_question}，已涵蓋: {covered_w}")
             new_state = {
@@ -2673,6 +2707,7 @@ class TherapyOrchestrator:
                 "action": "pre_image_followup",
                 "scene_text": "",
                 "question": q2_question,
+                "question_audio_key": q2_audio_key,
                 "state": new_state,
             }
 
@@ -2714,7 +2749,7 @@ class TherapyOrchestrator:
                         category, sub_item, covered_w, named_person,
                     )
                     if picked:
-                        next_question, next_w = picked
+                        next_question, next_w, next_audio_key = picked
                         print(f"  → 情境1追問Q2有實質內容但仍缺維度，追加問一次: "
                               f"{next_question}，已涵蓋: {covered_w}")
                         new_state = {
@@ -2732,6 +2767,7 @@ class TherapyOrchestrator:
                             "action": "pre_image_followup",
                             "scene_text": "",
                             "question": next_question,
+                            "question_audio_key": next_audio_key,
                             "state": new_state,
                         }
                     print(f"  → 情境1追問Q2已有實質內容，bank判定不需再追問，"
@@ -2792,7 +2828,7 @@ class TherapyOrchestrator:
                 return await self._start_scene_after_detail(
                     user, new_state, combined, detail_is_usable=True,
                 )
-            next_question, next_w = picked
+            next_question, next_w, next_audio_key = picked
             print(f"  → 情境2第{round_count + 1}輪追問: {next_question}，已涵蓋: {covered_w}")
             new_state = {
                 **state,
@@ -2808,6 +2844,7 @@ class TherapyOrchestrator:
                 "action": "pre_image_followup",
                 "scene_text": "",
                 "question": next_question,
+                "question_audio_key": next_audio_key,
                 "state": new_state,
             }
 

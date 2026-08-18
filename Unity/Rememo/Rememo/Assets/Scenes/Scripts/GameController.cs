@@ -377,8 +377,17 @@ public class GameController : MonoBehaviour
         kinectSensorSender?.OnQuestionAsked();
 
         StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
-        if (!string.IsNullOrEmpty(resp.audio_path))
-            StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
+
+        var uris = new List<string>();
+        uris.AddRange(LocalAudioPlayer.BuildUris(
+            string.IsNullOrEmpty(resp.scene_audio_path) ? null : BuildAudioUrl(resp.scene_audio_path),
+            new[] { resp.scene_audio_key }));
+        uris.AddRange(LocalAudioPlayer.BuildUris(
+            string.IsNullOrEmpty(resp.audio_path) ? null : BuildAudioUrl(resp.audio_path),
+            new[] { resp.question_audio_key }));
+
+        if (uris.Count > 0)
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, StartReactionTimeout));
         else
             StartReactionTimeout();
     }
@@ -409,30 +418,6 @@ public class GameController : MonoBehaviour
         int idx = serverPath.IndexOf(prefix);
         string relative = idx >= 0 ? serverPath.Substring(idx + prefix.Length) : serverPath.TrimStart('/');
         return $"{backendUrl}/audio/{relative}";
-    }
-
-    IEnumerator PlayTTS(string audioUrl)
-    {
-        using var req = UnityWebRequestMultimedia.GetAudioClip(audioUrl, AudioType.WAV);
-        yield return req.SendWebRequest();
-
-        if (req.result != UnityWebRequest.Result.Success)
-        {
-            Debug.LogWarning($"[TTS] 語音載入失敗: {req.error}");
-            StartReactionTimeout();  // 語音沒播成也要給長者反應窗口，不能卡死
-            yield break;
-        }
-
-        if (audioSource == null) { StartReactionTimeout(); yield break; }
-        AudioClip clip = DownloadHandlerAudioClip.GetContent(req);
-        audioSource.Stop();
-        audioSource.clip = clip;
-        audioSource.Play();
-
-        // 長者要聽完整句問題才算「聽到」，反應時間從播放結束才開始算
-        // （問題設計規則.pdf 原訂10秒，考量長者手部動作/認知處理可能較慢，改成30秒）。
-        yield return new WaitForSeconds(clip.length);
-        StartReactionTimeout();
     }
 
     void OnReplayAudio()
@@ -503,6 +488,12 @@ public class GameController : MonoBehaviour
             PlayerPrefs.SetString("ClosingText", resp.scene_text ?? "");
             PlayerPrefs.SetString("ClosingThanks", resp.thanks_text ?? "");
             PlayerPrefs.SetString("ClosingQuestion", resp.question ?? "");
+            // PlayerPrefs 沒有陣列型別，key 本身不含 '|'（都是英數字+底線的
+            // audio_bank.py key 名稱），用它當分隔符安全串成一個字串，
+            // ShareController 讀出來後用同一個字元切回陣列。
+            PlayerPrefs.SetString("ClosingSceneAudioKeys", JoinAudioKeys(resp.scene_audio_keys));
+            PlayerPrefs.SetString("ClosingThanksAudioKeys", JoinAudioKeys(resp.thanks_audio_keys));
+            PlayerPrefs.SetString("ClosingQuestionAudioKeys", JoinAudioKeys(resp.question_audio_keys));
             PlayerPrefs.SetString("session_id", sessionId);
             PlayerPrefs.SetString("NextScene", "ShareScene");
             currentRound = 1;
@@ -523,10 +514,25 @@ public class GameController : MonoBehaviour
         aiText.text = resp.question;
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
-        if (!string.IsNullOrEmpty(resp.audio_path))
-            StartCoroutine(PlayTTS(BuildAudioUrl(resp.audio_path)));
+
+        var uris = new List<string>();
+        uris.AddRange(LocalAudioPlayer.BuildUris(
+            string.IsNullOrEmpty(resp.scene_audio_path) ? null : BuildAudioUrl(resp.scene_audio_path),
+            new[] { resp.scene_audio_key }));
+        uris.AddRange(LocalAudioPlayer.BuildUris(
+            string.IsNullOrEmpty(resp.audio_path) ? null : BuildAudioUrl(resp.audio_path),
+            new[] { resp.question_audio_key }));
+
+        if (uris.Count > 0)
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, StartReactionTimeout));
         else
             StartReactionTimeout();
+    }
+
+    static string JoinAudioKeys(string[] keys)
+    {
+        if (keys == null || keys.Length == 0) return "";
+        return string.Join("|", keys);
     }
 
     // ─── 反應逾時（長者聽完問題30秒沒按麥克風）────────────────────────
@@ -591,9 +597,20 @@ public class GameController : MonoBehaviour
     {
         public string action;
         public string scene_text;
+        public string scene_audio_path;
+        public string scene_audio_key;
+        // scene_audio_keys／thanks_audio_keys／question_audio_keys：只有
+        // action=="end_session"（心得環節開場）才會有值，見
+        // app/services/closing_templates.py build_closing_invitation——
+        // 那三段固定句全部是前端內建預錄音檔，可能不只一個 key（例如
+        // 承接語＋系統整合肯定是兩句拼接，要接續播放兩個音檔）。
+        public string[] scene_audio_keys;
         public string thanks_text;
+        public string[] thanks_audio_keys;
         public string question;
         public string audio_path;
+        public string question_audio_key;
+        public string[] question_audio_keys;
         public int next_round;
         public SessionStateData state;
     }
