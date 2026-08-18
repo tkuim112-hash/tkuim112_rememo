@@ -351,7 +351,7 @@ MonoBehaviour:
   roundSub: {fileID: 1630486941}
   submitButton: {fileID: 995634905}
   micButton: {fileID: 695202855}
-  micButtonImage: {fileID: 0}
+  micButtonImage: {fileID: 695202856}
   replayButton: {fileID: 741093189}
   audioSource: {fileID: 231164217}
   aiText: {fileID: 1133395053}
