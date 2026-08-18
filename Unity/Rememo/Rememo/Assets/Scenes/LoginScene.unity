@@ -237,7 +237,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2b22c270229e94c91a2a7f6599347345, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::LoginScreenController
-  backendUrl: http://localhost:8000
+  backendUrl: https://api.re-memo.com
   emailInput: {fileID: 311895832}
   passwordInput: {fileID: 560262893}
   loginButton: {fileID: 438919820}

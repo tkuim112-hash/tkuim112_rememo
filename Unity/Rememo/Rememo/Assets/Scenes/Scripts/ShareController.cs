@@ -30,7 +30,7 @@ public class ShareController : MonoBehaviour
     public string backendUrl = "https://api.re-memo.com";
 
     [Header("WebSocket 設定（內建麥克風模式用）")]
-    public string serverUrl = "ws://localhost:8000/ws/stt";
+    public string serverUrl = "wss://api.re-memo.com/ws/stt";
 
     [Header("錄音設定（內建麥克風模式用）")]
     public int sampleRate = 16000;
@@ -144,6 +144,7 @@ public class ShareController : MonoBehaviour
     void ConnectWebSocket()
     {
         ws = new WebSocket(serverUrl);
+        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Share STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Share STT WS] 錯誤: {e.Message}");
         ws.OnClose += (s, e) => Debug.Log("[Share STT WS] 已關閉");

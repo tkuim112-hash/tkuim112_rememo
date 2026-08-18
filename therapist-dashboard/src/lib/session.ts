@@ -30,6 +30,11 @@ export async function decrypt(session: string | undefined = "") {
   }
 }
 
+// 前端 re-memo.com、後端 api.re-memo.com 是兩個子網域，cookie 預設是 host-only
+// （只綁在設定當下的網域），呼叫後端 API 時不會帶上——要明確指定 domain 才能讓
+// 前後端共用同一顆登入 cookie。本機開發沒有這個網域，不能設，否則 cookie 整個失效。
+const COOKIE_DOMAIN = process.env.NODE_ENV === "production" ? ".re-memo.com" : undefined;
+
 export async function createSession(therapistId: number, organizationId: number) {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const session = await encrypt({ therapistId, organizationId, expiresAt });
@@ -41,12 +46,13 @@ export async function createSession(therapistId: number, organizationId: number)
     expires: expiresAt,
     sameSite: "lax",
     path: "/",
+    domain: COOKIE_DOMAIN,
   });
 }
 
 export async function deleteSession() {
   const cookieStore = await cookies();
-  cookieStore.delete("rememo_session");
+  cookieStore.delete({ name: "rememo_session", path: "/", domain: COOKIE_DOMAIN });
 }
 
 export async function getSession() {

@@ -349,7 +349,7 @@ MonoBehaviour:
   sceneImage: {fileID: 0}
   inputText: {fileID: 1676628713}
   kinectAudioSender: {fileID: 1034624761}
-  serverUrl: ws://localhost:8000/ws/stt
+  serverUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
   charInterval: 0.03
@@ -367,7 +367,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GameController
   totalRounds: 3
-  backendUrl: http://localhost:8000
+  backendUrl: https://api.re-memo.com
   userId: user_001
   sessionId: sess_001
   roundNumber: {fileID: 475891553}
@@ -376,18 +376,17 @@ MonoBehaviour:
   submitButton: {fileID: 995634905}
   micButton: {fileID: 695202855}
   micButtonImage: {fileID: 0}
+  replayButton: {fileID: 741093189}
+  audioSource: {fileID: 231164217}
   aiText: {fileID: 1133395053}
   inputText: {fileID: 1676628713}
   loadingSpinner: {fileID: 1376622245}
   photoDisplay: {fileID: 1056907271}
   kinectAudioSender: {fileID: 1034624761}
   kinectSensorSender: {fileID: 1034624762}
-  sttServerUrl: ws://localhost:8000/ws/stt
+  sttServerUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
-  charInterval: 0.03
-  replayButton: {fileID: 741093189}
-  audioSource: {fileID: 231164217}
 --- !u!82 &231164217
 AudioSource:
   m_ObjectHideFlags: 0
@@ -961,81 +960,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 475891551}
   m_CullTransparentMesh: 1
---- !u!1 &490781377
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 490781378}
-  - component: {fileID: 490781380}
-  - component: {fileID: 490781379}
-  m_Layer: 5
-  m_Name: Line7
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!224 &490781378
-RectTransform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 490781377}
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 764057519}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 0.5, y: 0.5}
-  m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: -80}
-  m_SizeDelta: {x: 800, y: 5}
-  m_Pivot: {x: 0.5, y: 0.5}
---- !u!114 &490781379
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 490781377}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: fe87c0e1cc204ed48ad3b37840f39efc, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.Image
-  m_Material: {fileID: 0}
-  m_Color: {r: 0, g: 0, b: 0, a: 1}
-  m_RaycastTarget: 1
-  m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
-  m_Maskable: 1
-  m_OnCullStateChanged:
-    m_PersistentCalls:
-      m_Calls: []
-  m_Sprite: {fileID: 0}
-  m_Type: 0
-  m_PreserveAspect: 0
-  m_FillCenter: 1
-  m_FillMethod: 4
-  m_FillAmount: 1
-  m_FillClockwise: 1
-  m_FillOrigin: 0
-  m_UseSpriteMesh: 0
-  m_PixelsPerUnitMultiplier: 1
---- !u!222 &490781380
-CanvasRenderer:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 490781377}
-  m_CullTransparentMesh: 1
 --- !u!1 &531713845
 GameObject:
   m_ObjectHideFlags: 0
@@ -1205,7 +1129,7 @@ MonoBehaviour:
   sceneImage: {fileID: 0}
   inputText: {fileID: 0}
   kinectAudioSender: {fileID: 0}
-  serverUrl: ws://localhost:8000/ws/stt
+  serverUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
   charInterval: 0.03
@@ -1365,7 +1289,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 0, y: 1}
-  m_AnchoredPosition: {x: 762.33, y: -533.5}
+  m_AnchoredPosition: {x: 762.33, y: -462}
   m_SizeDelta: {x: 230, y: 85}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &741093189
@@ -1483,7 +1407,6 @@ RectTransform:
   - {fileID: 913718377}
   - {fileID: 308883031}
   - {fileID: 1829308380}
-  - {fileID: 490781378}
   - {fileID: 1416305725}
   m_Father: {fileID: 155608769}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
@@ -1526,7 +1449,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -686, y: -246}
+  m_AnchoredPosition: {x: -686, y: -170.52002}
   m_SizeDelta: {x: 296.7875, y: 115.978}
   m_Pivot: {x: -0.8146318, y: 0.5}
 --- !u!114 &825449403
@@ -1879,7 +1802,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ac18c23a827f4bd449621411bd592aec, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::KinectSensorSender
-  backendUrl: http://localhost:8000
+  backendUrl: https://api.re-memo.com
   sendInterval: 2
   gameController: {fileID: 231164216}
   audioSender: {fileID: 1034624761}
@@ -2347,7 +2270,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -14, y: -196}
+  m_AnchoredPosition: {x: -14, y: -127}
   m_SizeDelta: {x: 800, y: 5}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1416305726
@@ -2888,7 +2811,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 0.0050496, y: -336.55}
+  m_AnchoredPosition: {x: 0.0050496, y: -254}
   m_SizeDelta: {x: 799.65, y: 110.8459}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1676628713
