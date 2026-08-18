@@ -1733,7 +1733,8 @@ PrefabInstance:
       propertyPath: audioSender
       value: 
       objectReference: {fileID: 1806627863}
-    m_RemovedComponents: []
+    m_RemovedComponents:
+    - {fileID: 7885733304640563316, guid: 3c9a3155defe58640b5d93df0f2bfce7, type: 3}
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
     m_AddedComponents:
