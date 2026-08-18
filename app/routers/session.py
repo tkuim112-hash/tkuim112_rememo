@@ -590,13 +590,24 @@ async def session_status(
     calibrated：Unity 是否已把校正基準存進 session:{id}:calibration（見 ws_calibration.py）。
     calibrating：Unity 目前是否連著 /ws/calibration、正在跑校正流程但還沒完成
       （見 ws_registry.py）；跟 calibrated 互斥，一旦 calibrated 為 true 就不算 calibrating。
-    started：/session/start 是否已被呼叫過（session:{id}:meta 已建立）。
+    requested：治療師是否已按下「啟動療程」（/session/start 已被呼叫，但 LLM 分類／
+      RAG 檢索／TTS 合成不保證跑完）。Unity 的 WarmupController 只需要這個訊號就能
+      切去 InstructionScene，讓真正耗時的生成過程用說明頁的進度條呈現，不用在
+      WarmupScene 乾等。
+    started：/session/start 是否已完整跑完（session:{id}:meta 已建立），代表第一回合
+      內容真的生成好了。InstructionScene 靠這個訊號決定何時把內容拿回來、進場 GameScene。
     """
     r = request.app.state.redis
     calibrated = bool(await r.exists(f"session:{session_id}:calibration"))
     calibrating = (not calibrated) and ws_registry.is_calibrating(session_id)
+    requested = bool(await r.exists(f"session:{session_id}:requested"))
     started = bool(await r.exists(f"session:{session_id}:meta"))
-    return {"calibrated": calibrated, "calibrating": calibrating, "started": started}
+    return {
+        "calibrated": calibrated,
+        "calibrating": calibrating,
+        "requested": requested,
+        "started": started,
+    }
 
 
 @router.post("/start")
@@ -617,6 +628,10 @@ async def session_start(
     orchestrator = request.app.state.orchestrator
     topic = topic.strip()
     r = request.app.state.redis
+    # 一進來就標記「治療師已按下啟動療程」，讓 Unity 的 WarmupController 立刻切去
+    # InstructionScene；下面的 LLM 分類／RAG 檢索／TTS 合成才是真正耗時的部分，
+    # 讓說明頁的進度條去撐，不要讓長者停在 WarmupScene 乾等。
+    await r.set(f"session:{session_id}:requested", "1")
     cached = await _get_cached_start_result(r, session_id)
     if cached:
         return cached
@@ -1054,6 +1069,7 @@ async def _compute_and_save_assessment(
         # DB 寫入成功後清除所有 session Redis key
         await r.delete(
             f"session:{session_id}:meta",
+            f"session:{session_id}:requested",
             f"session:{session_id}:stats",
             f"session:{session_id}:metrics",
             f"session:{session_id}:ema",
