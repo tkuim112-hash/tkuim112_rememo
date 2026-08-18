@@ -58,6 +58,7 @@ public class GameController : MonoBehaviour
     private bool isWaitingForStt = false;
     private bool isSubmitting = false;
     private bool isPaused = false;
+    private bool hasSpeechInput = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
     private Coroutine reactionTimeoutCoroutine;
@@ -89,6 +90,7 @@ public class GameController : MonoBehaviour
         if (micButton != null) micButton.onClick.AddListener(OnMicToggle);
         if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);
         ResetInputText();
+        RefreshSubmitButton();
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
 
@@ -140,6 +142,7 @@ public class GameController : MonoBehaviour
     {
         CancelReactionTimeout();
         isRecording = true;
+        hasSpeechInput = true;
         displayedText = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -204,7 +207,7 @@ public class GameController : MonoBehaviour
 
     void RefreshSubmitButton()
     {
-        bool enabled = !isRecording && !isWaitingForStt && !isSubmitting;
+        bool enabled = hasSpeechInput && !isRecording && !isWaitingForStt && !isSubmitting;
         submitButton.interactable = enabled;
         if (submitButton.image != null)
             submitButton.image.color = enabled ? Color.white : new Color(0.55f, 0.55f, 0.55f, 1f);
@@ -341,6 +344,7 @@ public class GameController : MonoBehaviour
         inputText.text = placeholderText;
         inputText.color = new Color(0.67f, 0.67f, 0.67f, 1f);
         displayedText = "";
+        hasSpeechInput = false;
     }
 
     // ─── 回合流程 ──────────────────────────────────────────────────
@@ -426,6 +430,18 @@ public class GameController : MonoBehaviour
         if (audioSource == null || audioSource.clip == null) return;
         audioSource.Stop();
         audioSource.Play();
+        // 長者/治療師主動要求再聽一次，代表這回合還在互動中，沉默逾時（30秒未按
+        // 麥克風就視同未回應）要從這次重播「播完」後重新算，不能沿用重播前剩下的
+        // 秒數，也不能在重播音檔都還沒放完時就開始倒數（見 WaitReplayThenStartReactionTimeout）。
+        CancelReactionTimeout();
+        reactionTimeoutCoroutine = StartCoroutine(WaitReplayThenStartReactionTimeout());
+    }
+
+    IEnumerator WaitReplayThenStartReactionTimeout()
+    {
+        yield return new WaitForSeconds(audioSource.clip.length);
+        reactionTimeoutCoroutine = null;
+        StartReactionTimeout();
     }
 
     void OnSubmit()
