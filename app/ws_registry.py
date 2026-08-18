@@ -54,3 +54,25 @@ def unmark_calibrating(session_id: str) -> None:
 
 def is_calibrating(session_id: str) -> bool:
     return session_id in _calibrating_sessions
+
+
+# ── 治療師按下「結束活動」= 排除 /ws/stt 斷線時的不正常結束判定 ─────────────
+#
+# session.py 的 /control 端點 action=="end" 時（轉發給 Unity 觸發
+# Application.Quit()）呼叫 mark_ending；ws_stt.py 的 finally 區塊斷線時用
+# consume_ending 判斷「這次斷線是不是治療師主動按的」——是的話，療程狀態交給
+# 治療師網頁 /activity/{id}/end 頁面（選「儲存並完成」或「稍後填寫」）決定；
+# 不是的話（App/網頁被直接關掉、當機、斷線）才視為不正常結束。
+_ending_sessions: set[str] = set()
+
+
+def mark_ending(session_id: str) -> None:
+    if session_id:
+        _ending_sessions.add(session_id)
+
+
+def consume_ending(session_id: str) -> bool:
+    if session_id in _ending_sessions:
+        _ending_sessions.discard(session_id)
+        return True
+    return False

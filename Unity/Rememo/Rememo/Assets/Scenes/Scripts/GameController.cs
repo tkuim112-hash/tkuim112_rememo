@@ -215,7 +215,7 @@ public class GameController : MonoBehaviour
 
     void RefreshSubmitButton()
     {
-        bool enabled = hasSpeechInput && !isRecording && !isWaitingForStt && !isSubmitting;
+        bool enabled = hasSpeechInput && !isRecording && !isWaitingForStt && !isSubmitting && !isPaused;
         submitButton.interactable = enabled;
         if (submitButton.image != null)
             submitButton.image.color = enabled ? Color.white : new Color(0.55f, 0.55f, 0.55f, 1f);
