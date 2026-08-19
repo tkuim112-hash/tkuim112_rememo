@@ -274,7 +274,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                     value={caseData.birthYear ? `${caseData.birthYear} 年${caseData.birthPlace ? `（${caseData.birthPlace}）` : ""}` : undefined}
                   />
                   <InfoCard label="職業經歷" value={caseData.career} />
-                  <InfoCard label="家人" value={caseData.family} />
+                  <InfoCard label="緊急聯絡人" value={caseData.family} />
                   <InfoCard label="興趣" value={caseData.hobbies} />
                 </div>
                 <div className="bg-white rounded-xl px-6 py-4 flex flex-col gap-1">

@@ -51,6 +51,12 @@ export default function RoundDetailPage({
   }, [sessionId]);
 
   const currentRound = rounds.find((r) => r.roundNumber === currentRoundNum) ?? null;
+  // 只有第一回合真的會生圖，第二、三回合設計上不生圖：這兩個回合直接固定
+  // 顯示第一回合的場景圖片，不用檢查自己有沒有圖。
+  const displaySceneImage =
+    currentRoundNum === 1
+      ? currentRound?.sceneImage
+      : rounds.find((r) => r.roundNumber === 1)?.sceneImage;
 
   if (!session || !caseData || !currentRound) return null;
 
@@ -102,8 +108,8 @@ export default function RoundDetailPage({
 
         {/* 左欄：場景圖片 */}
         <div className="flex-none w-[600px] h-[600px] xl:w-[700px] xl:h-[700px] bg-white rounded-2xl overflow-hidden">
-          {currentRound.sceneImage ? (
-            <ImageWithFallback src={`${AI_BASE}${currentRound.sceneImage}`} alt={currentRound.sceneName} />
+          {displaySceneImage ? (
+            <ImageWithFallback src={`${AI_BASE}${displaySceneImage}`} alt={currentRound.sceneName} />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-[#888] text-[16px]">
               尚無場景圖片

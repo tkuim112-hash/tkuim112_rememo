@@ -177,13 +177,13 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        <span className="text-[#888] text-[13px] md:text-[16px] lg:text-[18px] xl:text-[20px] 2xl:text-[24px]"> /{maxScore}</span>
      </p>
 
-     {/* 治療師觀察備註 */}
+     {/* 活動觀察備註 */}
      <div className="flex flex-col gap-1 md:gap-1.5 lg:gap-2">
-       <h2 className="text-[14px] md:text-[15px] lg:text-[16px] xl:text-[18px] 2xl:text-[20px] font-semibold text-[#1a1a1a]">治療師觀察備註</h2>
+       <h2 className="text-[14px] md:text-[15px] lg:text-[16px] xl:text-[18px] 2xl:text-[20px] font-semibold text-[#1a1a1a]">活動觀察備註</h2>
        <textarea
          value={notes}
          onChange={(e) => setNotes(e.target.value)}
-         placeholder="今天對廟口場景反應特別好，主動提到阿明......"
+         placeholder="可寫下長者活動中的表現、情緒、互動狀況等觀察備註，方便後續回顧與分析。"
          className="w-full h-[70px] md:h-[90px] lg:h-[110px] xl:h-[140px] 2xl:h-[160px] bg-white border border-[#e0e0e0] rounded-xl px-3 py-2 md:px-4 md:py-3 lg:px-5 lg:py-3 xl:py-4 2xl:px-6 2xl:py-5 text-[13px] md:text-[14px] lg:text-[15px] 2xl:text-[16px] text-[#1a1a1a] placeholder:text-[#bbb] outline-none resize-none focus:border-[#5b8ac5] transition-colors"
        />
      </div>

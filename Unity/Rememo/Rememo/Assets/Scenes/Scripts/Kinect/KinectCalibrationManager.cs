@@ -55,6 +55,13 @@ public class KinectCalibrationManager : MonoBehaviour
     private KinectManager kinectManager;
     private KinectSensorSender sensorSender;
 
+    // SendAsync 只代表送出動作沒出錯，不代表後端真的收到、存進 Redis；
+    // 這兩個旗標由 OnMessage（背景執行緒）寫入，只能用 volatile bool 這種簡單旗標跨執行緒讀取，
+    // 不能在 OnMessage 裡直接動 UI 或設 IsCalibrated（Unity API 不是執行緒安全的）。
+    private volatile bool ackReceived = false;
+    private volatile bool ackSuccess = false;
+    private string sessionId;
+
     void Start()
     {
         kinectManager = KinectManager.Instance;
@@ -66,7 +73,7 @@ public class KinectCalibrationManager : MonoBehaviour
         SetStatus(false);
 
         // session_id 必須在 PlayerPrefs 中（由前一個 Scene 建立），才能讓後端把校正基準與本次療程綁定
-        string sessionId = PlayerPrefs.GetString("session_id", "");
+        sessionId = PlayerPrefs.GetString("session_id", "");
         if (string.IsNullOrEmpty(sessionId))
             Debug.LogWarning("[Calibration] PlayerPrefs 中無 session_id，校正基準將無法存入 Redis");
         string wsUrl = string.IsNullOrEmpty(sessionId)
@@ -78,9 +85,21 @@ public class KinectCalibrationManager : MonoBehaviour
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen += (s, e) => Debug.Log("[Calibration WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Calibration WS] 錯誤: {e.Message}");
-        // 後端存成功/失敗都會回一個 JSON（見 ws_calibration.py）；SendCalibrationData() 裡的
-        // SendAsync 只代表送出動作沒出錯，不代表後端真的收到、存進 Redis，這裡才是送達確認。
-        ws.OnMessage += (s, e) => Debug.Log($"[Calibration WS] 後端回應: {e.Data}");
+        // 後端存成功/失敗都會回一個 JSON（見 ws_calibration.py）；這裡才是真正的送達確認，
+        // CalibrationRoutine 的 WaitForServerAck 會 poll 這兩個旗標決定要不要標記校正完成。
+        ws.OnMessage += (s, e) =>
+        {
+            Debug.Log($"[Calibration WS] 後端回應: {e.Data}");
+            try
+            {
+                ackSuccess = JsonUtility.FromJson<CalibrationAck>(e.Data).ok;
+            }
+            catch
+            {
+                ackSuccess = false;
+            }
+            ackReceived = true;
+        };
         ws.ConnectAsync();
 
         StartCoroutine(CalibrationRoutine());
@@ -124,25 +143,77 @@ public class KinectCalibrationManager : MonoBehaviour
 
         if (isStable)
         {
-            IsCalibrated = true;
-            SetStatus(true);
             ApplyCursorRemapping(); // ── 新增
             SendCalibrationData();
-            Debug.Log("[Calibration] 校正完成（見 WarmupController）");
-            // 場景切換交給 WarmupController：校正一完成就直接切去 InstructionScene，
-            // 「等治療師端按下啟動療程、後端生成第一回合內容」這段改由 InstructionScene
-            // 自己 poll 後端狀態並顯示進度條動畫，這裡不再自行 sleep 後跳場景。
+
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                // 離線/demo 模式沒有 session_id，後端本來就會拒存（見 ws_calibration.py），
+                // 沒有真正的療程可供治療師端確認，等後端 ack 沒有意義，沿用舊行為直接放行。
+                IsCalibrated = true;
+                SetStatus(true);
+                Debug.Log("[Calibration] 無 session_id（離線/demo），略過後端確認直接標記校正完成");
+            }
+            else
+            {
+                Debug.Log("[Calibration] 基準值已送出，等待後端確認…");
+                // IsCalibrated 不在這裡就設 true：成功圖示/場景切換都掛在 IsCalibrated 上，
+                // 若送出當下就標記完成，WarmupController 可能在資料真的送達前就把
+                // 這個物件連同 WebSocket 一起銷毀（OnDestroy → ws.Close()），資料就送不到後端，
+                // 而後端那邊會靜默吞掉這個斷線（見 ws_calibration.py 的 WebSocketDisconnect），
+                // 完全不留 log。所以要等 WaitForServerAck 真的收到後端 {"ok": true} 才算數。
+                yield return StartCoroutine(WaitForServerAck());
+            }
         }
         else
         {
-            Debug.Log("[Calibration] 數據不穩定或關節追蹤不完整，重新校正");
-            skeletonBuffer.Clear();
-            happyBuffer.Clear();
-            lookingAwayBuffer.Clear();
-            mouthMovedBuffer.Clear();
-            ClearGeometryBuffers(); // ── 新增
-            StartCoroutine(CalibrationRoutine());
+            RetryCalibration("數據不穩定或關節追蹤不完整，重新校正");
         }
+    }
+
+    IEnumerator WaitForServerAck()
+    {
+        const float ackTimeoutSeconds = 5f;
+
+        ackReceived = false;
+        ackSuccess = false;
+
+        float waited = 0f;
+        while (!ackReceived && waited < ackTimeoutSeconds)
+        {
+            waited += Time.deltaTime;
+            yield return null;
+        }
+
+        if (ackReceived && ackSuccess)
+        {
+            IsCalibrated = true;
+            SetStatus(true);
+            Debug.Log("[Calibration] 後端已確認收到基準值，校正完成（見 WarmupController）");
+            // 場景切換交給 WarmupController：這裡只負責把 IsCalibrated 設為 true，
+            // WarmupController 會接著自己 poll 後端狀態，一偵測到治療師按下「啟動療程」
+            // （/session/start 被呼叫、回 requested=true，不等 LLM/RAG/TTS 跑完）就切去
+            // InstructionScene，真正耗時的生成過程改到說明頁用進度條呈現。
+        }
+        else if (ackReceived)
+        {
+            RetryCalibration("後端回應校正資料儲存失敗（見上方 [Calibration WS] 後端回應），重新校正");
+        }
+        else
+        {
+            RetryCalibration($"等待後端確認超過 {ackTimeoutSeconds:F0} 秒仍無回應，重新校正");
+        }
+    }
+
+    void RetryCalibration(string reason)
+    {
+        Debug.Log($"[Calibration] {reason}");
+        skeletonBuffer.Clear();
+        happyBuffer.Clear();
+        lookingAwayBuffer.Clear();
+        mouthMovedBuffer.Clear();
+        ClearGeometryBuffers(); // ── 新增
+        StartCoroutine(CalibrationRoutine());
     }
 
     void CollectSkeletonData()
@@ -349,8 +420,11 @@ public class KinectCalibrationManager : MonoBehaviour
             jointZ = GetAxis(baselineJoints, 2)
         };
 
-        ws.SendAsync(JsonUtility.ToJson(payload), null);
-        Debug.Log("[Calibration] 基準值已送出（送達確認見上面的 [Calibration WS] 後端回應）");
+        ws.SendAsync(JsonUtility.ToJson(payload), sent =>
+        {
+            if (!sent)
+                Debug.LogWarning("[Calibration] SendAsync 回傳失敗，本地端送出動作本身就沒成功");
+        });
     }
 
     float Average(List<float> list)
@@ -392,4 +466,10 @@ public class CalibrationPayload
     public float[] jointX;
     public float[] jointY;
     public float[] jointZ;
+}
+
+[System.Serializable]
+public class CalibrationAck
+{
+    public bool ok;
 }

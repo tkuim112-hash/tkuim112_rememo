@@ -5,11 +5,11 @@ using UnityEngine.Networking;
 using System.Collections;
 
 /// <summary>
-/// WarmupScene 校正完成後會直接進來這裡。真正花時間的是後端：治療師端按下「啟動療程」
-/// 後，orchestrator 才開始生成第一回合的場景/問題/圖片，這段等待用進度條動畫呈現，
-/// 不再讓長者端停在 WarmupScene 乾等。等後端內容生成完畢（/status 回 started=true），
-/// 這裡會再打一次 /session/start 把結果拿回來（命中後端快取，幾乎即時）交給 GameScene，
-/// GameScene 進場就能直接顯示，不用再自己打一次 API、轉一次自己的 spinner。
+/// WarmupScene 校正完成、治療師端一按下「啟動療程」就馬上切來這裡（不等後端生成完畢）。
+/// 真正花時間的是後端：LLM 主題分類、RAG 記憶檢索、TTS 合成，這段等待在這裡用進度條
+/// 動畫呈現，不讓長者端停在 WarmupScene 乾等。等內容真的生成完畢（/status 回
+/// started=true），再打一次 /session/start 把結果拿回來（命中後端快取，幾乎即時）
+/// 交給 GameScene，GameScene 進場就能直接顯示，不用再自己打一次 API、轉一次自己的 spinner。
 /// </summary>
 public class InstructionController : MonoBehaviour
 {
@@ -17,14 +17,14 @@ public class InstructionController : MonoBehaviour
     public string backendUrl = "https://api.re-memo.com";
     public string userId = "user_001";
     public string sessionId = "sess_001";
-    [Tooltip("等治療師按下「啟動療程」，每隔幾秒 poll 一次後端狀態")]
-    public float therapistPollInterval = 2f;
+    [Tooltip("等後端生成完畢，每隔幾秒 poll 一次 /status")]
+    public float contentPollInterval = 2f;
 
     [Header("UI 元件")]
     public Image progressBar;
 
     [Header("進度條動畫參數")]
-    [Tooltip("等治療師按下啟動療程的期間，進度條先爬到這個比例，剩下留給內容真的生成完畢那一刻")]
+    [Tooltip("等後端生成內容的期間，進度條先爬到這個比例，剩下留給內容真的生成完畢那一刻")]
     [Range(0f, 1f)] public float waitingCeiling = 0.5f;
     [Tooltip("爬到 waitingCeiling 大約要花幾秒（爬升會隨等待時間趨緩，不會卡住不動）")]
     public float waitingRiseTime = 8f;
@@ -55,7 +55,7 @@ public class InstructionController : MonoBehaviour
 
         if (hasSession)
         {
-            yield return StartCoroutine(WaitForTherapistStart());
+            yield return StartCoroutine(WaitForContentReady());
             yield return StartCoroutine(FetchFirstRound());
         }
         // sessionId 拿不到（換取 pending session 失敗、離線 demo）就跳過等待與預抓，
@@ -65,9 +65,9 @@ public class InstructionController : MonoBehaviour
         SceneManager.LoadScene(nextScene);
     }
 
-    IEnumerator WaitForTherapistStart()
+    IEnumerator WaitForContentReady()
     {
-        var wait = new WaitForSeconds(therapistPollInterval);
+        var wait = new WaitForSeconds(contentPollInterval);
         while (true)
         {
             bool started = false;
@@ -79,7 +79,7 @@ public class InstructionController : MonoBehaviour
             ));
             if (started) yield break;
 
-            elapsedWaiting += therapistPollInterval;
+            elapsedWaiting += contentPollInterval;
             float target = waitingCeiling * (1f - Mathf.Exp(-elapsedWaiting / waitingRiseTime));
             progressBar.fillAmount = Mathf.Max(progressBar.fillAmount, target);
             yield return wait;

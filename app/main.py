@@ -3,7 +3,10 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import asyncio
+import io
 import subprocess
+import wave
 import anyio
 import redis.asyncio as aioredis
 from config import settings
@@ -19,12 +22,51 @@ from orchestrator import TherapyOrchestrator
 from routers import ws_stt, ws_calibration, session, sensor, auth, patient
 
 
+def _silent_wav_bytes(seconds: float = 0.5, sample_rate: int = 16000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(b"\x00\x00" * int(sample_rate * seconds))
+    return buf.getvalue()
+
+
+async def _warmup_stt(stt_service: STTService) -> None:
+    """啟動時依序真的打一次 interim（快模型）和 final（BELLE 微調模型）的轉錄，
+    把權重逼進 kinect-svc 的 GPU 記憶體。faster-whisper-server 的 PRELOAD_MODELS
+    設定只會預先註冊模型名稱、不會真的呼叫 _load()（見其 model_manager.py，
+    權重要等第一次真正有請求 __enter__ 時才載入），所以只能靠實際送一次轉錄
+    請求來暖機；搭配 docker-compose.yml 的 WHISPER__TTL=-1，載入後就會常駐、
+    不會再閒置卸載。
+
+    這裡會擋住 app 啟動完成（lifespan 裡是 await，不是 fire-and-forget），
+    確保對外開放連線時 STT 真的已經可用——kinect-svc 容器可能比這個容器晚
+    就緒，用重試等它連得上；BELLE 第一次冷啟動可能超過 10 分鐘，單次呼叫給
+    600 秒逾時。多次重試後仍失敗就放棄，不擋死整個服務啟動。"""
+    silent = _silent_wav_bytes()
+    for model_name in (settings.stt_model, settings.stt_model_final):
+        for attempt in range(1, 31):  # 最多重試 30 次、每次間隔 5 秒（約 2.5 分鐘）等 kinect-svc 就緒
+            try:
+                await stt_service.transcribe_bytes(
+                    silent, filename="warmup.wav", model=model_name, timeout=600.0,
+                )
+                print(f"✅ STT 模型（{model_name}）暖機完成")
+                break
+            except Exception as e:
+                if attempt >= 30:
+                    print(f"⚠️  STT 模型（{model_name}）暖機重試 {attempt} 次後放棄（不影響啟動，第一次真正轉錄時會重試）: {e}")
+                    break
+                await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 啟動服務...")
     app.state.redis              = aioredis.from_url(settings.redis_url, decode_responses=True)
     app.state.llm_service        = LLMService()
     app.state.stt_service        = STTService()
+    await _warmup_stt(app.state.stt_service)
     app.state.tts_service        = TTSService()  
     app.state.user_profile       = DBUserProfileClient()
     app.state.deidentifier       = Deidentifier()
@@ -142,10 +184,15 @@ async def test_llm(request: Request, prompt: str = "請用繁體中文回答:你
 
 
 @app.post("/test/stt")
-async def test_stt(request: Request, file: UploadFile = File(...)):
+async def test_stt(request: Request, file: UploadFile = File(...), final: bool = False):
+    """final=true 時用 stt_model_final（BELLE-2，isFinal 用的準確度優先模型）
+    測試，不加則跟 interim 一樣用預設的快模型。"""
     audio_bytes = await file.read()
-    text = await request.app.state.stt_service.transcribe_bytes(audio_bytes, filename=file.filename)
-    return {"filename": file.filename, "transcript": text}
+    model = settings.stt_model_final if final else None
+    text = await request.app.state.stt_service.transcribe_bytes(
+        audio_bytes, filename=file.filename, model=model
+    )
+    return {"filename": file.filename, "model": model or settings.stt_model, "transcript": text}
 
 
 @app.get("/test/user/{user_id}")

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://kinect:8000"
     stt_model: str = "Systran/faster-whisper-large-v3"
+    # 最終辨識（isFinal）用的模型：中文微調過的 Whisper checkpoint，
+    # 準確度比 stock large-v3 好，interim（即時預覽文字）仍用 stt_model
+    # 求速度，避免每 3 秒一次的高頻呼叫被拖慢。
+    stt_model_final: str = "XA9/Belle-faster-whisper-large-v3-zh-punct"
 
     # === TTS (BlueMagpie-TTS 本地語音合成) ===
     tts_host: str = "http://tts:8080"

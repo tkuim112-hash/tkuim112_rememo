@@ -80,6 +80,13 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
        });
        if (!res.ok) return;
        const data = await res.json();
+       // 長者答完心得、後端算完評估分數後 session:{id}:meta 會被清掉
+       // （見 app/routers/session.py session_metrics 的 session_completed 說明），
+       // 不用等治療師自己按「結束活動」，直接自動跳轉到結束頁面。
+       if (data.session_completed) {
+         router.push(`/activity/${sessionId}/end?from=live`);
+         return;
+       }
        setSession((s) => ({
          ...s,
          emotionState: data.emotion ?? s.emotionState,

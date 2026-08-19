@@ -60,6 +60,7 @@ public class ShareController : MonoBehaviour
     private Coroutine typingCoroutine;
     private Coroutine replayCoroutine;
     private bool isWaitingForStt = false;
+    private bool isPaused = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
 
@@ -67,10 +68,13 @@ public class ShareController : MonoBehaviour
     private class ControlPayload { public string type; }
 
     [System.Serializable]
-    private class STTMessage { public string type; public string text; public bool isFinal; }
+    private class STTMessage { public string type; public string text; public bool isFinal; public string action; }
 
     [System.Serializable]
     private class ClosingResponse { public bool ok; public string closing_message; }
+
+    [System.Serializable]
+    private class TextPayload { public string text; }
 
     private bool UseKinect => kinectAudioSender != null;
 
@@ -82,7 +86,12 @@ public class ShareController : MonoBehaviour
         ResetInputText();
         LoadClosingText();
 
-        if (!UseKinect)
+        if (UseKinect)
+            // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/重播/結束
+            // 指令隨時可能在長者第一次按麥克風之前就送到，這裡要先掛好才不會漏接
+            // （比照 GameController.cs 的作法）。
+            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
+        else
             ConnectWebSocket();
     }
 
@@ -143,7 +152,11 @@ public class ShareController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        ws = new WebSocket(AuthService.AppendToken(serverUrl));
+        // session_id 讓後端 /session/{id}/control 知道要把治療師的暫停/繼續等
+        // 指令轉發到哪一條連線（見 app/ws_registry.py），比照 GameController.ConnectWebSocket。
+        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string url = string.IsNullOrEmpty(sessionId) ? serverUrl : $"{serverUrl}?session_id={sessionId}";
+        ws = new WebSocket(AuthService.AppendToken(url));
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Share STT WS] 已連線");
         ws.OnError += (s, e) => Debug.LogError($"[Share STT WS] 錯誤: {e.Message}");
@@ -201,7 +214,10 @@ public class ShareController : MonoBehaviour
 
     IEnumerator PostClosingAnswer(string sessionId, string text, System.Action<string> onMessage)
     {
-        byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
+        // JsonUtility.ToJson 不支援直接序列化裸字串（只能序列化 [Serializable]
+        // 物件），對字串呼叫會回傳 "{}"，導致送出的 JSON 變成 {"text":{}}，
+        // 後端 Pydantic 驗證型別不符直接 422。要包成物件再序列化。
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/closing", "POST");
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
@@ -239,7 +255,6 @@ public class ShareController : MonoBehaviour
 
         if (UseKinect)
         {
-            kinectAudioSender.OnSttMessage = OnKinectSttMessage;
             kinectAudioSender.StartSTT();
         }
         else
@@ -264,7 +279,10 @@ public class ShareController : MonoBehaviour
     {
         isRecording = false;
         isWaitingForStt = true;
-        inputText.text  = "辨識中...";
+        // 錄音中若已經收到中間辨識結果（逐字動畫已經把長者的原話打上去），
+        // 就不要蓋掉；只有完全還沒辨識到任何內容時才顯示「辨識中...」。
+        if (string.IsNullOrEmpty(displayedText))
+            inputText.text = "辨識中...";
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
         if (micButtonImage != null) micButtonImage.color = Color.white;
         RefreshSubmitButton();
@@ -346,10 +364,42 @@ public class ShareController : MonoBehaviour
         try { msg = JsonUtility.FromJson<STTMessage>(json); }
         catch { Debug.LogWarning("[Share STT] 無法解析: " + json); return; }
 
-        if (msg == null || msg.type != "transcript") return;
+        if (msg == null) return;
 
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
+        if (msg.type == "control")
+        {
+            switch (msg.action)
+            {
+                case "pause":
+                    isPaused = true;
+                    micButton.interactable = false;
+                    submitButton.interactable = false;
+                    break;
+                case "resume":
+                    isPaused = false;
+                    micButton.interactable = true;
+                    RefreshSubmitButton();
+                    break;
+                case "replay_audio":
+                    OnReplay();
+                    break;
+                case "end":
+                    // 治療師手動結束，直接走 ThankYouScene，沿用 LoadingScene 轉場
+                    // （ThankYouController 不需要任何 PlayerPrefs 資料）。
+                    PlayerPrefs.SetString("NextScene", "ThankYouScene");
+                    SceneManager.LoadScene("LoadingScene");
+                    break;
+            }
+            return;
+        }
+
+        if (msg.type != "transcript") return;
+
+        // 逐字動畫顯示辨識結果
+        if (typingCoroutine != null)
+            StopCoroutine(typingCoroutine);
         typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
+
         if (msg.isFinal)
         {
             OnSttFinal();
@@ -373,13 +423,16 @@ public class ShareController : MonoBehaviour
 
     void RefreshSubmitButton()
     {
-        submitButton.interactable = !isRecording && !isWaitingForStt;
+        submitButton.interactable = !isRecording && !isWaitingForStt && !isPaused;
     }
+
+    // ── 逐字打字動畫（像 Google 語音輸入） ──
 
     IEnumerator TypeCharByChar(string target)
     {
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
 
+        // 若 target 是 displayedText 的延伸，只打出新增的部分
         if (target.StartsWith(displayedText))
         {
             for (int i = displayedText.Length; i <= target.Length; i++)
@@ -392,6 +445,7 @@ public class ShareController : MonoBehaviour
         }
         else
         {
+            // 文字差異較大（interim 結果改寫），直接替換
             inputText.text = target;
             displayedText  = target;
         }
@@ -401,7 +455,10 @@ public class ShareController : MonoBehaviour
     {
         string sessionId = PlayerPrefs.GetString("session_id", "");
         if (string.IsNullOrEmpty(sessionId)) yield break;
-        byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
+        // JsonUtility.ToJson 不支援直接序列化裸字串（只能序列化 [Serializable]
+        // 物件），對字串呼叫會回傳 "{}"，導致送出的 JSON 變成 {"text":{}}，
+        // 後端 Pydantic 驗證型別不符直接 422。要包成物件再序列化。
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/response", "POST");
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
