@@ -48,6 +48,19 @@ async def _synthesize_safe(tts, **kwargs) -> str | None:
         return None
 
 
+async def _synthesize_edge_safe(tts, **kwargs) -> str | None:
+    """跟 _synthesize_safe 一樣是不影響主流程的降級呼叫，差別是走
+    tts.synthesize_edge（edge-tts／HsiaoYu 即時生成），給 _PRE_IMAGE_Q1_
+    QUESTION_TEMPLATE／_PRE_IMAGE_Q1_FALLBACK_QUESTION 這段帶著治療師自由
+    輸入今日主題、永遠無法預錄的動態文字用（見 orchestrator.py
+    _build_pre_image_question 的 tts_text 說明）。"""
+    try:
+        return await tts.synthesize_edge(**kwargs)
+    except Exception as e:
+        print(f"[TTS] edge-tts 語音合成失敗（不影響主流程，長者端這段沒有語音）: {e}")
+        return None
+
+
 async def _synthesize_or_key(tts, text: str, **kwargs) -> tuple[str | None, str | None]:
     """
     2026-08-18新增：orchestrator.py 產出的固定字串模板（非LLM即時生成，見
@@ -655,18 +668,19 @@ async def session_start(
                 turn_number=None,
             )
         # Q1邀請語帶著治療師自由輸入的今日主題，orchestrator.start_round
-        # 已經拆好 question_tts_text（該即時TTS的動態部分）跟
-        # question_audio_key（後半段邀請語的預錄音檔key，見 orchestrator.py
-        # _build_pre_image_question 說明）——沒有這兩個欄位（理論上不會，
-        # round 1 一定是走 Q1）才退回對整句 question 查表/即時TTS。
-        question_audio_path, _lookup_key = await _synthesize_or_key(
+        # 已經拆好 question_tts_text（該即時TTS的動態部分，用edge-tts／
+        # HsiaoYu生成——這段治療師自由輸入、沒辦法預錄）跟 question_audio_key
+        # （後半段邀請語的預錄音檔key，見 orchestrator.py _build_pre_image_
+        # question 說明）——沒有這兩個欄位（理論上不會，round 1 一定是走 Q1）
+        # 才退回對整句 question 即時TTS。
+        question_audio_path = await _synthesize_edge_safe(
             tts,
-            result.get("question_tts_text", result["question"]),
+            text=result.get("question_tts_text", result["question"]),
             session_id=session_id,
             round_number=1,
             turn_number=1,
         )
-        question_audio_key = result.get("question_audio_key") or _lookup_key
+        question_audio_key = result.get("question_audio_key")
         result["scene_audio_path"] = scene_audio_path
         result["scene_audio_key"] = scene_audio_key
         result["question_audio_path"] = question_audio_path
@@ -760,14 +774,14 @@ async def session_round(
             # 這個分支 round_number 一定是 1（round 2/3 被上面的
             # not in (2, 3) 擋掉），一定是 Q1 邀請語，見 session_start 那份
             # 一樣的說明。
-            question_audio_path, _lookup_key = await _synthesize_or_key(
+            question_audio_path = await _synthesize_edge_safe(
                 tts,
-                result.get("question_tts_text", result["question"]),
+                text=result.get("question_tts_text", result["question"]),
                 session_id=session_id,
                 round_number=round_number,
                 turn_number=1,
             )
-            question_audio_key = result.get("question_audio_key") or _lookup_key
+            question_audio_key = result.get("question_audio_key")
             result["scene_audio_path"] = scene_audio_path
             result["scene_audio_key"] = scene_audio_key
             result["question_audio_path"] = question_audio_path
@@ -880,6 +894,11 @@ async def session_metrics(
         "ai_suggestions": suggestions,
         "current_round": _to_int(data.get("current_round")) or 1,
         "total_rounds": _to_int(data.get("total_rounds")) or 3,
+        # session:{id}:meta 只有在 _compute_and_save_assessment 算完評估分數、
+        # 療程真正結束時才會被清掉（見該函式），前端「活動觀察頁」還在 polling
+        # 的當下 meta 一定存在，一旦這裡變 false 就代表心得已經答完、評估算完了，
+        # 可以自動跳轉到結束頁面，不用等治療師自己按「結束活動」。
+        "session_completed": not meta_raw,
     }
 
 

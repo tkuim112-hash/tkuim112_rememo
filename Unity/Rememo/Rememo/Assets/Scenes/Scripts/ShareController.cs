@@ -383,8 +383,11 @@ public class ShareController : MonoBehaviour
 
         if (msg.type != "transcript") return;
 
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
+        // 逐字動畫顯示辨識結果
+        if (typingCoroutine != null)
+            StopCoroutine(typingCoroutine);
         typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
+
         if (msg.isFinal)
         {
             OnSttFinal();
@@ -411,10 +414,13 @@ public class ShareController : MonoBehaviour
         submitButton.interactable = !isRecording && !isWaitingForStt && !isPaused;
     }
 
+    // ── 逐字打字動畫（像 Google 語音輸入） ──
+
     IEnumerator TypeCharByChar(string target)
     {
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
 
+        // 若 target 是 displayedText 的延伸，只打出新增的部分
         if (target.StartsWith(displayedText))
         {
             for (int i = displayedText.Length; i <= target.Length; i++)
@@ -427,6 +433,7 @@ public class ShareController : MonoBehaviour
         }
         else
         {
+            // 文字差異較大（interim 結果改寫），直接替換
             inputText.text = target;
             displayedText  = target;
         }

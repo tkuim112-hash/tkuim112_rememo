@@ -1,6 +1,5 @@
 using UnityEngine;
 using UnityEngine.UI;
-using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using WebSocketSharp;
@@ -25,10 +24,6 @@ public class MicController : MonoBehaviour
     public int sampleRate = 16000;
     public int maxRecordSeconds = 60;
 
-    [Header("逐字動畫")]
-    [Tooltip("每個字之間的秒數，建議 0.02~0.05")]
-    public float charInterval = 0.03f;
-
     [Header("假資料")]
     public Sprite[] testImages;
 
@@ -43,8 +38,7 @@ public class MicController : MonoBehaviour
     private readonly object queueLock = new object();
 
     private readonly string placeholderText = "想到什麼就說什麼，按下麥克風可以用說的…";
-    private string displayedText = "";   // 動畫目前打到的文字
-    private Coroutine typingCoroutine;
+    private string displayedText = "";
 
     private string[] fakeResponses = {
         "美麗阿姨，這幅畫裡的紅瓦房跟老家好像！看著看著，仿佛又聽見那個夏天熱鬧的蟬鳴聲。",
@@ -135,8 +129,6 @@ public class MicController : MonoBehaviour
             SendControl("start");
         }
 
-        // 重置逐字動畫狀態，避免上次錄音的 displayedText 干擾新一輪
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         displayedText   = "";
         inputText.text  = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -239,38 +231,12 @@ public class MicController : MonoBehaviour
 
         if (msg == null || msg.type != "transcript") return;
 
-        // 逐字動畫顯示辨識結果
-        if (typingCoroutine != null)
-            StopCoroutine(typingCoroutine);
-        typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
+        // 長者不會在畫面上看到辨識出的文字，inputText 維持 StartRecording/StopRecording
+        // 設的「錄音中...」「辨識中...」狀態；displayedText 只留著記錄目前這輪辨識結果。
+        displayedText = msg.text;
 
         if (msg.isFinal)
             OnFinalTranscript();
-    }
-
-    // ── 逐字打字動畫（像 Google 語音輸入） ──
-
-    IEnumerator TypeCharByChar(string target)
-    {
-        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-
-        // 若 target 是 displayedText 的延伸，只打出新增的部分
-        if (target.StartsWith(displayedText))
-        {
-            for (int i = displayedText.Length; i <= target.Length; i++)
-            {
-                string partial = target.Substring(0, i);
-                inputText.text = partial;
-                displayedText  = partial;
-                yield return new WaitForSeconds(charInterval);
-            }
-        }
-        else
-        {
-            // 文字差異較大（interim 結果改寫），直接替換
-            inputText.text = target;
-            displayedText  = target;
-        }
     }
 
     void OnFinalTranscript()

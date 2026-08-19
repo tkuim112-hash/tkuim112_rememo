@@ -38,6 +38,8 @@ public class GameController : MonoBehaviour
     public KinectAudioSender kinectAudioSender;
     [Tooltip("拖入場景中的 KinectSensorSender；若留空則不追蹤反應時間")]
     public KinectSensorSender kinectSensorSender;
+    [Tooltip("拖入場景中的 HandCursorRemapper；治療師端暫停/繼續時用來鎖定/解鎖手部游標")]
+    public HandCursorRemapper handCursorRemapper;
 
     [Header("WebSocket STT 設定（內建麥克風模式用）")]
     public string sttServerUrl = "wss://api.re-memo.com/ws/stt";
@@ -196,20 +198,14 @@ public class GameController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
-        // 逾時前都沒收到任何 transcript 訊息，displayedText 還是空的：代表整段
-        // 錄音沒辨識到任何內容，見 OnSttFinal 的 noSpeechRecognized 說明。
-        OnSttFinal(noSpeechRecognized: string.IsNullOrEmpty(displayedText));
+        OnSttFinal();
     }
 
-    void OnSttFinal(bool noSpeechRecognized = false)
+    void OnSttFinal()
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        // 沒辨識到任何內容時，把卡住的「辨識中...」換成「辨識完成」，不要留著
-        // 讓長者/治療師誤以為還在辨識；真的有辨識到文字的情況完全不動這裡，
-        // 文字框已經在 HandleSTTMessage 被實際辨識結果蓋過了。
-        if (noSpeechRecognized)
-            inputText.text = "辨識完成";
+        inputText.text = "辨識完成，請按送出";
         RefreshSubmitButton();
     }
 
@@ -301,7 +297,9 @@ public class GameController : MonoBehaviour
             switch (msg.action)
             {
                 case "replay_audio":
-                    OnReplayAudio();
+                    // 暫停中不重播：重播會重新排反應逾時倒數，等於讓暫停中的療程自己繼續跑。
+                    if (!isPaused)
+                        OnReplayAudio();
                     break;
                 case "skip_scene":
                     // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
@@ -315,12 +313,16 @@ public class GameController : MonoBehaviour
                     CancelReactionTimeout();
                     micButton.interactable = false;
                     submitButton.interactable = false;
+                    if (replayButton != null) replayButton.interactable = false;
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(true);
                     break;
                 case "resume":
                     isPaused = false;
                     RefreshSubmitButton();
                     micButton.interactable = true;
+                    if (replayButton != null) replayButton.interactable = true;
                     StartReactionTimeout();
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "end":
                     Application.Quit();
@@ -330,16 +332,15 @@ public class GameController : MonoBehaviour
         }
 
         if (msg.type != "transcript") return;
+        // 長者不會在畫面上看到辨識出的文字，只在背後記錄下來供送出時使用；
+        // inputText 維持 StartRecording/StopRecording 設的「錄音中...」「辨識中...」狀態，
+        // 直到 OnSttFinal 換成「辨識完成，請按送出」。
         bool hasText = !string.IsNullOrWhiteSpace(msg.text);
         if (hasText)
-        {
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            inputText.text = msg.text;
-            displayedText  = msg.text;
-        }
+            displayedText = msg.text;
         if (msg.isFinal)
         {
-            OnSttFinal(noSpeechRecognized: !hasText);
+            OnSttFinal();
             if (hasText)
                 StartCoroutine(PostTranscript(msg.text));
         }
@@ -490,12 +491,11 @@ public class GameController : MonoBehaviour
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         RefreshSubmitButton();
 
+        string userSpeech = displayedText;
+
         ResetInputText();
         aiText.gameObject.SetActive(false);
         loadingSpinner.SetActive(true);
-
-        string userSpeech = displayedText;
-        displayedText = "";
 
         yield return StartCoroutine(SendResponse(userSpeech));
 
@@ -562,6 +562,13 @@ public class GameController : MonoBehaviour
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
+
+        // /session/start、/session/round 回傳時 image_path 一定是空字串（見
+        // ApplyRoundResponse 上方註解），圖片是長者答完生圖前引導問題、這支
+        // /session/respond 才第一次真的生出來，所以載入圖片要放在這裡，不是
+        // ApplyRoundResponse。
+        if (!string.IsNullOrEmpty(resp.image_path))
+            StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
 
         var uris = new List<string>();
         uris.AddRange(LocalAudioPlayer.BuildUris(
@@ -646,6 +653,9 @@ public class GameController : MonoBehaviour
     {
         public string action;
         public string scene_text;
+        // action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次真的
+        // 生出圖片（見 app/routers/session.py session_respond 的同一段說明）。
+        public string image_path;
         public string scene_audio_path;
         public string scene_audio_key;
         // scene_audio_keys／thanks_audio_keys／question_audio_keys：只有
