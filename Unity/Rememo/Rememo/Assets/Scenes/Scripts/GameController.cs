@@ -105,6 +105,7 @@ public class GameController : MonoBehaviour
         if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);
         ResetInputText();
         RefreshSubmitButton();
+        RefreshMicButton();
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
         if (generatingImageText != null) generatingImageText.SetActive(false);
@@ -149,6 +150,10 @@ public class GameController : MonoBehaviour
 
     void OnMicToggle()
     {
+        // micButton.interactable 已經由 RefreshMicButton 擋住未連線的情況，這裡多一層
+        // 防線防止按鈕互動狀態剛好還沒更新到那一格（例如 Update() 還沒跑到）：真的還沒
+        // 連上就完全不進 StartRecording，不要讓長者對著沒連線的麥克風錄一段送不出去的音。
+        if (!isRecording && !AudioReady) return;
         if (!isRecording) StartRecording();
         else              StopRecording();
     }
@@ -222,6 +227,25 @@ public class GameController : MonoBehaviour
             submitButton.image.color = enabled ? Color.white : new Color(0.55f, 0.55f, 0.55f, 1f);
     }
 
+    // Kinect 模式下，音訊 WebSocket 是非同步連線，場景剛載入的那幾百毫秒內可能還沒連上
+    // （見 KinectAudioSender.IsConnected 說明）——在真正連上之前擋住麥克風按鈕，避免長者
+    // 對著一個還沒連線的麥克風講話，話完全送不到後端卻毫無提示，5秒後被判定成沒回應。
+    // 非 Kinect（內建麥克風）模式不受影響，AudioReady 永遠是 true。
+    private bool AudioReady => !UseKinect || kinectAudioSender.IsConnected;
+
+    void RefreshMicButton()
+    {
+        if (micButton == null) return;
+        bool enabled = AudioReady && !isPaused;
+        micButton.interactable = enabled;
+        // 只在「這題還沒錄過音」的初始待機狀態換文字，避免蓋掉 StartRecording／
+        // StopRecording／OnSttFinal 設的「錄音中...」「辨識中...」「辨識完成，請按
+        // 送出」這幾個進行中狀態（hasSpeechInput 從按下麥克風那刻就是 true，見
+        // StartRecording）。
+        if (!isRecording && !isWaitingForStt && !isSubmitting && !hasSpeechInput)
+            inputText.text = enabled ? placeholderText : "音訊連線中，請稍候…";
+    }
+
     void SendControl(string type)
     {
         if (ws?.ReadyState == WebSocketState.Open)
@@ -233,6 +257,7 @@ public class GameController : MonoBehaviour
         if (!UseKinect && isRecording) StreamMicAudio();
         DrainIncomingMessages();
         if (!UseKinect) TickWsReconnect();
+        RefreshMicButton();
     }
 
     void TickWsReconnect()
@@ -316,7 +341,7 @@ public class GameController : MonoBehaviour
                 case "pause":
                     isPaused = true;
                     CancelReactionTimeout();
-                    micButton.interactable = false;
+                    RefreshMicButton();
                     submitButton.interactable = false;
                     if (replayButton != null) replayButton.interactable = false;
                     if (handCursorRemapper != null) handCursorRemapper.SetLocked(true);
@@ -324,7 +349,7 @@ public class GameController : MonoBehaviour
                 case "resume":
                     isPaused = false;
                     RefreshSubmitButton();
-                    micButton.interactable = true;
+                    RefreshMicButton();
                     if (replayButton != null) replayButton.interactable = true;
                     StartReactionTimeout();
                     if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);

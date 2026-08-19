@@ -131,6 +131,30 @@ async def _cache_start_result(r, session_id: str, result: dict) -> None:
     await r.set(f"session:{session_id}:round1_result", json.dumps(result), ex=86400)
 
 
+async def _acquire_start_lock(r, session_id: str) -> bool:
+    """
+    /session/start 有兩個呼叫者（見 _get_cached_start_result 說明），但「檢查
+    快取」（session_start 開頭）到「寫入快取」（_cache_start_result，整個
+    orchestrator.start_round 都跑完才會執行）中間隔著 LLM 分類／RAG 檢索／
+    生圖／TTS 合成，耗時經常長達數秒到數十秒，兩個呼叫者常常會前後腳都通過
+    「還沒快取」的檢查，各自完整跑一次 start_round。
+
+    2026-08-20稽核（使用者實測案例）：治療師端帶明確 topic 呼叫、Unity 端
+    沒帶 topic 呼叫，兩次 orchestrator.start_round 各自算出不同的
+    today_topic（沒帶 topic 的那次會退回 patient.preferences 算出的預設
+    主題，見 DBUserProfileClient.get_user 說明），兩邊的生成結果混進同一個
+    round 1，出現「開場問題問A主題、長者沒回應退回RAG記憶生圖時卻查到B
+    主題」的精神分裂畫面。加一把短期 lock，讓兩個呼叫者裡只有一個真的
+    執行 start_round，另一個改成輪詢等待快取（見 session_start 呼叫處），
+    不再各自獨立生成。
+    """
+    return bool(await r.set(f"session:{session_id}:start_lock", "1", ex=60, nx=True))
+
+
+async def _release_start_lock(r, session_id: str) -> None:
+    await r.delete(f"session:{session_id}:start_lock")
+
+
 async def _get_session_topic(r, session_id: str) -> str | None:
     """讀出這場療程啟動時（round 1）設定的今日主題，round 2/3 沿用。"""
     meta_raw = await r.get(f"session:{session_id}:meta")
@@ -497,6 +521,12 @@ class SessionState(BaseModel):
     # 範圍時直接複用，不用重複分類。同樣需要宣告在這裡才能透過 API 往返存活，
     # 理由同上面 question_count/supplement_count 的說明。
     topic_category: str | None = None
+    # 生圖前 Q1 開場時就對 today_topic 本身分類過適合哪些感官（見
+    # orchestrator.py _classify_topic_senses、_SENSE_EXCLUDED_TOPIC_
+    # CATEGORIES），供後續感官追蹤（covered_senses／skipped_senses）需要
+    # 判斷「這個主題還剩哪些相關感官沒問過」時直接複用，不用重複分類。
+    # 同樣需要宣告在這裡才能透過 API 往返存活，理由同上面 topic_category。
+    topic_senses: list[str] = []
     # 情境2成立、且主題是sub_item granularity時分類出的子項目（見
     # orchestrator.py _classify_pre_image_sub_item、get_scenario2_
     # followup 的 excluded_fields 說明）。同樣需要宣告在這裡才能透過 API
@@ -666,6 +696,21 @@ async def session_start(
     cached = await _get_cached_start_result(r, session_id)
     if cached:
         return cached
+
+    if not await _acquire_start_lock(r, session_id):
+        # 沒搶到鎖：代表治療師網頁／Unity 另一個呼叫者正在跑同一個 session
+        # 的 start_round（見 _acquire_start_lock 說明），輪詢等它寫入快取，
+        # 不要自己也跑一次、各自算出不同的 today_topic。輪詢上限抓超過
+        # 「LLM分類＋RAG＋生圖＋TTS」實測最壞情況的時間，真的等超時了才
+        # 視為持鎖者已經掛掉，自己接手跑一次（不然鎖到期前不會有人補上
+        # 快取，長者會被晾在原地）。
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            cached = await _get_cached_start_result(r, session_id)
+            if cached:
+                return cached
+        await _acquire_start_lock(r, session_id)
+
     try:
         result = await orchestrator.start_round(
             user_id=user_id,
@@ -740,6 +785,8 @@ async def session_start(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"療程開場失敗: {str(e)}")
+    finally:
+        await _release_start_lock(r, session_id)
 
 
 @router.post("/round")
@@ -1392,6 +1439,7 @@ async def session_respond(
                         "scene_composition": body.state.scene_composition,
                         "pre_image_detail": body.state.pre_image_detail,
                         "topic_category": body.state.topic_category,
+                        "topic_senses": body.state.topic_senses,
                         # round 1 結束時已經自然涵蓋的 W 維度——round 2 開場用來
                         # 排除補問候選，不要再問長者已經在 round 1 講過的具體事實
                         # （見 orchestrator.py _start_round2_free_followup 的

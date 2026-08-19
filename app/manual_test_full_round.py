@@ -176,6 +176,7 @@ async def main() -> None:
                         "scene_composition": last_state["scene_composition"],
                         "pre_image_detail": last_state.get("pre_image_detail", ""),
                         "topic_category": last_state.get("topic_category"),
+                        "topic_senses": last_state.get("topic_senses", []),
                         "round1_covered_w": last_state.get("covered_w", []),
                         # 照抄 session.py round==1 carryover 的
                         # round1_last_question（2026-08-18稽核，第四次，使用者

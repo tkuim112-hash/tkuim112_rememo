@@ -18,6 +18,16 @@ public class KinectAudioSender : MonoBehaviour
     /// <summary>音高變異（Hz²，B 階段）。靜音或尚無足夠歷史時為 0。</summary>
     public float CurrentPitchVariance { get; private set; } = 0f;
 
+    /// <summary>STT WebSocket 是否已連線。GameController 要靠這個在真正連上之前擋住麥克風
+    /// 按鈕——2026-08稽核（使用者實測案例）：WarmupScene 切到 GameScene 時，若回合1的
+    /// 開場問題已經由 WarmupScene 預先呼叫 /session/start 撈好（見 GameController.Start()
+    /// 的 PendingSessionStart.Response 分支），問題會在畫面上幾乎瞬間出現，但這個場景
+    /// 自己的 KinectAudioSender 連線是非同步的、還在建立中；長者若在連線真正 Open 之前
+    /// 就按下麥克風，StartSTT／StopSTT／PollAudio 送出的訊息會被下面 wsStt.ReadyState
+    /// 檢查全部靜默丟棄，長者講的話完全沒送到後端，UI卻毫無異狀地跑完整段錄音流程，
+    /// 5秒後逾時送出空白回答，被誤判成「長者沒有回應」。</summary>
+    public bool IsConnected => wsStt != null && wsStt.ReadyState == WebSocketState.Open;
+
     private WebSocket wsStt;
 
     // 斷線重連（見 ConnectWebSocket 內的 OnClose/OnError）：治療師的暫停/跳過/重播/

@@ -13,14 +13,10 @@ public class KinectSkeletonSender : MonoBehaviour
 
     void Start()
     {
-        kinectManager = KinectManager.Instance;
-
-        ws = new WebSocket(serverUrl);
-        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
-        ws.OnOpen  += (s, e) => Debug.Log("[Skeleton WS] 已連線");
-        ws.OnError += (s, e) => Debug.LogError($"[Skeleton WS] 錯誤: {e.Message}");
-        ws.OnClose += (s, e) => Debug.Log("[Skeleton WS] 已關閉");
-        ws.ConnectAsync();
+        // 後端從未實作 /ws/skeleton（骨架姿態分析已改由 /sensor/emotion 的
+        // skel_* 欄位負責，見該端點），這裡停用連線，避免每次啟動都白連
+        // 線失敗。ws 維持 null，Update()/OnDestroy() 既有的 null 檢查會
+        // 自然讓下面的邏輯整段不執行。
     }
 
     void Update()
