@@ -58,22 +58,30 @@ public class KinectAudioSender : MonoBehaviour
 
     void Awake()
     {
+        // 暫時診斷用 log（見 2026-08 稽核：singleton 上線後後端仍觀察到同一 session_id
+        // 開出兩條 /ws/stt，需要直接在 Console 對照 InstanceID 才能判斷是「兩個物件都
+        // 活下來」還是別的原因）——確認修好後可以拿掉。
+        Debug.Log($"[KinectAudioSender] Awake @ scene={SceneManager.GetActiveScene().name}, thisID={GetInstanceID()}, existingInstanceID={(Instance == null ? "null" : Instance.GetInstanceID().ToString())}");
+
         if (Instance != null && Instance != this)
         {
             // 場景裡自己拖進去的那份是重複的舊寫法殘留：這裡自我銷毀，Start() 就
             // 不會再跑第二次，不會開出第二條 STT WebSocket。GameController 等消費端
             // 的 Inspector 欄位會在 Destroy 後變成 Unity 的 fake-null，靠各自 Start()
             // 裡的 KinectAudioSender.Instance 備援取得真正活著的那份。
+            Debug.Log($"[KinectAudioSender] Awake: 判定為重複物件，自我銷毀 (thisID={GetInstanceID()})");
             Destroy(gameObject);
             return;
         }
         Instance = this;
         DontDestroyOnLoad(gameObject);
         SceneManager.sceneLoaded += OnSceneLoaded;
+        Debug.Log($"[KinectAudioSender] Awake: 設為 singleton 並 DontDestroyOnLoad (thisID={GetInstanceID()})");
     }
 
     void Start()
     {
+        Debug.Log($"[KinectAudioSender] Start → ConnectWebSocket (thisID={GetInstanceID()}, scene={SceneManager.GetActiveScene().name})");
         ConnectWebSocket();
     }
 
@@ -81,8 +89,12 @@ public class KinectAudioSender : MonoBehaviour
     {
         // 離開整段「校正→說明→遊戲→分享」流程（例如轉場到 ThankYouScene）就代表這場
         // 療程結束，銷毀自己、關掉連線；下個病患進 WarmupScene 時 Awake() 會重新建一份。
+        Debug.Log($"[KinectAudioSender] OnSceneLoaded: scene={scene.name}, inKeepAlive={KeepAliveScenes.Contains(scene.name)}, thisID={GetInstanceID()}");
         if (!KeepAliveScenes.Contains(scene.name))
+        {
+            Debug.Log($"[KinectAudioSender] 離開流程場景，自我銷毀 (thisID={GetInstanceID()})");
             Destroy(gameObject);
+        }
     }
 
     void ConnectWebSocket()
@@ -276,6 +288,7 @@ public class KinectAudioSender : MonoBehaviour
 
     void OnDestroy()
     {
+        Debug.Log($"[KinectAudioSender] OnDestroy (thisID={GetInstanceID()}, wasInstance={Instance == this})");
         SceneManager.sceneLoaded -= OnSceneLoaded;
         if (Instance == this) Instance = null;
         isQuitting = true;
