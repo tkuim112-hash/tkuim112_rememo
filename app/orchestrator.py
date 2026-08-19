@@ -2059,6 +2059,7 @@ class TherapyOrchestrator:
     async def _start_scene_after_detail(
         self, user: dict, state: dict, elder_detail: str,
         detail_is_usable: bool | None = None,
+        on_generating_image=None,
     ) -> dict:
         """
         長者回答完生圖前的破冰問題（Q1，若不夠具體則再追問 Q2）後：決定這次
@@ -2098,6 +2099,12 @@ class TherapyOrchestrator:
         """
         session_id = state["session_id"]
         round_number = state["round"]
+
+        if on_generating_image:
+            # 確定會生圖（image_plan／self.image.generate 都在下面才會呼叫），
+            # 在這些慢動作之前先通知，前端才能在真正等待生圖時顯示「生圖中」，
+            # 不會在追問Q2那種不生圖的分支誤觸發。
+            await on_generating_image()
 
         if detail_is_usable is None:
             detail_is_usable = bool(elder_detail) and await self._has_usable_detail(elder_detail)
@@ -2503,6 +2510,7 @@ class TherapyOrchestrator:
         elder_response: str,
         state: dict,
         emotion: str = "",
+        on_generating_image=None,
     ) -> dict:
         """
         狀態機核心：根據長者回應決定下一步。
@@ -2511,6 +2519,10 @@ class TherapyOrchestrator:
             elder_response: 長者說的話（STT 轉譯結果）
             state: 上一輪回傳的 state dict
             emotion: Kinect 即時偵測的情緒（happy/excited/angry/sad，見 app/routers/sensor.py）
+            on_generating_image: 真正開始生圖（_start_scene_after_detail）前呼叫的
+                async callback，供呼叫端（session.py）推播 WS 通知給前端顯示「生圖中」，
+                跟 _has_usable_detail 等判斷無關——只在確定要生圖時才觸發，見
+                _start_scene_after_detail 內的呼叫點。
 
         Returns dict 含：
           action     : "open_followup" | "ask_supplement_w" | "end_round" | "end_session"
@@ -2643,7 +2655,9 @@ class TherapyOrchestrator:
             elder_detail = "" if self._is_true_refusal(elder_response) else elder_response
             if not elder_detail:
                 # 長者真的不想／不能答，不用再多問Q2，直接退回RAG記憶生圖。
-                return await self._start_scene_after_detail(user, state, "")
+                return await self._start_scene_after_detail(
+                    user, state, "", on_generating_image=on_generating_image,
+                )
             basic_checks = await self._check_pre_image_basic_dims(elder_detail)
             has_usable_detail = await self._has_usable_detail(elder_detail, checks=basic_checks)
             if has_usable_detail:
@@ -2653,6 +2667,7 @@ class TherapyOrchestrator:
                 # detail_is_usable 參數的說明。
                 return await self._start_scene_after_detail(
                     user, state, elder_detail, detail_is_usable=True,
+                    on_generating_image=on_generating_image,
                 )
             # 有回應但不夠具體 → 分類已經在 start_round 開場時做過、存在
             # state["topic_category"]，這裡直接複用，不用重複分類。分類失敗
@@ -2663,6 +2678,7 @@ class TherapyOrchestrator:
                 print(f"  → 主題分類失敗（{category!r}），略過Q2直接生圖")
                 return await self._start_scene_after_detail(
                     user, state, elder_detail, detail_is_usable=has_usable_detail,
+                    on_generating_image=on_generating_image,
                 )
             # 情境1 vs 情境2：核對Q1這句話有沒有涵蓋Where/When/How/Why任一
             # 維度，決定要給範例縮小範圍（情境1），還是直接問缺的維度
@@ -2681,6 +2697,7 @@ class TherapyOrchestrator:
                 if not q2_question:
                     return await self._start_scene_after_detail(
                         user, state, elder_detail, detail_is_usable=has_usable_detail,
+                        on_generating_image=on_generating_image,
                     )
                 print(f"  → 主題分類: {category}，情境1（完全答不出來）追問Q2: {q2_question}")
                 new_state = {
@@ -2708,6 +2725,7 @@ class TherapyOrchestrator:
                 # 該問的維度都已經在Q1涵蓋或被排除，不用再多問一題。
                 return await self._start_scene_after_detail(
                     user, state, elder_detail, detail_is_usable=has_usable_detail,
+                    on_generating_image=on_generating_image,
                 )
             q2_question, q2_w, q2_audio_key = picked
             print(f"  → 主題分類: {category}（子項目: {sub_item}），"
@@ -2794,8 +2812,11 @@ class TherapyOrchestrator:
                           f"已涵蓋: {covered_w}")
                     return await self._start_scene_after_detail(
                         user, state, combined, detail_is_usable=True,
+                        on_generating_image=on_generating_image,
                     )
-                return await self._start_scene_after_detail(user, state, combined)
+                return await self._start_scene_after_detail(
+                    user, state, combined, on_generating_image=on_generating_image,
+                )
             # 情境2：Q1當初能進情境2，代表至少已經涵蓋一個W維度（見
             # _detect_pre_image_w_coverage），不是空話——不管這一輪是長者
             # 拒答提早結束，還是問完該問的維度／到輪數上限正常結束，都直接
@@ -2812,6 +2833,7 @@ class TherapyOrchestrator:
             if not q2_answer:
                 return await self._start_scene_after_detail(
                     user, state, combined, detail_is_usable=True,
+                    on_generating_image=on_generating_image,
                 )
             # 長者答了這一輪，先更新covered_w（跟STEP2背景追蹤共用同一套
             # 判斷_detect_covered_w、同一份state["covered_w"]狀態，好處是
@@ -2847,6 +2869,7 @@ class TherapyOrchestrator:
                 new_state = {**state, "covered_w": covered_w, "skipped_w": skipped_w}
                 return await self._start_scene_after_detail(
                     user, new_state, combined, detail_is_usable=True,
+                    on_generating_image=on_generating_image,
                 )
             next_question, next_w, next_audio_key = picked
             print(f"  → 情境2第{round_count + 1}輪追問: {next_question}，已涵蓋: {covered_w}")

@@ -32,6 +32,7 @@ public class GameController : MonoBehaviour
     public TMP_Text inputText;
     public GameObject loadingSpinner;
     public RawImage photoDisplay;
+    public GameObject generatingImageText;
 
     [Header("Kinect 整合")]
     [Tooltip("拖入場景中的 KinectAudioSender；若留空則退回使用內建麥克風")]
@@ -106,6 +107,7 @@ public class GameController : MonoBehaviour
         RefreshSubmitButton();
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
+        if (generatingImageText != null) generatingImageText.SetActive(false);
 
         if (UseKinect)
             // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/跳過/重播指令
@@ -333,6 +335,13 @@ public class GameController : MonoBehaviour
                     PlayerPrefs.SetString("NextScene", "ThankYouScene");
                     SceneManager.LoadScene("LoadingScene");
                     break;
+                case "generating_image":
+                    // 後端 orchestrator._start_scene_after_detail 真正開始生圖前推播
+                    // 的通知（見 app/routers/session.py 呼叫 process_response 時的
+                    // on_generating_image callback）；只有這個訊號會打開這個標籤，
+                    // 生圖前追問Q2那種不生圖的分支不會走到這裡，不會誤顯示。
+                    if (generatingImageText != null) generatingImageText.SetActive(true);
+                    break;
             }
             return;
         }
@@ -517,6 +526,7 @@ public class GameController : MonoBehaviour
         if (currentState == null)
         {
             loadingSpinner.SetActive(false);
+            if (generatingImageText != null) generatingImageText.SetActive(false);
             aiText.gameObject.SetActive(true);
             yield break;
         }
@@ -530,6 +540,7 @@ public class GameController : MonoBehaviour
         yield return req.SendWebRequest();
 
         loadingSpinner.SetActive(false);
+        if (generatingImageText != null) generatingImageText.SetActive(false);
 
         if (req.result != UnityWebRequest.Result.Success)
         {

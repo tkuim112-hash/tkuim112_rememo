@@ -31,7 +31,7 @@ public class UserSelectController : MonoBehaviour
 
         string orgName = string.IsNullOrEmpty(AuthSession.OrganizationName) ? "未指定機構" : AuthSession.OrganizationName;
         string therapistName = string.IsNullOrEmpty(AuthSession.TherapistName) ? "" : AuthSession.TherapistName;
-        topBarText.text = $"{orgName} {therapistName}治療師";
+        topBarText.text = $"{orgName} {therapistName}";
     }
 
     void OnPatientsLoaded(PatientService.PatientSummary[] patients)
