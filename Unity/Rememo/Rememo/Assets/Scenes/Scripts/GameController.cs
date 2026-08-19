@@ -328,7 +328,10 @@ public class GameController : MonoBehaviour
                     if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "end":
-                    Application.Quit();
+                    // 治療師手動結束，跳過剩餘回合／心得環節，直接走 ThankYouScene，
+                    // 沿用 LoadingScene 轉場（ThankYouController 不需要任何 PlayerPrefs 資料）。
+                    PlayerPrefs.SetString("NextScene", "ThankYouScene");
+                    SceneManager.LoadScene("LoadingScene");
                     break;
             }
             return;
