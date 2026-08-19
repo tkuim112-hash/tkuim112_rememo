@@ -104,6 +104,7 @@ public class KinectAudioSender : MonoBehaviour
         // PlayerPrefs 讀，不靠 GameController 賦值，避免兩個 MonoBehaviour 的
         // Start() 執行順序不保證先後而漏帶 session_id。
         string sessionId = PlayerPrefs.GetString("session_id", "");
+        Debug.Log($"[KinectAudioSender] ConnectWebSocket 進入點 (thisID={GetInstanceID()}, session_id={sessionId}, frameCount={Time.frameCount})");
         string url = string.IsNullOrEmpty(sessionId) ? sttUrl : $"{sttUrl}?session_id={sessionId}";
         wsStt = new WebSocket(AuthService.AppendToken(url));
         wsStt.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;

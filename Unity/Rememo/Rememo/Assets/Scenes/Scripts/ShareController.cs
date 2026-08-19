@@ -83,6 +83,7 @@ public class ShareController : MonoBehaviour
         // Inspector 拖的那份若是場景本地的重複物件，會在 KinectAudioSender.Awake()
         // 自我銷毀（見該檔案的 singleton 說明），這裡退回抓真正跨場景存活的那份。
         if (kinectAudioSender == null) kinectAudioSender = KinectAudioSender.Instance;
+        Debug.Log($"[ShareController] Start: UseKinect={UseKinect}, KinectAudioSender.Instance={(KinectAudioSender.Instance == null ? "null" : KinectAudioSender.Instance.GetInstanceID().ToString())}");
 
         submitButton.onClick.AddListener(OnSubmit);
         micButton.onClick.AddListener(OnMicToggle);
@@ -156,6 +157,7 @@ public class ShareController : MonoBehaviour
 
     void ConnectWebSocket()
     {
+        Debug.LogWarning($"[ShareController] ConnectWebSocket（內建麥克風備用路徑）被呼叫！UseKinect 應該是 true 才對，這裡開了額外的 /ws/stt。frameCount={Time.frameCount}");
         // session_id 讓後端 /session/{id}/control 知道要把治療師的暫停/繼續等
         // 指令轉發到哪一條連線（見 app/ws_registry.py），比照 GameController.ConnectWebSocket。
         string sessionId = PlayerPrefs.GetString("session_id", "");
