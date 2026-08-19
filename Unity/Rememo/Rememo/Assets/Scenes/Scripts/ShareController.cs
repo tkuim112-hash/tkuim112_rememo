@@ -57,6 +57,7 @@ public class ShareController : MonoBehaviour
     private string displayedText = "";
     private string closingFullText = "";
     private List<string> closingAudioUris;
+    private Coroutine typingCoroutine;
     private Coroutine replayCoroutine;
     private bool isWaitingForStt = false;
     private bool isPaused = false;
@@ -239,6 +240,7 @@ public class ShareController : MonoBehaviour
     {
         isRecording = true;
 
+        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
         displayedText  = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -381,9 +383,11 @@ public class ShareController : MonoBehaviour
 
         if (msg.type != "transcript") return;
 
-        // 長者不會在畫面上看到辨識出的文字，只在背後記錄下來供送出心得時使用；
-        // inputText 維持 StartRecording/StopRecording 設的「錄音中...」「辨識中...」狀態。
-        displayedText = msg.text;
+        // 逐字動畫顯示辨識結果
+        if (typingCoroutine != null)
+            StopCoroutine(typingCoroutine);
+        typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
+
         if (msg.isFinal)
         {
             OnSttFinal();
@@ -402,13 +406,37 @@ public class ShareController : MonoBehaviour
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        inputText.text = "辨識完成，請按送出";
         RefreshSubmitButton();
     }
 
     void RefreshSubmitButton()
     {
         submitButton.interactable = !isRecording && !isWaitingForStt && !isPaused;
+    }
+
+    // ── 逐字打字動畫（像 Google 語音輸入） ──
+
+    IEnumerator TypeCharByChar(string target)
+    {
+        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+
+        // 若 target 是 displayedText 的延伸，只打出新增的部分
+        if (target.StartsWith(displayedText))
+        {
+            for (int i = displayedText.Length; i <= target.Length; i++)
+            {
+                string partial = target.Substring(0, i);
+                inputText.text = partial;
+                displayedText  = partial;
+                yield return new WaitForSeconds(charInterval);
+            }
+        }
+        else
+        {
+            // 文字差異較大（interim 結果改寫），直接替換
+            inputText.text = target;
+            displayedText  = target;
+        }
     }
 
     IEnumerator PostTranscript(string text)

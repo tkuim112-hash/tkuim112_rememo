@@ -38,6 +38,8 @@ public class GameController : MonoBehaviour
     public KinectAudioSender kinectAudioSender;
     [Tooltip("拖入場景中的 KinectSensorSender；若留空則不追蹤反應時間")]
     public KinectSensorSender kinectSensorSender;
+    [Tooltip("拖入場景中的 HandCursorRemapper；治療師端暫停/繼續時用來鎖定/解鎖手部游標")]
+    public HandCursorRemapper handCursorRemapper;
 
     [Header("WebSocket STT 設定（內建麥克風模式用）")]
     public string sttServerUrl = "wss://api.re-memo.com/ws/stt";
@@ -312,6 +314,7 @@ public class GameController : MonoBehaviour
                     micButton.interactable = false;
                     submitButton.interactable = false;
                     if (replayButton != null) replayButton.interactable = false;
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(true);
                     break;
                 case "resume":
                     isPaused = false;
@@ -319,6 +322,7 @@ public class GameController : MonoBehaviour
                     micButton.interactable = true;
                     if (replayButton != null) replayButton.interactable = true;
                     StartReactionTimeout();
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "end":
                     Application.Quit();
