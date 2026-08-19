@@ -30,6 +30,27 @@ router = APIRouter(prefix="/session", tags=["session"])
 _ACTIVE_INITIAL_TTL = 180
 _ACTIVE_HEARTBEAT_TTL = 30
 
+# 跟 orchestrator.py 的 _NO_RESPONSE_MARKER 同一個字串（GameController.cs 的
+# NoResponseMarker），長者反應逾時自動送出時填的佔位內容，不是長者真的說的話。
+# _generate_story_summary／_generate_round_summary 要把這種「幾乎沒有實質內容」
+# 的回合排除掉，不然 LLM 收到空蕩蕩的內容還是會被要求生出摘要，容易編造出
+# 長者根本沒說過的細節（見這兩支函式內的說明）。
+_NO_RESPONSE_MARKER = "（長者未回應）"
+_MIN_SUMMARIZABLE_LEN = 6  # 少於這個字數視同沒有實質內容，不夠摘要
+
+
+def _has_substantive_content(text: str | None) -> bool:
+    if not text:
+        return False
+    # patient_response 可能是同一回合多次回應用換行接起來的（見 _save_round_
+    # response），不能整段一起判斷：同回合裡如果某一題 30 秒逾時被自動送出
+    # 「（長者未回應）」、但另一題長者有真的回答，還是要算有實質內容，不能
+    # 因為剛好有一行是未回應標記就把整個回合都當成沒有內容而濾掉。
+    return any(
+        len(line.strip()) >= _MIN_SUMMARIZABLE_LEN and _NO_RESPONSE_MARKER not in line
+        for line in text.split("\n")
+    )
+
 
 def _to_int(val) -> int | None:
     try:
@@ -1021,22 +1042,33 @@ async def _generate_story_summary(llm_service, db: AsyncSession, session_id: str
             )
         ).scalars().all()
 
+        # 只收錄長者真的有實質回答的回合——generated_scene 是 AI 呈現給長者看的
+        # 引導畫面文字，不是長者說的話，不能單獨拿來充當「長者分享的內容」；
+        # 如果這回合長者沒有實質回答，連同該回合的場景說明一起跳過，避免 LLM
+        # 誤把 AI 寫的情境當成長者自己講的故事。
         parts = []
         for rnd in rounds:
+            if not _has_substantive_content(rnd.patient_response):
+                continue
             label = "心得" if rnd.type == "心得" else f"第{rnd.round_number}回合"
             if rnd.generated_scene:
-                parts.append(f"【{label}｜場景】{rnd.generated_scene}")
-            if rnd.patient_response:
-                parts.append(f"【{label}｜長者所說】{rnd.patient_response}")
+                parts.append(f"【{label}｜AI呈現的情境（僅供參考背景，不是長者說的話）】{rnd.generated_scene}")
+            parts.append(f"【{label}｜長者實際所說】{rnd.patient_response}")
         if not parts:
             return ""
         transcript = "\n".join(parts)
 
         messages = [
-            {"role": "system", "content": "你是懷舊療法的紀錄整理助手，負責把一場療程的對話內容整理成簡短的故事摘要，給治療師和家屬快速了解今天聊了什麼。"},
+            {"role": "system", "content": (
+                "你是懷舊療法的紀錄整理助手，負責把一場療程的對話內容整理成簡短的故事摘要，"
+                "給治療師和家屬快速了解今天聊了什麼。你只能根據標記【長者實際所說】的內容摘要，"
+                "標記【AI呈現的情境】的段落只是背景參考、不是長者說的話，絕對不能當成長者的發言寫進摘要。"
+                "禁止編造逐字稿裡沒有出現過的具體細節、人名、地點或事件。"
+            )},
             {"role": "user", "content": (
-                f"以下是今天療程的場景與長者發言記錄：\n\n{transcript}\n\n"
-                "請用100字以內、第三人稱、溫暖但客觀的語氣，摘要長者今天分享的回憶內容與整體狀態。"
+                f"以下是今天療程的記錄：\n\n{transcript}\n\n"
+                "請用100字以內、第三人稱、溫暖但客觀的語氣，只根據長者實際所說的內容摘要他今天分享的回憶與整體狀態。"
+                "如果長者實際所說的內容很少、講得很簡短籠統，摘要也要如實反映內容有限，不要延伸編造沒說過的細節。"
                 "只回摘要文字，不要其他說明。"
             )},
         ]
@@ -1053,7 +1085,11 @@ async def _generate_round_summary(llm_service, patient_response: str) -> str:
     （HistorySessionView.tsx）會 fallback 顯示原文，不影響評估寫入本身。"""
     try:
         messages = [
-            {"role": "system", "content": "你是懷舊療法的紀錄整理助手，負責把長者在一個回合裡的發言整理成一句話重點摘要，給治療師快速瀏覽。"},
+            {"role": "system", "content": (
+                "你是懷舊療法的紀錄整理助手，負責把長者在一個回合裡的發言整理成一句話重點摘要，"
+                "給治療師快速瀏覽。只能根據下面實際提供的內容摘要，禁止編造內容裡沒有出現過的"
+                "具體細節、人名、地點或事件。"
+            )},
             {"role": "user", "content": (
                 f"長者這個回合說的話：\n{patient_response}\n\n"
                 "請用20字以內、第三人稱的一句話摘要重點，只回摘要文字本身，不要加任何說明或標點以外的內容。"
@@ -1085,6 +1121,12 @@ async def _generate_and_save_round_summaries(llm_service, db: AsyncSession, sess
                 .where(TherapyRound.patient_response.is_not(None))
             )
         ).scalars().all()
+        # SQL 只能濾掉 NULL，「（長者未回應）」佔位字串跟內容太短（幾乎沒有
+        # 實質內容）這兩種情況要在這裡濾掉，不然 LLM 拿到空蕩蕩的內容還是會
+        # 被逼著生出一句摘要，容易編造長者根本沒說過的細節（見 _has_substantive_
+        # content 說明）。這些回合就讓 rounds.summary 留空，前端會 fallback
+        # 顯示原文（例如「（長者未回應）」），比生一句編出來的假摘要誠實。
+        rounds = [rnd for rnd in rounds if _has_substantive_content(rnd.patient_response)]
         if not rounds:
             return
 
