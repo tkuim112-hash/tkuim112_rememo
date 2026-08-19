@@ -497,6 +497,12 @@ class SessionState(BaseModel):
     # 範圍時直接複用，不用重複分類。同樣需要宣告在這裡才能透過 API 往返存活，
     # 理由同上面 question_count/supplement_count 的說明。
     topic_category: str | None = None
+    # 情境2成立、且主題是sub_item granularity時分類出的子項目（見
+    # orchestrator.py _classify_pre_image_sub_item、get_scenario2_
+    # followup 的 excluded_fields 說明）。同樣需要宣告在這裡才能透過 API
+    # 往返存活，否則 pre_image_q2 情境2分支第二輪起讀到的 sub_item 永遠是
+    # None，等於白分類一次、排除規則沒生效。
+    pre_image_sub_item: str | None = None
     # start_round 一開始就撈好的 RAG 候選記憶（見 orchestrator.py
     # _retrieve_candidate_memories），供 _start_scene_after_detail 需要
     # RAG fallback 時直接讀，不用重新查一次。同樣需要宣告在這裡才能透過
@@ -544,6 +550,17 @@ class SessionState(BaseModel):
     # 等欄位都踩過同一個坑，見上面說明）。
     last_sense_asked: str = ""
     skipped_senses: list[str] = []
+    # 生圖前Q2「情境2（缺維度，直接問缺的那個W）」的輪次追蹤（見
+    # orchestrator.py process_response 的 pre_image_q2 分支、
+    # get_scenario2_followup）。同樣必須宣告在這裡才能透過 API 往返存活，
+    # 否則會被 FastAPI 驗證悄悄丟棄——踩的是跟上面這幾個欄位同一個坑：
+    # scenario 讀不到就永遠當情境1處理，情境1那條分支沒有輪數上限保護，
+    # 疊加 _detect_pre_image_w_coverage 本身非決定性、W維度判斷結果會飄動，
+    # 會導致單回合一路追問下去、卡在第1回合出不去。
+    pre_image_q2_scenario: int = 1
+    pre_image_q2_round: int = 1
+    pre_image_q2_max_rounds: int = 1
+    pre_image_q2_last_w: str = ""
 
 
 class RespondRequest(BaseModel):
@@ -828,6 +845,7 @@ async def session_control(
     request: Request,
     session_id: str,
     body: ControlPayload,
+    db: AsyncSession = Depends(get_db),
     therapist_id: int = Depends(get_current_therapist_id),
 ):
     """
@@ -861,6 +879,17 @@ async def session_control(
             patient_id = json.loads(meta_raw).get("patient_id")
             if patient_id:
                 await r.delete(f"patient:{patient_id}:active")
+        # 治療師提前手動結束（長者可能還沒念到心得回合），/closing 那條
+        # 自動寫入路徑不會被觸發——這裡補上，讓評估分數與 status="completed"
+        # 一定會落地，治療師隨後在 /activity/{id}/end 頁面看到的才是真實
+        # 數據而不是前端的預設分數。若長者剛好已經正常走完心得，
+        # _compute_and_save_assessment 早就算過一次並清掉 Redis stats，
+        # 這裡重複呼叫會因為讀不到 stats 而丟 404，直接吞掉即可（不是
+        # 錯誤，是正常的「已經結束過了」）。
+        try:
+            await _compute_and_save_assessment(request, session_id, db, therapist_id)
+        except HTTPException as e:
+            print(f"[Control] end 觸發評估略過: {e.detail}")
     return {"ok": True, "delivered": delivered}
 
 
