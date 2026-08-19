@@ -66,7 +66,7 @@ export default function DashboardPage() {
       {/* 頂部導覽列 */}
       <nav className="bg-white rounded-2xl shadow-sm px-8 py-5 flex items-center justify-between">
         <span className="text-[25px] font-medium text-[#1a1a1a] tracking-tight">
-          {displayInstitution}　{displayName} 
+          {displayInstitution}
         </span>
         <div className="flex items-center gap-4">
           <Link
