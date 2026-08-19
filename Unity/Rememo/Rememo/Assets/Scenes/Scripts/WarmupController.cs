@@ -8,7 +8,7 @@ public class WarmupController : MonoBehaviour
     [Header("後端設定")]
     public string backendUrl = "https://api.re-memo.com";
     [Tooltip("校正完成後，等治療師按下「啟動療程」，每隔幾秒 poll 一次後端狀態")]
-    public float therapistPollInterval = 2f;
+    public float therapistPollInterval = 0.5f;
 
     [Header("UI 元件")]
     public Image statusBadge;
