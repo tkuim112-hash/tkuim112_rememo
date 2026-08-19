@@ -30,7 +30,9 @@ class STTService:
         self.model = settings.stt_model
         self.client = httpx.AsyncClient(timeout=120.0)
 
-    async def transcribe_file(self, audio_path: str | Path, language: str = "zh") -> str:
+    async def transcribe_file(
+        self, audio_path: str | Path, language: str = "zh", model: str | None = None
+    ) -> str:
         """
         從檔案路徑轉錄一段音訊。
         """
@@ -41,9 +43,10 @@ class STTService:
         with open(audio_path, "rb") as f:
             files = {"file": (audio_path.name, f, "audio/wav")}
             data = {
-                "model": self.model,
+                "model": model or self.model,
                 "language": language,
                 "response_format": "json",
+                "vad_filter": "true",
             }
             response = await self.client.post(
                 f"{self.host}/v1/audio/transcriptions",
@@ -60,20 +63,28 @@ class STTService:
         audio_bytes: bytes,
         filename: str = "audio.wav",
         language: str = "zh",
+        model: str | None = None,
+        timeout: float | None = None,
     ) -> str:
         """
         從 bytes 轉錄一段音訊。
+
+        timeout: 覆蓋預設的 120 秒逾時。模型第一次被叫到時 faster-whisper-server
+        要現場從 HuggingFace 下載+載入，可能遠超過 120 秒，暖機呼叫要帶長一點的值。
         """
         files = {"file": (filename, audio_bytes, "audio/wav")}
         data = {
-            "model": self.model,
+            "model": model or self.model,
             "language": language,
             "response_format": "json",
+            "vad_filter": "true",
         }
+        extra = {"timeout": timeout} if timeout is not None else {}
         response = await self.client.post(
             f"{self.host}/v1/audio/transcriptions",
             files=files,
             data=data,
+            **extra,
         )
         response.raise_for_status()
         text = response.json()["text"]

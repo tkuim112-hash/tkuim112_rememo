@@ -21,6 +21,7 @@ services:
       # sessions.date）算出來的「今天」會比台灣時間慢 8 小時，半夜測試
       # 容易記成前一天。明確指定台灣時區，跟長者/治療師實際感受的日期一致。
       - TZ=Asia/Taipei
+      - PYTHONUNBUFFERED=1  # 沒設的話 print() 會卡在 buffer 裡，docker logs 看不到即時輸出
     env_file:
       - .env
     restart: unless-stopped
@@ -108,9 +109,10 @@ services:
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib
       - MODEL_ID=OpenFormosa/BlueMagpie-TTS
       - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
-      - CFG_VALUE=2.8
-      - INFER_STEPS=9
-      - TARGET_RATE=4.5
+      - CFG_VALUE=2.0
+      - INFER_STEPS=10
+      - TARGET_RATE=4.0
+      - TTS_SEED=42
       # 要用你自己的聲音：
       - SPEAKER_CENTROID_PT=/workspace/references/Peichi_centroid.pt
     volumes:
@@ -216,6 +218,10 @@ services:
     container_name: tku-care-kinect-1
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
+    volumes:
+      # 沒掛volume的話容器一重啟(重開機/更新映像)模型就要重新從HuggingFace下載一次，
+      # 測試/demo當下網路不穩會很致命；掛上去讓 base 跟 STT_MODEL_FINAL 都只下載一次。
+      - ./models/whisper_cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:

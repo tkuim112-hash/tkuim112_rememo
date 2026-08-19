@@ -31,6 +31,8 @@ SPEAKER_CENTROID_PT = os.environ.get(
 )
 CFG_VALUE   = float(os.environ.get("CFG_VALUE", "2.5"))
 INFER_STEPS = int(os.environ.get("INFER_STEPS", "10"))
+TTS_SEED    = os.environ.get("TTS_SEED")
+REFERENCE_WAV_PATH = os.environ.get("REFERENCE_WAV_PATH", "")
 
 
 def load_model(model_id: str, model_dir: str):
@@ -93,7 +95,7 @@ def rubberband_stretch(audio: np.ndarray, sample_rate: int, n_chars: int) -> np.
         if abs(current_rate - TARGET_RATE) / TARGET_RATE < 0.15:
             return audio
         time_ratio = TARGET_RATE / current_rate  # <1 拉慢，>1 加快（pyrubberband rate 越高越快）
-        time_ratio = max(0.85, min(1.4, time_ratio))
+        time_ratio = max(0.65, min(1.4, time_ratio))
         logger.info(f"Rubberband: {current_rate:.2f} -> {TARGET_RATE:.2f} 字/秒 (ratio={time_ratio:.2f}x)")
         stretched = rb.time_stretch(audio.astype(np.float64), sample_rate, time_ratio)
         return stretched.astype(np.float32)
@@ -186,10 +188,15 @@ def _synthesize_with_centroid(text: str, centroid):
     n = count_cjk(text)
     cfg = 3.0 if n <= 25 else CFG_VALUE
 
+    # 固定 seed：讓每次生成的取樣軌跡一致，避免同一語者向量卻聽起來像不同人
+    if TTS_SEED is not None:
+        torch.manual_seed(int(TTS_SEED))
+
     # 暖機：在前面加句號讓模型先穩定，生完後截掉前 0.3 秒的暖機音訊
     audio = bm_model.generate(
         target_text="。" + text,
         speaker_centroid=centroid,
+        reference_wav_path=REFERENCE_WAV_PATH,
         cfg_value=cfg,
         inference_timesteps=INFER_STEPS,
         max_len=2000,

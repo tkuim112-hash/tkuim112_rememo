@@ -51,6 +51,19 @@ public class HandCursorRemapper : MonoBehaviour
     private Vector2 _lastGoalPos;
     private int _untrackedFrames = 0;
 
+    // 治療師端暫停旗標：鎖定期間游標每幀強制釘在左下角起始位置、完全不讀手部座標，
+    // 直到治療師端送出繼續（SetLocked(false)）才解除
+    private bool _locked = false;
+
+    /// <summary>
+    /// 由治療師端的暫停/繼續指令呼叫（見 GameController 的 pause/resume）。
+    /// 鎖定時游標立即歸位並停在起始位置，不再跟隨手部；解除鎖定後才恢復正常追蹤。
+    /// </summary>
+    public void SetLocked(bool locked)
+    {
+        _locked = locked;
+    }
+
     void Start()
     {
         _rect = GetComponent<RectTransform>();
@@ -78,6 +91,20 @@ public class HandCursorRemapper : MonoBehaviour
         if (_canvas == null) return;
         Vector2 canvasSize = _canvas.GetComponent<RectTransform>().sizeDelta;
         Vector2 cornerPos = GetCornerPos(canvasSize);
+
+        // ── 治療師端暫停中：完全不讀手部座標，直接釘在起始位置 ──────
+        if (_locked)
+        {
+            _isActive = false;
+            _waitingForLower = false;
+            _untrackedFrames = 0;
+            _lastGoalPos = cornerPos;
+            _smoothedPos = cornerPos;
+            _initialized = true;
+            _rect.anchoredPosition = cornerPos;
+            return;
+        }
+
         Vector2 goalPos = cornerPos;
 
         // ── 這些是「非瞬斷」狀態，直接視為手放下並重置一切 ──────

@@ -360,6 +360,7 @@ MonoBehaviour:
   photoDisplay: {fileID: 1056907271}
   kinectAudioSender: {fileID: 1034624761}
   kinectSensorSender: {fileID: 1034624762}
+  handCursorRemapper: {fileID: 1525525773}
   sttServerUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
   maxRecordSeconds: 60
