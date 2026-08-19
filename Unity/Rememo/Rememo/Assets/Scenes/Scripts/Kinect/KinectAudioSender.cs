@@ -2,11 +2,25 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using WebSocketSharp;
 using Windows.Kinect;
 
 public class KinectAudioSender : MonoBehaviour
 {
+    // 跨場景 singleton：STT WebSocket 的連線耗時（見 ConnectWebSocket）遠比單一場景的
+    // 生命週期長，若每個場景各自建立/銷毀一份，長者一進場景就按麥克風會撞上「還沒連上」
+    // 的空窗期（2026-08 稽核已實測到）。改成從 WarmupScene 建立、靠 DontDestroyOnLoad
+    // 撐過 InstructionScene／GameScene-1／LoadingScene／ShareScene 這整段流程，直到
+    // 流程外的場景（ThankYouScene 等）載入才自我銷毀、關閉連線，下個病患的 WarmupScene
+    // 再重新建一份、換新的 session_id。
+    public static KinectAudioSender Instance { get; private set; }
+
+    private static readonly HashSet<string> KeepAliveScenes = new HashSet<string>
+    {
+        "WarmupScene", "InstructionScene", "GameScene-1", "LoadingScene", "ShareScene",
+    };
+
     [Header("WebSocket 設定")]
     public string sttUrl = "wss://api.re-memo.com/ws/stt";
 
@@ -42,9 +56,33 @@ public class KinectAudioSender : MonoBehaviour
     private int                   _pitchBufPos  = 0;
     private readonly Queue<float> _pitchHistory  = new Queue<float>();
 
+    void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            // 場景裡自己拖進去的那份是重複的舊寫法殘留：這裡自我銷毀，Start() 就
+            // 不會再跑第二次，不會開出第二條 STT WebSocket。GameController 等消費端
+            // 的 Inspector 欄位會在 Destroy 後變成 Unity 的 fake-null，靠各自 Start()
+            // 裡的 KinectAudioSender.Instance 備援取得真正活著的那份。
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
     void Start()
     {
         ConnectWebSocket();
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        // 離開整段「校正→說明→遊戲→分享」流程（例如轉場到 ThankYouScene）就代表這場
+        // 療程結束，銷毀自己、關掉連線；下個病患進 WarmupScene 時 Awake() 會重新建一份。
+        if (!KeepAliveScenes.Contains(scene.name))
+            Destroy(gameObject);
     }
 
     void ConnectWebSocket()
@@ -238,6 +276,8 @@ public class KinectAudioSender : MonoBehaviour
 
     void OnDestroy()
     {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+        if (Instance == this) Instance = null;
         isQuitting = true;
         audioReader?.Dispose();
         audioReader = null;

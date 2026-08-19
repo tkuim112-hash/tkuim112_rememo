@@ -80,6 +80,10 @@ public class ShareController : MonoBehaviour
 
     void Start()
     {
+        // Inspector 拖的那份若是場景本地的重複物件，會在 KinectAudioSender.Awake()
+        // 自我銷毀（見該檔案的 singleton 說明），這裡退回抓真正跨場景存活的那份。
+        if (kinectAudioSender == null) kinectAudioSender = KinectAudioSender.Instance;
+
         submitButton.onClick.AddListener(OnSubmit);
         micButton.onClick.AddListener(OnMicToggle);
         replayButton.onClick.AddListener(OnReplay);
