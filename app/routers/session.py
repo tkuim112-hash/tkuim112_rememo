@@ -1294,6 +1294,9 @@ async def session_respond(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
             emotion=emotion,
+            on_generating_image=lambda: ws_registry.send_control(
+                body.state.session_id, "generating_image"
+            ),
         )
 
         if result.get("image_path"):
