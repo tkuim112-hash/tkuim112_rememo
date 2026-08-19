@@ -126,7 +126,9 @@ export function HistorySessionView({
                {/* 場景名稱（小字）+ 長者回應內容（大字） */}
                <div className="flex flex-col gap-0.5">
                  <span className="text-[13px] text-[#888]">{round.sceneName}</span> {/* 場景名稱 */}
-                 <span className="text-[16px] text-[#1a1a1a]">{round.content}</span> {/* 長者的回應或行動 */}
+                 <span className="text-[16px] text-[#1a1a1a] whitespace-pre-line">
+                   {round.summary || round.content} {/* 優先顯示 LLM 生成的一句話摘要，沒有才 fallback 顯示長者原話（例如舊資料還沒補摘要） */}
+                 </span>
                </div>
              </div>
 

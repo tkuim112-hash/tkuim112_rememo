@@ -60,6 +60,7 @@ export interface SessionRound {
   duration: number;
   sceneName: string;
   content: string;
+  summary?: string;
   emotion: string;
   exchanges?: RoundExchange[];
   sceneImage?: string;
