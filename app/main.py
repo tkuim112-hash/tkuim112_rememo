@@ -3,7 +3,10 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import asyncio
+import io
 import subprocess
+import wave
 import anyio
 import redis.asyncio as aioredis
 from config import settings
@@ -19,12 +22,39 @@ from orchestrator import TherapyOrchestrator
 from routers import ws_stt, ws_calibration, session, sensor, auth, patient
 
 
+def _silent_wav_bytes(seconds: float = 0.5, sample_rate: int = 16000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(b"\x00\x00" * int(sample_rate * seconds))
+    return buf.getvalue()
+
+
+async def _warmup_stt(stt_service: STTService) -> None:
+    """啟動時先打一次 stt_model_final，讓 faster-whisper-server 提前下載/載入模型，
+    避免今天測試時第一次 isFinal 轉錄卡在下載模型上（模型有幾GB，第一次載入慢）。
+    失敗不影響服務啟動，最終轉錄失敗時仍會由 ws_stt.py 的例外處理接住。"""
+    try:
+        await stt_service.transcribe_bytes(
+            _silent_wav_bytes(),
+            filename="warmup.wav",
+            model=settings.stt_model_final,
+            timeout=600.0,  # 第一次要現場下載+載入模型(幾GB)，120秒的預設值不夠
+        )
+        print(f"✅ STT 最終模型（{settings.stt_model_final}）暖機完成")
+    except Exception as e:
+        print(f"⚠️  STT 最終模型暖機失敗（不影響啟動，第一次真正轉錄時會重試）: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 啟動服務...")
     app.state.redis              = aioredis.from_url(settings.redis_url, decode_responses=True)
     app.state.llm_service        = LLMService()
     app.state.stt_service        = STTService()
+    asyncio.create_task(_warmup_stt(app.state.stt_service))
     app.state.tts_service        = TTSService()  
     app.state.user_profile       = DBUserProfileClient()
     app.state.deidentifier       = Deidentifier()
@@ -142,10 +172,15 @@ async def test_llm(request: Request, prompt: str = "請用繁體中文回答:你
 
 
 @app.post("/test/stt")
-async def test_stt(request: Request, file: UploadFile = File(...)):
+async def test_stt(request: Request, file: UploadFile = File(...), final: bool = False):
+    """final=true 時用 stt_model_final（BELLE-2，isFinal 用的準確度優先模型）
+    測試，不加則跟 interim 一樣用預設的快模型。"""
     audio_bytes = await file.read()
-    text = await request.app.state.stt_service.transcribe_bytes(audio_bytes, filename=file.filename)
-    return {"filename": file.filename, "transcript": text}
+    model = settings.stt_model_final if final else None
+    text = await request.app.state.stt_service.transcribe_bytes(
+        audio_bytes, filename=file.filename, model=model
+    )
+    return {"filename": file.filename, "model": model or settings.stt_model, "transcript": text}
 
 
 @app.get("/test/user/{user_id}")

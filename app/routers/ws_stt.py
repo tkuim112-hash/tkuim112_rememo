@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import update
 
 from auth import get_therapist_id_from_ws_token
+from config import settings
 from db.models import TherapySession
 from db.session import AsyncSessionLocal
 import ws_registry
@@ -126,7 +127,11 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
                     ended = True
                     if len(audio_buf) > SAMPLE_RATE * 2 * 0.3:
                         wav = _pcm_to_wav(bytes(audio_buf))
-                        text = await stt_service.transcribe_bytes(wav)
+                        # 最終結果會存進資料庫、餵給 LLM，準確度優先於速度，
+                        # 用中文微調過的模型；interim 預覽文字才用預設的快模型。
+                        text = await stt_service.transcribe_bytes(
+                            wav, model=settings.stt_model_final
+                        )
                         await websocket.send_json(
                             {"type": "transcript", "text": text, "isFinal": True}
                         )
