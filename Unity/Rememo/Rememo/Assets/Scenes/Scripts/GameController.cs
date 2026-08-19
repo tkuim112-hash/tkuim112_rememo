@@ -38,6 +38,8 @@ public class GameController : MonoBehaviour
     public KinectAudioSender kinectAudioSender;
     [Tooltip("拖入場景中的 KinectSensorSender；若留空則不追蹤反應時間")]
     public KinectSensorSender kinectSensorSender;
+    [Tooltip("拖入場景中的 HandCursorRemapper；治療師端暫停/繼續時用來鎖定/解鎖手部游標")]
+    public HandCursorRemapper handCursorRemapper;
 
     [Header("WebSocket STT 設定（內建麥克風模式用）")]
     public string sttServerUrl = "wss://api.re-memo.com/ws/stt";
@@ -196,20 +198,14 @@ public class GameController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
-        // 逾時前都沒收到任何 transcript 訊息，displayedText 還是空的：代表整段
-        // 錄音沒辨識到任何內容，見 OnSttFinal 的 noSpeechRecognized 說明。
-        OnSttFinal(noSpeechRecognized: string.IsNullOrEmpty(displayedText));
+        OnSttFinal();
     }
 
-    void OnSttFinal(bool noSpeechRecognized = false)
+    void OnSttFinal()
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        // 沒辨識到任何內容時，把卡住的「辨識中...」換成「辨識完成」，不要留著
-        // 讓長者/治療師誤以為還在辨識；真的有辨識到文字的情況完全不動這裡，
-        // 文字框已經在 HandleSTTMessage 被實際辨識結果蓋過了。
-        if (noSpeechRecognized)
-            inputText.text = "辨識完成";
+        inputText.text = "辨識完成，請按送出";
         RefreshSubmitButton();
     }
 
@@ -318,6 +314,7 @@ public class GameController : MonoBehaviour
                     micButton.interactable = false;
                     submitButton.interactable = false;
                     if (replayButton != null) replayButton.interactable = false;
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(true);
                     break;
                 case "resume":
                     isPaused = false;
@@ -325,6 +322,7 @@ public class GameController : MonoBehaviour
                     micButton.interactable = true;
                     if (replayButton != null) replayButton.interactable = true;
                     StartReactionTimeout();
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "end":
                     Application.Quit();
@@ -334,16 +332,15 @@ public class GameController : MonoBehaviour
         }
 
         if (msg.type != "transcript") return;
+        // 長者不會在畫面上看到辨識出的文字，只在背後記錄下來供送出時使用；
+        // inputText 維持 StartRecording/StopRecording 設的「錄音中...」「辨識中...」狀態，
+        // 直到 OnSttFinal 換成「辨識完成，請按送出」。
         bool hasText = !string.IsNullOrWhiteSpace(msg.text);
         if (hasText)
-        {
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            inputText.text = msg.text;
-            displayedText  = msg.text;
-        }
+            displayedText = msg.text;
         if (msg.isFinal)
         {
-            OnSttFinal(noSpeechRecognized: !hasText);
+            OnSttFinal();
             if (hasText)
                 StartCoroutine(PostTranscript(msg.text));
         }
