@@ -42,8 +42,14 @@ _MIN_SUMMARIZABLE_LEN = 6  # 少於這個字數視同沒有實質內容，不夠
 def _has_substantive_content(text: str | None) -> bool:
     if not text:
         return False
-    stripped = text.strip()
-    return len(stripped) >= _MIN_SUMMARIZABLE_LEN and _NO_RESPONSE_MARKER not in stripped
+    # patient_response 可能是同一回合多次回應用換行接起來的（見 _save_round_
+    # response），不能整段一起判斷：同回合裡如果某一題 30 秒逾時被自動送出
+    # 「（長者未回應）」、但另一題長者有真的回答，還是要算有實質內容，不能
+    # 因為剛好有一行是未回應標記就把整個回合都當成沒有內容而濾掉。
+    return any(
+        len(line.strip()) >= _MIN_SUMMARIZABLE_LEN and _NO_RESPONSE_MARKER not in line
+        for line in text.split("\n")
+    )
 
 
 def _to_int(val) -> int | None:
