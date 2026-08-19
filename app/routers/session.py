@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import uuid
@@ -970,6 +971,59 @@ async def _generate_story_summary(llm_service, db: AsyncSession, session_id: str
         return ""
 
 
+async def _generate_round_summary(llm_service, patient_response: str) -> str:
+    """把單一回合裡長者的完整發言整理成一句話重點摘要，給歷史療程「各回合紀錄」
+    列表快速瀏覽用，避免把長者原話整段堆在畫面上。失敗回傳空字串，呼叫端
+    （HistorySessionView.tsx）會 fallback 顯示原文，不影響評估寫入本身。"""
+    try:
+        messages = [
+            {"role": "system", "content": "你是懷舊療法的紀錄整理助手，負責把長者在一個回合裡的發言整理成一句話重點摘要，給治療師快速瀏覽。"},
+            {"role": "user", "content": (
+                f"長者這個回合說的話：\n{patient_response}\n\n"
+                "請用20字以內、第三人稱的一句話摘要重點，只回摘要文字本身，不要加任何說明或標點以外的內容。"
+            )},
+        ]
+        summary = await llm_service.chat(messages, temperature=0.3)
+        return summary.strip()
+    except Exception as e:
+        print(f"[LLM] round_summary 生成失敗（不影響評估寫入）: {e}")
+        return ""
+
+
+async def _generate_and_save_round_summaries(llm_service, db: AsyncSession, session_id: str) -> None:
+    """療程結束、評估分數算完時，順便幫每個有長者發言的回合（不含心得回合，
+    心得本身另有彈窗顯示原文，不需要摘要）各生成一句話摘要並寫回 rounds.summary。
+    這支獨立於 _compute_and_save_assessment 的主要交易之外呼叫，失敗只印 log，
+    不影響評估分數已經寫入成功這件事。"""
+    try:
+        session_row = (
+            await db.execute(select(TherapySession).where(TherapySession.session_uuid == session_id))
+        ).scalar_one_or_none()
+        if session_row is None:
+            return
+        rounds = (
+            await db.execute(
+                select(TherapyRound)
+                .where(TherapyRound.session_id == session_row.id)
+                .where(TherapyRound.type.is_(None) | (TherapyRound.type != "心得"))
+                .where(TherapyRound.patient_response.is_not(None))
+            )
+        ).scalars().all()
+        if not rounds:
+            return
+
+        summaries = await asyncio.gather(
+            *(_generate_round_summary(llm_service, rnd.patient_response) for rnd in rounds)
+        )
+        for rnd, summary in zip(rounds, summaries):
+            if summary:
+                rnd.summary = summary
+        await db.commit()
+    except Exception as e:
+        print(f"[LLM] 回合摘要批次生成失敗（不影響評估寫入）: {e}")
+        await db.rollback()
+
+
 async def _compute_and_save_assessment(
     request: Request,
     session_id: str,
@@ -1084,6 +1138,7 @@ async def _compute_and_save_assessment(
             action="generate_assessment",
             resource=f"session:{session_id}",
         )
+        await _generate_and_save_round_summaries(request.app.state.llm_service, db, session_id)
 
         # DB 寫入成功後清除所有 session Redis key
         await r.delete(

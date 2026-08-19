@@ -73,6 +73,9 @@ public class ShareController : MonoBehaviour
     [System.Serializable]
     private class ClosingResponse { public bool ok; public string closing_message; }
 
+    [System.Serializable]
+    private class TextPayload { public string text; }
+
     private bool UseKinect => kinectAudioSender != null;
 
     void Start()
@@ -211,7 +214,10 @@ public class ShareController : MonoBehaviour
 
     IEnumerator PostClosingAnswer(string sessionId, string text, System.Action<string> onMessage)
     {
-        byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
+        // JsonUtility.ToJson 不支援直接序列化裸字串（只能序列化 [Serializable]
+        // 物件），對字串呼叫會回傳 "{}"，導致送出的 JSON 變成 {"text":{}}，
+        // 後端 Pydantic 驗證型別不符直接 422。要包成物件再序列化。
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/closing", "POST");
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
@@ -273,7 +279,10 @@ public class ShareController : MonoBehaviour
     {
         isRecording = false;
         isWaitingForStt = true;
-        inputText.text  = "辨識中...";
+        // 錄音中若已經收到中間辨識結果（逐字動畫已經把長者的原話打上去），
+        // 就不要蓋掉；只有完全還沒辨識到任何內容時才顯示「辨識中...」。
+        if (string.IsNullOrEmpty(displayedText))
+            inputText.text = "辨識中...";
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
         if (micButtonImage != null) micButtonImage.color = Color.white;
         RefreshSubmitButton();
@@ -443,7 +452,10 @@ public class ShareController : MonoBehaviour
     {
         string sessionId = PlayerPrefs.GetString("session_id", "");
         if (string.IsNullOrEmpty(sessionId)) yield break;
-        byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
+        // JsonUtility.ToJson 不支援直接序列化裸字串（只能序列化 [Serializable]
+        // 物件），對字串呼叫會回傳 "{}"，導致送出的 JSON 變成 {"text":{}}，
+        // 後端 Pydantic 驗證型別不符直接 422。要包成物件再序列化。
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/response", "POST");
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
