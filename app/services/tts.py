@@ -8,6 +8,7 @@ synthesize_edge：改用 edge-tts（微軟雲端 TTS，HsiaoYu 台灣女聲）�
 binary（不依賴容器另外裝系統 ffmpeg）轉成 Unity LocalAudioPlayer.cs 用
 AudioType.WAV 解碼所需的 wav 格式。
 """
+import asyncio
 import subprocess
 from pathlib import Path
 
@@ -82,7 +83,13 @@ class TTSService:
         communicate = edge_tts.Communicate(text, _EDGE_VOICE, rate=_EDGE_RATE)
         await communicate.save(str(mp3_path))
         try:
-            subprocess.run(
+            # subprocess.run 是同步阻塞呼叫，會整個卡住 asyncio event loop，
+            # 導致這段期間 Unity 端 /session/{id}/status polling 完全排不到隊，
+            # 一路卡到轉檔完才有回應（2026-08-19 稽核發現：這是治療師按下啟動療程後，
+            # 長者端沒有馬上跳轉到說明頁的根因）。丟到 thread pool 執行，
+            # 不要佔用主事件迴圈。
+            await asyncio.to_thread(
+                subprocess.run,
                 [_FFMPEG, "-y", "-i", str(mp3_path), "-ar", "24000", "-ac", "1", str(filepath)],
                 check=True, capture_output=True,
             )
