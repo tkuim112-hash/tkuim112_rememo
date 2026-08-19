@@ -280,6 +280,13 @@ def _pre_image_q2_round_cap(covered_w: list[str]) -> int:
 # 承接語本來就不該有括號註解，清掉不會誤傷正常輸出。
 _LEAK_BRACKET_RE = re.compile(r"[（(][^）)]*[）)]")
 
+# 2026-08-19稽核（使用者實測後補）：上面 _LEAK_BRACKET_RE 要求開閉括號成對
+# 出現才會清掉，但本地模型偶爾會把輸出截斷在開括號之後、沒生成對應的閉括號
+# （實測案例：「你們在車庫烤肉時，都會準備哪些食材？（」），這種孤立的開括號
+# 逃過上面的配對正則，直接殘留在送給長者的問題裡。這裡補一條：清掉字串結尾
+# 找不到對應閉括號的開括號（含開括號後面到結尾的殘餘文字）。
+_UNMATCHED_LEAK_BRACKET_RE = re.compile(r"[（(][^）)]*$")
+
 # 2026-08-18稽核（使用者提案，實測後補）：本地弱模型偶爾會忘記在「問題：」
 # 那一行結尾換行，直接接著寫「本回合已涵蓋的W：...」，導致下面各支 parser
 # 逐行解析（raw.splitlines()）時，因為兩個欄位擠在同一行、沒有真正的換行
@@ -862,7 +869,8 @@ _NO_RESPONSE_MARKER = "（長者未回應）"
 _GIVE_UP_KEYWORDS = ["不記得", "不知道", "忘了", "忘記了", "不清楚", "沒印象"]
 
 def _strip_leaked_brackets(text: str) -> str:
-    return _LEAK_BRACKET_RE.sub("", text).strip()
+    text = _LEAK_BRACKET_RE.sub("", text).strip()
+    return _UNMATCHED_LEAK_BRACKET_RE.sub("", text).strip()
 
 
 # STEP3補問保底問句：target_w 已知時，比起完全通用的「讓你想到什麼？」，
