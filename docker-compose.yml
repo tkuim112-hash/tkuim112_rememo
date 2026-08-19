@@ -218,6 +218,13 @@ services:
     container_name: tku-care-kinect-1
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
+      - WHISPER__TTL=-1  # 模型常駐，不閒置卸載；BELLE 微調模型冷啟動要 10 分鐘以上，
+                         # 中途被卸載重載會讓 /ws/stt 最終辨識逾時、整條連線被打斷（見
+                         # app/routers/ws_stt.py 的逾時例外處理）。
+                         # 注意：這個 image 的 PRELOAD_MODELS 設定只會預先註冊模型名稱、
+                         # 不會真的載入權重（見 model_manager.py），所以沒有加在這裡；
+                         # 真正把權重載進 GPU 是靠 app 容器啟動時的暖機呼叫
+                         # （app/main.py _warmup_stt），常駐則靠這裡的 ttl=-1。
     volumes:
       # 沒掛volume的話容器一重啟(重開機/更新映像)模型就要重新從HuggingFace下載一次，
       # 測試/demo當下網路不穩會很致命；掛上去讓 base 跟 STT_MODEL_FINAL 都只下載一次。

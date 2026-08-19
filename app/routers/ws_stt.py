@@ -129,8 +129,12 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
                         wav = _pcm_to_wav(bytes(audio_buf))
                         # 最終結果會存進資料庫、餵給 LLM，準確度優先於速度，
                         # 用中文微調過的模型；interim 預覽文字才用預設的快模型。
+                        # timeout 拉長：BELLE 現在雖然靠 PRELOAD_MODELS+WHISPER__TTL=-1
+                        # 常駐在 kinect-svc，但萬一它重啟又要冷啟動（可能超過10分鐘），
+                        # 預設 120 秒的 httpx timeout 會讓這裡拋例外、把整條 WebSocket
+                        # 連線打斷（見本函式外層 except），辨識文字就永遠送不到後端。
                         text = await stt_service.transcribe_bytes(
-                            wav, model=settings.stt_model_final
+                            wav, model=settings.stt_model_final, timeout=600.0
                         )
                         await websocket.send_json(
                             {"type": "transcript", "text": text, "isFinal": True}

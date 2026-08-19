@@ -33,19 +33,31 @@ def _silent_wav_bytes(seconds: float = 0.5, sample_rate: int = 16000) -> bytes:
 
 
 async def _warmup_stt(stt_service: STTService) -> None:
-    """啟動時先打一次 stt_model_final，讓 faster-whisper-server 提前下載/載入模型，
-    避免今天測試時第一次 isFinal 轉錄卡在下載模型上（模型有幾GB，第一次載入慢）。
-    失敗不影響服務啟動，最終轉錄失敗時仍會由 ws_stt.py 的例外處理接住。"""
-    try:
-        await stt_service.transcribe_bytes(
-            _silent_wav_bytes(),
-            filename="warmup.wav",
-            model=settings.stt_model_final,
-            timeout=600.0,  # 第一次要現場下載+載入模型(幾GB)，120秒的預設值不夠
-        )
-        print(f"✅ STT 最終模型（{settings.stt_model_final}）暖機完成")
-    except Exception as e:
-        print(f"⚠️  STT 最終模型暖機失敗（不影響啟動，第一次真正轉錄時會重試）: {e}")
+    """啟動時依序真的打一次 interim（快模型）和 final（BELLE 微調模型）的轉錄，
+    把權重逼進 kinect-svc 的 GPU 記憶體。faster-whisper-server 的 PRELOAD_MODELS
+    設定只會預先註冊模型名稱、不會真的呼叫 _load()（見其 model_manager.py，
+    權重要等第一次真正有請求 __enter__ 時才載入），所以只能靠實際送一次轉錄
+    請求來暖機；搭配 docker-compose.yml 的 WHISPER__TTL=-1，載入後就會常駐、
+    不會再閒置卸載。
+
+    這裡會擋住 app 啟動完成（lifespan 裡是 await，不是 fire-and-forget），
+    確保對外開放連線時 STT 真的已經可用——kinect-svc 容器可能比這個容器晚
+    就緒，用重試等它連得上；BELLE 第一次冷啟動可能超過 10 分鐘，單次呼叫給
+    600 秒逾時。多次重試後仍失敗就放棄，不擋死整個服務啟動。"""
+    silent = _silent_wav_bytes()
+    for model_name in (settings.stt_model, settings.stt_model_final):
+        for attempt in range(1, 31):  # 最多重試 30 次、每次間隔 5 秒（約 2.5 分鐘）等 kinect-svc 就緒
+            try:
+                await stt_service.transcribe_bytes(
+                    silent, filename="warmup.wav", model=model_name, timeout=600.0,
+                )
+                print(f"✅ STT 模型（{model_name}）暖機完成")
+                break
+            except Exception as e:
+                if attempt >= 30:
+                    print(f"⚠️  STT 模型（{model_name}）暖機重試 {attempt} 次後放棄（不影響啟動，第一次真正轉錄時會重試）: {e}")
+                    break
+                await asyncio.sleep(5)
 
 
 @asynccontextmanager
@@ -54,7 +66,7 @@ async def lifespan(app: FastAPI):
     app.state.redis              = aioredis.from_url(settings.redis_url, decode_responses=True)
     app.state.llm_service        = LLMService()
     app.state.stt_service        = STTService()
-    asyncio.create_task(_warmup_stt(app.state.stt_service))
+    await _warmup_stt(app.state.stt_service)
     app.state.tts_service        = TTSService()  
     app.state.user_profile       = DBUserProfileClient()
     app.state.deidentifier       = Deidentifier()
