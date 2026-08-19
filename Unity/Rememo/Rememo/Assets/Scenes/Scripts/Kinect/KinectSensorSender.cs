@@ -65,11 +65,6 @@ public class KinectSensorSender : MonoBehaviour
 
     void Start()
     {
-        // Inspector 拖的那份若是場景本地的重複物件，會在 KinectAudioSender.Awake()
-        // 自我銷毀（見該檔案的 singleton 說明），這裡退回抓真正跨場景存活的那份，
-        // 否則 audioSender 會變成 Unity 的 fake-null，RMS/音高變異一律讀成 0。
-        if (audioSender == null) audioSender = KinectAudioSender.Instance;
-
         kinectManager = KinectManager.Instance;
         sensor = KinectSensor.GetDefault();
         if (sensor == null) { Debug.LogError("[Emotion] 找不到 Kinect 感測器"); return; }

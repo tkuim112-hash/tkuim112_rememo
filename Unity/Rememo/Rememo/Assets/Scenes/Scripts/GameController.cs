@@ -100,11 +100,6 @@ public class GameController : MonoBehaviour
         string sharedSessionId = PlayerPrefs.GetString("session_id", "");
         if (!string.IsNullOrEmpty(sharedSessionId)) sessionId = sharedSessionId;
 
-        // Inspector 拖的那份若是場景本地的重複物件，會在 KinectAudioSender.Awake()
-        // 自我銷毀（見該檔案的 singleton 說明），這裡退回抓真正跨場景存活的那份。
-        if (kinectAudioSender == null) kinectAudioSender = KinectAudioSender.Instance;
-        Debug.Log($"[GameController] Start: UseKinect={UseKinect}, KinectAudioSender.Instance={(KinectAudioSender.Instance == null ? "null" : KinectAudioSender.Instance.GetInstanceID().ToString())}");
-
         submitButton.onClick.AddListener(OnSubmit);
         if (micButton != null) micButton.onClick.AddListener(OnMicToggle);
         if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);
@@ -137,7 +132,6 @@ public class GameController : MonoBehaviour
 
     void ConnectWebSocket()
     {
-        Debug.LogWarning($"[GameController] ConnectWebSocket（內建麥克風備用路徑）被呼叫！UseKinect 應該是 true 才對，這裡開了第二條 /ws/stt。thisFrameCount={Time.frameCount}");
         // session_id 讓後端 /session/{id}/control 知道要把治療師的重播/跳過/暫停/繼續
         // 指令轉發到哪一條連線（見 app/ws_registry.py）。
         string url = string.IsNullOrEmpty(sessionId) ? sttServerUrl : $"{sttServerUrl}?session_id={sessionId}";

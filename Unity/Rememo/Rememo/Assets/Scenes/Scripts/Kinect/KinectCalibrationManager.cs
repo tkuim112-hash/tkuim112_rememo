@@ -64,10 +64,6 @@ public class KinectCalibrationManager : MonoBehaviour
 
     void Start()
     {
-        // WarmupScene 通常是這條連線的起點（見 KinectAudioSender 的 singleton 說明），
-        // 但保留備援以防場景配置調整、這裡的 Inspector 欄位沒有指到真正存活的那份。
-        if (audioSender == null) audioSender = KinectAudioSender.Instance;
-
         kinectManager = KinectManager.Instance;
         sensorSender = GetComponent<KinectSensorSender>();
 
