@@ -3,6 +3,20 @@ import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { logAccess } from "@/lib/audit";
 
+// 這支路由的 id 參數有兩種來源：從個案頁「歷次活動」清單點進來的是 PostgreSQL
+// 內部整數 sessions.id；從「活動觀察頁面」（治療師端即時療程）結束時帶過來的
+// 是 Python 後端用的 UUID session_uuid（見 LiveSessionView.tsx 的 sessionId）。
+// parseInt() 對 UUID 字串只會取到開頭數字（例如 "157fcc28-..." 變成 157），
+// 查到完全不相關的 row，導致這條路徑一直悄悄查不到資料/存不進去卻沒有報錯。
+// 兩種都要認得，用是否為純數字判斷要查哪個欄位；tableAlias 因為 PUT 的
+// UPDATE 語句沒有下 alias、GET 的 SELECT 有下 "s"，兩邊欄位前綴不一樣。
+function sessionIdWhereClause(id: string, tableAlias = "") {
+  const col = tableAlias ? `${tableAlias}.` : "";
+  return /^\d+$/.test(id)
+    ? sql`${sql.unsafe(col)}id = ${parseInt(id)}`
+    : sql`${sql.unsafe(col)}session_uuid = ${id}`;
+}
+
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
@@ -24,7 +38,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       score_endurance      = ${scoreEndurance ?? null},
       score_emotion        = ${scoreEmotion ?? null},
       score_interaction    = ${scoreInteraction ?? null}
-    WHERE id = ${parseInt(id)}
+    WHERE ${sessionIdWhereClause(id)}
       AND patient_id IN (SELECT id FROM patients WHERE organization_id = ${session.organizationId})
     RETURNING patient_id
   `;
@@ -69,7 +83,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS avg_response_time
     FROM sessions s
     JOIN patients p ON p.id = s.patient_id
-    WHERE s.id = ${parseInt(id)}
+    WHERE ${sessionIdWhereClause(id, "s")}
       AND p.organization_id = ${session.organizationId}
   `;
 
