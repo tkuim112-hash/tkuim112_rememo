@@ -17,6 +17,7 @@ services:
       - db
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+      - PYTHONUNBUFFERED=1  # 沒設的話 print() 會卡在 buffer 裡，docker logs 看不到即時輸出
     env_file:
       - .env
     restart: unless-stopped
@@ -209,6 +210,10 @@ services:
     container_name: tku-care-kinect-1
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
+    volumes:
+      # 沒掛volume的話容器一重啟(重開機/更新映像)模型就要重新從HuggingFace下載一次，
+      # 測試/demo當下網路不穩會很致命；掛上去讓 base 跟 STT_MODEL_FINAL 都只下載一次。
+      - ./models/whisper_cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
