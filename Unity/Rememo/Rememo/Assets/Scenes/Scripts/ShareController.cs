@@ -279,7 +279,10 @@ public class ShareController : MonoBehaviour
     {
         isRecording = false;
         isWaitingForStt = true;
-        inputText.text  = "辨識中...";
+        // 錄音中若已經收到中間辨識結果（逐字動畫已經把長者的原話打上去），
+        // 就不要蓋掉；只有完全還沒辨識到任何內容時才顯示「辨識中...」。
+        if (string.IsNullOrEmpty(displayedText))
+            inputText.text = "辨識中...";
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
         if (micButtonImage != null) micButtonImage.color = Color.white;
         RefreshSubmitButton();
