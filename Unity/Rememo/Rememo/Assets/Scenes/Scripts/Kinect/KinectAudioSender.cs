@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using WebSocketSharp;
 using Windows.Kinect;
 
@@ -44,7 +45,12 @@ public class KinectAudioSender : MonoBehaviour
 
     void Start()
     {
-        ConnectWebSocket();
+        // 暖身頁面只需要 PollAudio() 算的本地 CurrentAudioRms/CurrentPitchVariance
+        // （KinectCalibrationManager 拿來建個人化音高門檻基準），用不到 STT，不建立
+        // /ws/stt 連線；離開暖身進 InstructionScene/GameScene-1 後，各自場景的
+        // KinectAudioSender 是獨立物件，Start() 會照常連線。
+        if (SceneManager.GetActiveScene().name != "WarmupScene")
+            ConnectWebSocket();
     }
 
     void ConnectWebSocket()
