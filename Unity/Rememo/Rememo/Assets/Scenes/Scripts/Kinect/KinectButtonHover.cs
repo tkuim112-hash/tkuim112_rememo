@@ -18,14 +18,6 @@ public class KinectButtonHover : MonoBehaviour
     // hoverDuration 秒後被系統自己再點一次「停止」，中間根本沒時間錄到語音
     // （2026-08 稽核：實測到回合1 STT 因此收到空白錄音）。
     private Button _justClickedButton = null;
-    // Kinect 手部追蹤本身會有單幀抖動，raycast 偶爾會在同一顆按鈕上短暫掃到
-    // hitButton==null 又立刻掃回來——如果只憑單一幀的「沒掃到」就解除上面的
-    // debounce，等於防呆完全沒用（長者手其實沒真的移開，抖一下就被當成「已離開」，
-    // 2秒後照樣又被自動點一次）。改成要連續離開累計滿 AwayDebounceTime 秒才真正
-    // 解除，過濾掉這種瞬間抖動（2026-08 稽核：實測到手沒移開卻仍收到空白錄音，
-    // 就是這個單幀判定漏洞造成的）。
-    private float _awayFromClickedTimer = 0f;
-    private const float AwayDebounceTime = 0.5f;
     private RectTransform _rt;
     private Canvas _canvas;
     private HandCursorRemapper _cursorRemapper;
@@ -79,54 +71,43 @@ public class KinectButtonHover : MonoBehaviour
             if (hitButton != null) break;
         }
 
-        if (hitButton == _justClickedButton && _justClickedButton != null)
+        if (hitButton != null && hitButton == _justClickedButton)
         {
             // 手還留在剛觸發過的按鈕上，先不要重新累計停留時間，避免同一次停留
-            // 又被自動判定成第二次點擊；等手移到別的按鈕或完全移開累計滿
-            // AwayDebounceTime 秒才解除。
-            _awayFromClickedTimer = 0f;
+            // 又被自動判定成第二次點擊；等手移到別的按鈕或完全移開才解除。
             ResetRing();
+        }
+        else if (hitButton != null)
+        {
+            _justClickedButton = null;
+            Debug.Log($"[Hover] 找到Button: {hitButton.gameObject.name}, timer:{_hoverTimer:F2}/{hoverDuration}");
+
+            // 切換目標時重置計時
+            if (_currentButton != hitButton)
+            {
+                ResetRing();
+                _currentButton = hitButton;
+                ShowRing(true);
+            }
+
+            _hoverTimer += Time.deltaTime;
+
+            if (progressRing != null)
+                progressRing.fillAmount = Mathf.Clamp01(_hoverTimer / hoverDuration);
+
+            if (_hoverTimer >= hoverDuration)
+            {
+                _justClickedButton = _currentButton;
+                _currentButton.onClick.Invoke();
+                ResetRing();
+                if (_cursorRemapper != null)
+                    _cursorRemapper.ResetToCorner();
+            }
         }
         else
         {
-            if (_justClickedButton != null)
-            {
-                _awayFromClickedTimer += Time.deltaTime;
-                if (_awayFromClickedTimer >= AwayDebounceTime)
-                    _justClickedButton = null;
-            }
-
-            if (hitButton != null)
-            {
-                Debug.Log($"[Hover] 找到Button: {hitButton.gameObject.name}, timer:{_hoverTimer:F2}/{hoverDuration}");
-
-                // 切換目標時重置計時
-                if (_currentButton != hitButton)
-                {
-                    ResetRing();
-                    _currentButton = hitButton;
-                    ShowRing(true);
-                }
-
-                _hoverTimer += Time.deltaTime;
-
-                if (progressRing != null)
-                    progressRing.fillAmount = Mathf.Clamp01(_hoverTimer / hoverDuration);
-
-                if (_hoverTimer >= hoverDuration && _justClickedButton == null)
-                {
-                    _justClickedButton = _currentButton;
-                    _awayFromClickedTimer = 0f;
-                    _currentButton.onClick.Invoke();
-                    ResetRing();
-                    if (_cursorRemapper != null)
-                        _cursorRemapper.ResetToCorner();
-                }
-            }
-            else
-            {
-                ResetRing();
-            }
+            _justClickedButton = null;
+            ResetRing();
         }
     }
 

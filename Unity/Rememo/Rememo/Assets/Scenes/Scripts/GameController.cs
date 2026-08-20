@@ -145,21 +145,8 @@ public class GameController : MonoBehaviour
         ws.ConnectAsync();
     }
 
-    // 麥克風鍵同時掛在兩條獨立的輸入路徑上：KinectButtonHover 的懸停模擬點擊，
-    // 跟 Unity 標準 EventSystem 的指標點擊（Editor 測試用滑鼠點、或其他指標裝置）。
-    // 兩者互不知道對方存在，若剛好在同一個操作裡都判定「已觸發」，OnMicToggle
-    // 會在幾乎同一時間被呼叫兩次，等於長者按一次麥克風卻被自動錄音又立刻停止
-    // （2026-08 稽核：實測到 StartSTT 只觸發一次、StopSTT 卻連續兩次，來源
-    // 分別是 KinectButtonHover.LateUpdate 和 EventSystem.Update）。用簡單的時間
-    // 防抖擋掉這種短時間內的重複觸發，不管觸發源是誰。
-    private float _lastMicToggleTime = -999f;
-    private const float MicToggleDebounce = 0.5f;
-
     void OnMicToggle()
     {
-        if (Time.time - _lastMicToggleTime < MicToggleDebounce) return;
-        _lastMicToggleTime = Time.time;
-
         if (!isRecording) StartRecording();
         else              StopRecording();
     }
