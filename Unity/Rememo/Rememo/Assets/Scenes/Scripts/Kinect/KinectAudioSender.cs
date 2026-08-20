@@ -35,6 +35,13 @@ public class KinectAudioSender : MonoBehaviour
     private bool isInitialized = false;
     private bool isSttActive = false;
 
+    // wsStt.ConnectAsync() 是非同步的，TLS handshake 到 wss://api.re-memo.com 可能要幾百
+    // ms～數秒；若這段期間就按下/放開麥克風，start/end 控制訊框過去是直接被
+    // SendSttControl 的 ReadyState 檢查吞掉、永遠不會補送，尤其漏掉 end 會讓後端永遠
+    // 收不到「結束」訊號、不會跑最終辨識——這正是回合1（GameScene-1 剛載入、連線才剛
+    // 起步）常常「接不到 STT」的成因。改成沒 Open 就先記下來，OnOpen 時補送一次。
+    private volatile string _pendingControl = null;
+
     // Pitch detection（B 階段）
     private const int KINECT_AUDIO_SAMPLE_RATE = 16000;
     private const int PITCH_BUF_SIZE           = 512;   // 32ms @ 16 kHz
@@ -63,7 +70,16 @@ public class KinectAudioSender : MonoBehaviour
         string url = string.IsNullOrEmpty(sessionId) ? sttUrl : $"{sttUrl}?session_id={sessionId}";
         wsStt = new WebSocket(AuthService.AppendToken(url));
         wsStt.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
-        wsStt.OnOpen    += (s, e) => Debug.Log("[STT WS Kinect] 已連線");
+        wsStt.OnOpen    += (s, e) =>
+        {
+            Debug.Log("[STT WS Kinect] 已連線");
+            string pending = _pendingControl;
+            if (pending != null)
+            {
+                _pendingControl = null;
+                wsStt.SendAsync($"{{\"type\":\"{pending}\"}}", null);
+            }
+        };
         wsStt.OnError   += (s, e) => { Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}"); needsReconnect = true; };
         wsStt.OnClose   += (s, e) => { Debug.Log("[STT WS Kinect] 已關閉"); if (!isQuitting) needsReconnect = true; };
         wsStt.OnMessage += (s, e) => { if (e.IsText) OnSttMessage?.Invoke(e.Data); };
@@ -91,6 +107,8 @@ public class KinectAudioSender : MonoBehaviour
     {
         if (wsStt?.ReadyState == WebSocketState.Open)
             wsStt.SendAsync($"{{\"type\":\"{type}\"}}", null);
+        else
+            _pendingControl = type;
     }
 
     private void TryInitAudio()
@@ -173,10 +191,18 @@ public class KinectAudioSender : MonoBehaviour
                 audioAccumulator.Write(int16Buffer, 0, int16Buffer.Length);
                 if (audioAccumulator.Length >= CHUNK_SIZE)
                 {
-                    if (isSttActive && wsStt?.ReadyState == WebSocketState.Open)
+                    if (!isSttActive)
+                    {
+                        // 沒在錄音（麥克風沒按著），這段資料本來就不會送，直接丟棄。
+                        audioAccumulator.SetLength(0);
+                    }
+                    else if (wsStt?.ReadyState == WebSocketState.Open)
+                    {
                         wsStt.SendAsync(audioAccumulator.ToArray(), null);
-
-                    audioAccumulator.SetLength(0);
+                        audioAccumulator.SetLength(0);
+                    }
+                    // else：正在錄音但連線還沒 Open（見 _pendingControl 的註解）——保留
+                    // 累積的音訊，等連線一 Open 下一輪 PollAudio 自然會補送，不會漏字。
                 }
             }
             frame.Dispose();
