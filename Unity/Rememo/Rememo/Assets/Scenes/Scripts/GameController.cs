@@ -64,8 +64,6 @@ public class GameController : MonoBehaviour
     private bool hasSpeechInput = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
-    private Coroutine reactionTimeoutCoroutine;
-    private readonly WaitForSeconds reactionTimeoutWait = new WaitForSeconds(30f);
     private const string NoResponseMarker = "（長者未回應）";
     private readonly Queue<string> incomingMessages = new Queue<string>();
     private readonly object queueLock = new object();
@@ -155,7 +153,6 @@ public class GameController : MonoBehaviour
 
     void StartRecording()
     {
-        CancelReactionTimeout();
         isRecording = true;
         hasSpeechInput = true;
         displayedText = "";
@@ -308,14 +305,12 @@ public class GameController : MonoBehaviour
                     break;
                 case "skip_scene":
                     // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
-                    // 沿用 ReactionTimeout 逾時時同樣的忙碌判斷，避免跟錄音/送出中互撞。
-                    CancelReactionTimeout();
+                    // 避免跟錄音/送出中互撞。
                     if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused)
                         StartCoroutine(AutoSubmitNoResponse());
                     break;
                 case "pause":
                     isPaused = true;
-                    CancelReactionTimeout();
                     micButton.interactable = false;
                     submitButton.interactable = false;
                     if (replayButton != null) replayButton.interactable = false;
@@ -326,7 +321,6 @@ public class GameController : MonoBehaviour
                     RefreshSubmitButton();
                     micButton.interactable = true;
                     if (replayButton != null) replayButton.interactable = true;
-                    StartReactionTimeout();
                     if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "end":
@@ -442,9 +436,7 @@ public class GameController : MonoBehaviour
             new[] { resp.question_audio_key }));
 
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, StartReactionTimeout));
-        else
-            StartReactionTimeout();
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -480,18 +472,6 @@ public class GameController : MonoBehaviour
         if (audioSource == null || audioSource.clip == null) return;
         audioSource.Stop();
         audioSource.Play();
-        // 長者/治療師主動要求再聽一次，代表這回合還在互動中，沉默逾時（30秒未按
-        // 麥克風就視同未回應）要從這次重播「播完」後重新算，不能沿用重播前剩下的
-        // 秒數，也不能在重播音檔都還沒放完時就開始倒數（見 WaitReplayThenStartReactionTimeout）。
-        CancelReactionTimeout();
-        reactionTimeoutCoroutine = StartCoroutine(WaitReplayThenStartReactionTimeout());
-    }
-
-    IEnumerator WaitReplayThenStartReactionTimeout()
-    {
-        yield return new WaitForSeconds(audioSource.clip.length);
-        reactionTimeoutCoroutine = null;
-        StartReactionTimeout();
     }
 
     void OnSubmit()
@@ -502,7 +482,6 @@ public class GameController : MonoBehaviour
 
     IEnumerator ProcessSubmit()
     {
-        CancelReactionTimeout();
         isSubmitting = true;
         if (isRecording) StopRecording();
         isWaitingForStt = false;
@@ -599,9 +578,7 @@ public class GameController : MonoBehaviour
             new[] { resp.question_audio_key }));
 
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, StartReactionTimeout));
-        else
-            StartReactionTimeout();
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
     }
 
     static string JoinAudioKeys(string[] keys)
@@ -610,30 +587,7 @@ public class GameController : MonoBehaviour
         return string.Join("|", keys);
     }
 
-    // ─── 反應逾時（長者聽完問題30秒沒按麥克風）────────────────────────
-
-    void CancelReactionTimeout()
-    {
-        if (reactionTimeoutCoroutine != null)
-        {
-            StopCoroutine(reactionTimeoutCoroutine);
-            reactionTimeoutCoroutine = null;
-        }
-    }
-
-    void StartReactionTimeout()
-    {
-        CancelReactionTimeout();
-        reactionTimeoutCoroutine = StartCoroutine(ReactionTimeout());
-    }
-
-    IEnumerator ReactionTimeout()
-    {
-        yield return reactionTimeoutWait;
-        reactionTimeoutCoroutine = null;
-        if (isRecording || isWaitingForStt || isSubmitting || isPaused) yield break;
-        StartCoroutine(AutoSubmitNoResponse());
-    }
+    // ─── 長者未回應（治療師端「跳過」觸發，見 skip_scene）───────────────
 
     IEnumerator AutoSubmitNoResponse()
     {
