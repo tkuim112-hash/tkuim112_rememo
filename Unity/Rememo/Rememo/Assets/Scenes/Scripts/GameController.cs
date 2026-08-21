@@ -425,7 +425,10 @@ public class GameController : MonoBehaviour
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
 
-        StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
+        // /session/start 回傳時 image_path 一定是空字串（見 StartRound 下方註解），
+        // 圖片要等長者答完生圖前引導問題、/session/respond 才第一次真的生出來。
+        if (!string.IsNullOrEmpty(resp.image_path))
+            StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
 
         var uris = new List<string>();
         uris.AddRange(LocalAudioPlayer.BuildUris(
