@@ -4236,7 +4236,19 @@ class TherapyOrchestrator:
         跟長者的家鄉/職業/興趣都沒有直接對應時，硬選一個容易逼出勉強拼湊的畫面
         （例如把主題硬套進職業場景）。允許LLM回答「都不是」，改用主題本身在那個
         年代真實會有的情境挑元素，不強求要跟長者的家鄉/職業/興趣掛勾。
+
+        2026-08-21：今日主題跟【興趣】欄位裡某個項目字面完全對得上時（例如主題
+        「音樂」對興趣「音樂、運動、咖啡」），不再交給LLM猜——temperature=0只
+        保證同樣輸入會得到一致答案，不保證答案正確，實測遇到字面完全命中的情況
+        還是穩定猜成hometown，生出跟主題毫無關聯的畫面。這種字面精準命中的情況
+        用程式判斷直接鎖定interest，不需要LLM介入判斷。
         """
+        if user.get("preferences"):
+            pref_items = [p.strip() for p in re.split(r"[、,，/\s]+", user["preferences"]) if p.strip()]
+            today_topic = user["today_topic"]
+            if any(item in today_topic or today_topic in item for item in pref_items):
+                return "interest"
+
         choice_map = {"A": "hometown", "B": "occupation"}
         options = [
             "A：家鄉／成長地／故鄉生活",
