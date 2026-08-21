@@ -61,6 +61,8 @@ public class ShareController : MonoBehaviour
     private Coroutine replayCoroutine;
     private bool isWaitingForStt = false;
     private bool isPaused = false;
+    private bool isTyping = false;
+    private bool hasRecordedOnce = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
 
@@ -85,6 +87,11 @@ public class ShareController : MonoBehaviour
         replayButton.onClick.AddListener(OnReplay);
         ResetInputText();
         LoadClosingText();
+        // 場景檔裡 SubmitButton 的 Interactable 預設是打勾的，RefreshSubmitButton
+        // 又只在錄音/暫停/動畫等事件才會被呼叫，不主動呼叫一次的話，長者一進畫面
+        // 什麼都還沒說，「送出故事」就已經按得下去。這裡先按 hasRecordedOnce=false
+        // 的狀態關掉它，逼長者至少錄過一次音、辨識完成才能送出。
+        RefreshSubmitButton();
 
         if (UseKinect)
             // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/重播/結束
@@ -247,6 +254,7 @@ public class ShareController : MonoBehaviour
         isRecording = true;
 
         if (typingCoroutine != null) StopCoroutine(typingCoroutine);
+        isTyping = false;
         displayedText  = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -411,6 +419,13 @@ public class ShareController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
+        // 逾時仍沒收到真正的 isFinal，直接把 label 換成固定文案（比照
+        // GameController.cs 的 OnSttFinal 作法），避免畫面卡在「辨識中...」
+        // 但按鈕已經因為 hasRecordedOnce=true 打開的矛盾狀態。停掉還在跑的
+        // 逐字動畫，不然它之後恢復執行會把這行文案蓋掉。
+        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
+        isTyping = false;
+        inputText.text = "辨識完成，請按送出";
         OnSttFinal();
     }
 
@@ -418,18 +433,27 @@ public class ShareController : MonoBehaviour
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
+        hasRecordedOnce = true;
         RefreshSubmitButton();
     }
 
     void RefreshSubmitButton()
     {
-        submitButton.interactable = !isRecording && !isWaitingForStt && !isPaused;
+        // hasRecordedOnce：一定要錄過一次音、辨識完成過才能送出，避免長者一進畫面
+        // 什麼都沒說就直接按下「送出故事」。
+        // isTyping：isFinal 一到就會 RefreshSubmitButton，但逐字動畫是非同步跑的，
+        // 沒有這個條件的話按鈕會在動畫還沒把最終結果完整打出來前就先亮起，
+        // 這時候按下送出，SubmitClosing 讀到的 displayedText 只會是動畫跑到一半的
+        // 半截文字，不是完整的最終辨識結果。
+        submitButton.interactable =
+            hasRecordedOnce && !isRecording && !isWaitingForStt && !isPaused && !isTyping;
     }
 
     // ── 逐字打字動畫（像 Google 語音輸入） ──
 
     IEnumerator TypeCharByChar(string target)
     {
+        isTyping = true;
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
 
         // 若 target 是 displayedText 的延伸，只打出新增的部分
@@ -449,6 +473,9 @@ public class ShareController : MonoBehaviour
             inputText.text = target;
             displayedText  = target;
         }
+
+        isTyping = false;
+        RefreshSubmitButton();
     }
 
     IEnumerator PostTranscript(string text)
