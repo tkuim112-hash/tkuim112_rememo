@@ -183,7 +183,7 @@ public class UserSelectController : MonoBehaviour
         yield return StartCoroutine(SessionService.FetchPendingSession(
             backendUrl,
             patientId.ToString(),
-            sessionId => PlayerPrefs.SetString("session_id", sessionId),
+            sessionId => AuthSession.SessionId = sessionId,
             error => Debug.LogWarning(error)
         ));
 

@@ -154,7 +154,7 @@ public class ShareController : MonoBehaviour
     {
         // session_id 讓後端 /session/{id}/control 知道要把治療師的暫停/繼續等
         // 指令轉發到哪一條連線（見 app/ws_registry.py），比照 GameController.ConnectWebSocket。
-        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string sessionId = AuthSession.SessionId ?? "";
         string url = string.IsNullOrEmpty(sessionId) ? serverUrl : $"{serverUrl}?session_id={sessionId}";
         ws = new WebSocket(AuthService.AppendToken(url));
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
@@ -193,7 +193,7 @@ public class ShareController : MonoBehaviour
         submitButton.interactable = false;
         if (micButton != null) micButton.interactable = false;
 
-        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string sessionId = AuthSession.SessionId ?? "";
         string closingMessage = "";
         string answerText = string.IsNullOrWhiteSpace(displayedText) ? "" : displayedText;
         if (!string.IsNullOrEmpty(sessionId))
@@ -453,7 +453,7 @@ public class ShareController : MonoBehaviour
 
     IEnumerator PostTranscript(string text)
     {
-        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string sessionId = AuthSession.SessionId ?? "";
         if (string.IsNullOrEmpty(sessionId)) yield break;
         // JsonUtility.ToJson 不支援直接序列化裸字串（只能序列化 [Serializable]
         // 物件），對字串呼叫會回傳 "{}"，導致送出的 JSON 變成 {"text":{}}，

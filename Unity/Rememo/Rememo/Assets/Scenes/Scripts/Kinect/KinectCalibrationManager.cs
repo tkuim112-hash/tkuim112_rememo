@@ -72,10 +72,10 @@ public class KinectCalibrationManager : MonoBehaviour
 
         SetStatus(false);
 
-        // session_id 必須在 PlayerPrefs 中（由前一個 Scene 建立），才能讓後端把校正基準與本次療程綁定
-        sessionId = PlayerPrefs.GetString("session_id", "");
+        // session_id 必須已經在 AuthSession 中（由前一個 Scene 建立），才能讓後端把校正基準與本次療程綁定
+        sessionId = AuthSession.SessionId ?? "";
         if (string.IsNullOrEmpty(sessionId))
-            Debug.LogWarning("[Calibration] PlayerPrefs 中無 session_id，校正基準將無法存入 Redis");
+            Debug.LogWarning("[Calibration] AuthSession 中無 session_id，校正基準將無法存入 Redis");
         string wsUrl = string.IsNullOrEmpty(sessionId)
             ? calibrationUrl
             : $"{calibrationUrl}?session_id={sessionId}";

@@ -192,7 +192,7 @@ public class KinectSensorSender : MonoBehaviour
             // ── 組合 payload 送後端分類 ─────────────────────────────
             string sid = gameController != null
                 ? gameController.sessionId
-                : PlayerPrefs.GetString("session_id", "unknown");
+                : (AuthSession.SessionId ?? "unknown");
             var payload = new SensorPayload
             {
                 session_id             = sid,

@@ -95,7 +95,7 @@ public class GameController : MonoBehaviour
 
         // 跟 WarmupScene 的 KinectCalibrationManager 用同一組 session_id（由 SessionService
         // 在 UserSelectScene 選定病患時換好），校正資料才會跟這次療程的對話記錄綁在一起。
-        string sharedSessionId = PlayerPrefs.GetString("session_id", "");
+        string sharedSessionId = AuthSession.SessionId ?? "";
         if (!string.IsNullOrEmpty(sharedSessionId)) sessionId = sharedSessionId;
 
         submitButton.onClick.AddListener(OnSubmit);
@@ -541,7 +541,7 @@ public class GameController : MonoBehaviour
             PlayerPrefs.SetString("ClosingSceneAudioKeys", JoinAudioKeys(resp.scene_audio_keys));
             PlayerPrefs.SetString("ClosingThanksAudioKeys", JoinAudioKeys(resp.thanks_audio_keys));
             PlayerPrefs.SetString("ClosingQuestionAudioKeys", JoinAudioKeys(resp.question_audio_keys));
-            PlayerPrefs.SetString("session_id", sessionId);
+            AuthSession.SessionId = sessionId;
             PlayerPrefs.SetString("NextScene", "ShareScene");
             currentRound = 1;
             SceneManager.LoadScene("LoadingScene");

@@ -22,7 +22,7 @@ public class WarmupController : MonoBehaviour
 
     void Start()
     {
-        sessionId = PlayerPrefs.GetString("session_id", "");
+        sessionId = AuthSession.SessionId ?? "";
         calibrationManager = Object.FindFirstObjectByType<KinectCalibrationManager>();
         StartCoroutine(WaitForCalibrationThenTherapistStart());
     }

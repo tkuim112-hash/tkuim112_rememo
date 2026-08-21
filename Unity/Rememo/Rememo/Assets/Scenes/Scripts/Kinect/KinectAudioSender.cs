@@ -37,10 +37,14 @@ public class KinectAudioSender : MonoBehaviour
 
     // wsStt.ConnectAsync() 是非同步的，TLS handshake 到 wss://api.re-memo.com 可能要幾百
     // ms～數秒；若這段期間就按下/放開麥克風，start/end 控制訊框過去是直接被
-    // SendSttControl 的 ReadyState 檢查吞掉、永遠不會補送，尤其漏掉 end 會讓後端永遠
-    // 收不到「結束」訊號、不會跑最終辨識——這正是回合1（GameScene-1 剛載入、連線才剛
-    // 起步）常常「接不到 STT」的成因。改成沒 Open 就先記下來，OnOpen 時補送一次。
-    private volatile string _pendingControl = null;
+    // SendSttControl 的 ReadyState 檢查吞掉、永遠不會補送——這正是回合1（GameScene-1
+    // 剛載入、連線才剛起步）常常「接不到 STT」的成因。原本只用一個 string 記最後一次
+    // 沒送出去的訊框，若在連線Open前「按下又很快放開」，start會被後來的end直接蓋掉、
+    // 憑空消失，後端從頭到尾收不到start、audio_buf沒清空基準，最終end來的時候
+    // 音量不到門檻，連transcript都不會回——2026-08-21改成兩個獨立旗標，start跟end
+    // 都能分別記住、OnOpen時依序（start先、end後）補送，不會互相蓋掉。
+    private volatile bool _pendingStart = false;
+    private volatile bool _pendingEnd = false;
 
     // Pitch detection（B 階段）
     private const int KINECT_AUDIO_SAMPLE_RATE = 16000;
@@ -64,20 +68,26 @@ public class KinectAudioSender : MonoBehaviour
     {
         // session_id 讓後端 /session/{id}/control 知道要把治療師的重播/跳過/暫停/繼續
         // 指令轉發到哪一條連線（見 app/ws_registry.py）。跟 GameController 各自從
-        // PlayerPrefs 讀，不靠 GameController 賦值，避免兩個 MonoBehaviour 的
+        // AuthSession 讀，不靠 GameController 賦值，避免兩個 MonoBehaviour 的
         // Start() 執行順序不保證先後而漏帶 session_id。
-        string sessionId = PlayerPrefs.GetString("session_id", "");
+        string sessionId = AuthSession.SessionId ?? "";
         string url = string.IsNullOrEmpty(sessionId) ? sttUrl : $"{sttUrl}?session_id={sessionId}";
         wsStt = new WebSocket(AuthService.AppendToken(url));
         wsStt.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         wsStt.OnOpen    += (s, e) =>
         {
             Debug.Log("[STT WS Kinect] 已連線");
-            string pending = _pendingControl;
-            if (pending != null)
+            // 依序補送，start要先於end，順序對後端才有意義（見上面_pendingStart/
+            // _pendingEnd宣告處的說明）。
+            if (_pendingStart)
             {
-                _pendingControl = null;
-                wsStt.SendAsync($"{{\"type\":\"{pending}\"}}", null);
+                _pendingStart = false;
+                wsStt.SendAsync("{\"type\":\"start\"}", null);
+            }
+            if (_pendingEnd)
+            {
+                _pendingEnd = false;
+                wsStt.SendAsync("{\"type\":\"end\"}", null);
             }
         };
         wsStt.OnError   += (s, e) => { Debug.LogError($"[STT WS Kinect] 錯誤: {e.Message}"); needsReconnect = true; };
@@ -106,9 +116,17 @@ public class KinectAudioSender : MonoBehaviour
     private void SendSttControl(string type)
     {
         if (wsStt?.ReadyState == WebSocketState.Open)
+        {
             wsStt.SendAsync($"{{\"type\":\"{type}\"}}", null);
-        else
-            _pendingControl = type;
+        }
+        else if (type == "start")
+        {
+            _pendingStart = true;
+        }
+        else if (type == "end")
+        {
+            _pendingEnd = true;
+        }
     }
 
     private void TryInitAudio()
@@ -191,9 +209,14 @@ public class KinectAudioSender : MonoBehaviour
                 audioAccumulator.Write(int16Buffer, 0, int16Buffer.Length);
                 if (audioAccumulator.Length >= CHUNK_SIZE)
                 {
-                    if (!isSttActive)
+                    // 只有「沒在錄音、而且也沒有還沒送出去的start/end」才是真的能丟棄的
+                    // 雜訊——如果按下麥克風又在連線Open前很快放開，isSttActive這時已經
+                    // 變false，但_pendingStart/_pendingEnd還在等OnOpen補送，這段音訊
+                    // 其實是剛剛那次錄音的內容，不能因為旗標已經翻回false就丟掉，否則
+                    // 後端收到的start/end之間完全沒有音訊，比門檻不夠、連transcript都
+                    // 不會回（見 _pendingStart 宣告處的說明）。
+                    if (!isSttActive && !_pendingStart && !_pendingEnd)
                     {
-                        // 沒在錄音（麥克風沒按著），這段資料本來就不會送，直接丟棄。
                         audioAccumulator.SetLength(0);
                     }
                     else if (wsStt?.ReadyState == WebSocketState.Open)
@@ -201,8 +224,9 @@ public class KinectAudioSender : MonoBehaviour
                         wsStt.SendAsync(audioAccumulator.ToArray(), null);
                         audioAccumulator.SetLength(0);
                     }
-                    // else：正在錄音但連線還沒 Open（見 _pendingControl 的註解）——保留
-                    // 累積的音訊，等連線一 Open 下一輪 PollAudio 自然會補送，不會漏字。
+                    // else：連線還沒 Open，保留累積的音訊，等連線一 Open、OnOpen 補送完
+                    // start/end 之後，下一輪 PollAudio 會落到上面「已經 Open」那個分支
+                    // 把這段音訊送出去，不會漏字。
                 }
             }
             frame.Dispose();

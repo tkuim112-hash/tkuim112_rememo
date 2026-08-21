@@ -39,7 +39,7 @@ public class InstructionController : MonoBehaviour
         string selectedPatientId = PlayerPrefs.GetString("SelectedPatientId", "");
         if (!string.IsNullOrEmpty(selectedPatientId)) userId = selectedPatientId;
 
-        string sharedSessionId = PlayerPrefs.GetString("session_id", "");
+        string sharedSessionId = AuthSession.SessionId ?? "";
         if (!string.IsNullOrEmpty(sharedSessionId)) sessionId = sharedSessionId;
 
         if (PlayerPrefs.HasKey("NextScene"))
