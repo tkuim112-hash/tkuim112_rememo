@@ -62,6 +62,19 @@ public class KinectCalibrationManager : MonoBehaviour
     private volatile bool ackSuccess = false;
     private string sessionId;
 
+    // ws.ConnectAsync() 的 TLS handshake 到 wss://api.re-memo.com 實測可能拖到
+    // 30～40 秒以上（跟 KinectAudioSender 的 /ws/stt 是同一個網域、同一套
+    // WebSocketSharp，2026-08-21 那邊已經踩過同樣的坑）。15 秒的基準值蒐集常常
+    // 比連線本身還快跑完，若這時 ws 還沒 Open，不能整批放棄重新蒐集——資料先
+    // 存成 pending，等 OnOpen 真正觸發（背景執行緒）時再補送，跟 KinectAudioSender
+    // 的 _pendingStart/_pendingEnd 是同一套模式。
+    private volatile bool _pendingCalibrationSend = false;
+    private volatile string _pendingCalibrationJson = null;
+    // WaitForServerAck 要知道資料「真的送出去了没」，才能決定 5 秒 ack 逾時要從
+    // 什麼時候開始算——不能從呼叫 SendCalibrationData() 當下就開始算，那時候
+    // 資料很可能還在等連線開，5 秒還沒到 TLS handshake 都還沒做完。
+    private volatile bool _calibrationDataSent = false;
+
     void Start()
     {
         kinectManager = KinectManager.Instance;
@@ -83,7 +96,23 @@ public class KinectCalibrationManager : MonoBehaviour
 
         ws = new WebSocket(wsUrl);
         ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
-        ws.OnOpen += (s, e) => Debug.Log("[Calibration WS] 已連線");
+        ws.OnOpen += (s, e) =>
+        {
+            Debug.Log("[Calibration WS] 已連線");
+            // 蒐集完畢時 ws 若還沒 Open，SendCalibrationData 會把資料存到這裡；
+            // 現在連線真的開了，補送出去（同樣邏輯見 KinectAudioSender.ConnectWebSocket）。
+            if (_pendingCalibrationSend && _pendingCalibrationJson != null)
+            {
+                string json = _pendingCalibrationJson;
+                _pendingCalibrationSend = false;
+                ws.SendAsync(json, sent =>
+                {
+                    if (!sent)
+                        Debug.LogWarning("[Calibration] 補送 SendAsync 回傳失敗，本地端送出動作本身就沒成功");
+                });
+                _calibrationDataSent = true;
+            }
+        };
         ws.OnError += (s, e) => Debug.LogError($"[Calibration WS] 錯誤: {e.Message}");
         // 後端存成功/失敗都會回一個 JSON（見 ws_calibration.py）；這裡才是真正的送達確認，
         // CalibrationRoutine 的 WaitForServerAck 會 poll 這兩個旗標決定要不要標記校正完成。
@@ -173,10 +202,27 @@ public class KinectCalibrationManager : MonoBehaviour
 
     IEnumerator WaitForServerAck()
     {
+        // ws 的 TLS handshake 實測可能拖到 30～40 秒以上（見類別開頭 _pendingCalibrationSend
+        // 的說明），所以先給連線一段夠寬鬆的時間把資料真正送出去；送出後，後端存 Redis
+        // 本身很快，5 秒 ack 逾時才從這裡開始算才有意義。
+        const float sendWaitTimeoutSeconds = 60f;
         const float ackTimeoutSeconds = 5f;
 
         ackReceived = false;
         ackSuccess = false;
+
+        float waitedForSend = 0f;
+        while (!_calibrationDataSent && waitedForSend < sendWaitTimeoutSeconds)
+        {
+            waitedForSend += Time.deltaTime;
+            yield return null;
+        }
+
+        if (!_calibrationDataSent)
+        {
+            RetryCalibration($"等待 WebSocket 連線超過 {sendWaitTimeoutSeconds:F0} 秒仍未送出基準值，重新校正");
+            yield break;
+        }
 
         float waited = 0f;
         while (!ackReceived && waited < ackTimeoutSeconds)
@@ -213,6 +259,9 @@ public class KinectCalibrationManager : MonoBehaviour
         lookingAwayBuffer.Clear();
         mouthMovedBuffer.Clear();
         ClearGeometryBuffers(); // ── 新增
+        _pendingCalibrationSend = false;
+        _pendingCalibrationJson = null;
+        _calibrationDataSent = false;
         StartCoroutine(CalibrationRoutine());
     }
 
@@ -373,7 +422,11 @@ public class KinectCalibrationManager : MonoBehaviour
 
     void SendCalibrationData()
     {
-        if (ws == null || ws.ReadyState != WebSocketState.Open) return;
+        if (ws == null)
+        {
+            Debug.LogWarning("[Calibration] SendCalibrationData 被呼叫時 ws 尚未建立，資料未送出");
+            return;
+        }
 
         var baselineJoints = new Dictionary<string, float[]>();
         var jointSums = new Dictionary<string, float[]>();
@@ -420,11 +473,25 @@ public class KinectCalibrationManager : MonoBehaviour
             jointZ = GetAxis(baselineJoints, 2)
         };
 
-        ws.SendAsync(JsonUtility.ToJson(payload), sent =>
+        string json = JsonUtility.ToJson(payload);
+
+        if (ws.ReadyState == WebSocketState.Open)
         {
-            if (!sent)
-                Debug.LogWarning("[Calibration] SendAsync 回傳失敗，本地端送出動作本身就沒成功");
-        });
+            ws.SendAsync(json, sent =>
+            {
+                if (!sent)
+                    Debug.LogWarning("[Calibration] SendAsync 回傳失敗，本地端送出動作本身就沒成功");
+            });
+            _calibrationDataSent = true;
+        }
+        else
+        {
+            // TLS handshake 還沒做完，ws 還不是 Open——資料先存著，OnOpen 觸發時
+            // 自動補送（見 Start() 裡 ws.OnOpen 的邏輯），不要整批放棄重新蒐集。
+            Debug.Log("[Calibration] WebSocket 尚未連線，基準值先暫存，連線後自動補送");
+            _pendingCalibrationJson = json;
+            _pendingCalibrationSend = true;
+        }
     }
 
     float Average(List<float> list)
