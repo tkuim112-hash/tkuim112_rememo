@@ -48,7 +48,7 @@ class Patient(Base):
     scene_weights: Mapped[str | None] = mapped_column(Text)
     avatar: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=func.now()
+        DateTime, server_default=func.now()
     )
 
 
@@ -132,7 +132,7 @@ class AuditLog(Base):
     resource: Mapped[str | None] = mapped_column(Text)
     ip_address: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=func.now()
+        DateTime, server_default=func.now()
     )
 
 
@@ -143,6 +143,6 @@ class PasswordResetCode(Base):
     email: Mapped[str] = mapped_column(Text, nullable=False)
     verification_code: Mapped[str] = mapped_column(String(6), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=func.now()
+        DateTime, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
