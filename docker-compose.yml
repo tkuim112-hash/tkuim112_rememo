@@ -227,7 +227,7 @@ services:
                          # （app/main.py _warmup_stt），常駐則靠這裡的 ttl=-1。
     volumes:
       # 沒掛volume的話容器一重啟(重開機/更新映像)模型就要重新從HuggingFace下載一次，
-      # 測試/demo當下網路不穩會很致命；掛上去讓 base 跟 STT_MODEL_FINAL 都只下載一次。
+      # 測試/demo當下網路不穩會很致命；掛上去讓 STT_MODEL 只下載一次。
       - ./models/whisper_cache:/root/.cache/huggingface
     deploy:
       resources:

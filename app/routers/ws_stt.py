@@ -7,8 +7,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import update
 
 from auth import get_therapist_id_from_ws_token
-from config import settings
-from db.models import TherapySession
+from db.models import Patient, TherapySession
 from db.session import AsyncSessionLocal
 import ws_registry
 
@@ -38,6 +37,40 @@ async def _mark_abnormal_end(session_id: str) -> None:
             await db.commit()
     except Exception as e:
         print(f"[WS/STT] 標記不正常結束失敗: {e}")
+
+
+async def _build_patient_prompt(r, session_id: str) -> str:
+    """從 session:{id}:meta 查出 patient_id，組出 STT 最終辨識用的 initial prompt。
+
+    把長者的姓名/故鄉/家人/興趣餵給 Whisper 當前文脈絡，同音字辨識時會偏向
+    選這裡出現過的詞，藉此提升人名、地名這類罕見專有名詞的辨識率
+    （見 app/services/stt.py transcribe_bytes 的 prompt 參數）。查不到就回傳空字串，
+    上層會直接跳過 prompt，不影響原本的辨識行為。
+    """
+    try:
+        meta_raw = await r.get(f"session:{session_id}:meta")
+        if not meta_raw:
+            return ""
+        patient_id = json.loads(meta_raw).get("patient_id")
+        if not patient_id:
+            return ""
+
+        async with AsyncSessionLocal() as db:
+            patient = await db.get(Patient, int(patient_id))
+        if not patient:
+            return ""
+
+        parts = [f"長者{patient.name}"]
+        if patient.hometown:
+            parts.append(f"故鄉在{patient.hometown}")
+        if patient.family:
+            parts.append(f"家人有{patient.family}")
+        if patient.preferences:
+            parts.append(f"興趣是{patient.preferences}")
+        return "，".join(parts) + "。"
+    except Exception as e:
+        print(f"[WS/STT] 組 initial_prompt 失敗: {e}")
+        return ""
 
 
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> bytes:
@@ -85,6 +118,8 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
     await websocket.accept()
     ws_registry.register(session_id, websocket)
     audio_buf: bytearray = bytearray()
+    # 整條連線對應同一場療程、同一位長者，只在連線建立時查一次即可。
+    stt_prompt = await _build_patient_prompt(r, session_id)
 
     SAMPLE_RATE = 16000
     INTERIM_BYTES = SAMPLE_RATE * 2 * 3   # 每 3 秒觸發一次 interim
@@ -127,14 +162,14 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
                     ended = True
                     if len(audio_buf) > SAMPLE_RATE * 2 * 0.3:
                         wav = _pcm_to_wav(bytes(audio_buf))
-                        # 最終結果會存進資料庫、餵給 LLM，準確度優先於速度，
-                        # 用中文微調過的模型；interim 預覽文字才用預設的快模型。
+                        # 最終結果會存進資料庫、餵給 LLM，用中文微調過的模型
+                        # （interim 預覽文字現在也是同一個模型，見 config.py stt_model）。
                         # timeout 拉長：BELLE 現在雖然靠 PRELOAD_MODELS+WHISPER__TTL=-1
                         # 常駐在 kinect-svc，但萬一它重啟又要冷啟動（可能超過10分鐘），
                         # 預設 120 秒的 httpx timeout 會讓這裡拋例外、把整條 WebSocket
                         # 連線打斷（見本函式外層 except），辨識文字就永遠送不到後端。
                         text = await stt_service.transcribe_bytes(
-                            wav, model=settings.stt_model_final, timeout=600.0
+                            wav, timeout=600.0, prompt=stt_prompt,
                         )
                         await websocket.send_json(
                             {"type": "transcript", "text": text, "isFinal": True}
