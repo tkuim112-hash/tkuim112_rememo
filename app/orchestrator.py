@@ -290,7 +290,8 @@ def _pre_image_q2_round_cap(covered_w: list[str]) -> int:
     return min(missing_count, _MAX_PRE_IMAGE_Q2_ROUNDS_CAP) or 1
 
 
-# 正式環境用的是本地 Ollama 模型（rememo-llama3，見 app/config.py），不是頂尖級
+# 正式環境用的是本地 Ollama 模型（cwchang/llama-3-taiwan-8b-instruct:q4_k_m，
+# 見 app/config.py；DPO 微調版 rememo-llama3 已停用），不是頂尖級
 # 模型，指令遵循度較弱，偶爾會把 prompt 裡「問題：（格式說明）」這種待填格式
 # 範本原封不動照抄回來，當成自己的答案（尤其 prompt 越長、規則越密，這種「範本
 # 回聲」越容易發生）。與其每次針對某一種洩漏樣式加一條 regex 打地鼠，這裡改成
