@@ -213,9 +213,9 @@ services:
     restart: always
   
   # M1: 感知數據處理服務 (OpenAI Whisper STT)
-  kinect-svc:
+  stt:
     image: fedirz/faster-whisper-server:latest-cuda
-    container_name: tku-care-kinect-1
+    container_name: tku-care-stt-1
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
       - WHISPER__TTL=-1  # 模型常駐，不閒置卸載；BELLE 微調模型冷啟動要 10 分鐘以上，
