@@ -3,7 +3,8 @@
 
 只打真的服務：
   - LLMService  → 原生 Ollama app（.env 的 OLLAMA_HOST=http://localhost:11434，
-    OLLAMA_MODEL=cwchang/llama-3-taiwan-8b-instruct:q4_k_m，未經DPO訓練的基底模型）
+    OLLAMA_MODEL=cwchang/llama-3-taiwan-8b-instruct:q4_k_m，未經DPO訓練的基底模型，
+    目前也是正式環境實際使用的模型——DPO微調版 rememo-llama3 已停用）
 
 不生圖：FakeImageService 頂替 OpenAIImageService，不打 OpenAI Images API，
 直接回空字串——orchestrator._start_scene_after_detail 生圖失敗本來就有既有
@@ -141,8 +142,8 @@ async def run_round(
 
 async def main() -> None:
     print(f"[設定] OLLAMA_HOST={settings.ollama_host}  OLLAMA_MODEL={settings.ollama_model}")
-    print("[提醒] 這是本機原生 Ollama 的基底模型，不是DPO微調後的 rememo-llama3，"
-          "問題生成品質不代表正式部署行為。\n")
+    print("[提醒] 這是本機原生 Ollama 的基底模型（未經DPO微調），"
+          "目前也是正式環境實際使用的模型，問題生成品質可代表正式部署行為。\n")
 
     llm = LLMService()
     image = FakeImageService()
