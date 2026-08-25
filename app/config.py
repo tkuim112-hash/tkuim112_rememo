@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:q4_k_m"
 
     # === STT (faster-whisper-server) ===
-    stt_host: str = "http://kinect:8000"
+    stt_host: str = "http://stt:8000"
     # 中文微調過的 Whisper checkpoint（BELLE-2），interim（即時預覽）跟
     # 最終辨識統一都用這個模型：即時預覽文字實際上只有分享頁的打字機動畫
     # 會顯示給人看（見 Unity ShareController.cs），其餘場景長者根本看不到

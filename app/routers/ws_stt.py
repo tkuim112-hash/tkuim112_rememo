@@ -165,7 +165,7 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
                         # 最終結果會存進資料庫、餵給 LLM，用中文微調過的模型
                         # （interim 預覽文字現在也是同一個模型，見 config.py stt_model）。
                         # timeout 拉長：BELLE 現在雖然靠 PRELOAD_MODELS+WHISPER__TTL=-1
-                        # 常駐在 kinect-svc，但萬一它重啟又要冷啟動（可能超過10分鐘），
+                        # 常駐在 stt，但萬一它重啟又要冷啟動（可能超過10分鐘），
                         # 預設 120 秒的 httpx timeout 會讓這裡拋例外、把整條 WebSocket
                         # 連線打斷（見本函式外層 except），辨識文字就永遠送不到後端。
                         text = await stt_service.transcribe_bytes(
