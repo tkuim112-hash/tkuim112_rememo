@@ -31,6 +31,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const [notes, setNotes] = useState("");
  const [isEditing, setIsEditing] = useState(false);
  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ const notesLoadedRef = useRef(false);
 
  useEffect(() => {
    fetch(`/api/sessions/${sessionId}`)
@@ -39,6 +40,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
        setSessionNumber(s.sessionNumber ?? null);
        setSessionDate(s.date ?? "—");
        if (s.therapistNote) setNotes(s.therapistNote);
+       notesLoadedRef.current = true;
        if (
          s.scoreParticipation != null && s.scoreAttention != null &&
          s.scoreEndurance != null && s.scoreEmotion != null && s.scoreInteraction != null
@@ -60,6 +62,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  }, [sessionId]);
 
  useEffect(() => {
+   if (!notesLoadedRef.current) return;
    if (notesTimerRef.current) clearTimeout(notesTimerRef.current);
    notesTimerRef.current = setTimeout(() => {
      fetch(`/api/sessions/${sessionId}`, {

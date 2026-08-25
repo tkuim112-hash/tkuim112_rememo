@@ -29,15 +29,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const [updated] = await sql`
     UPDATE sessions SET
-      total_score          = ${totalScore ?? null},
-      emotional_status     = ${emotionalStatus ?? null},
+      total_score          = COALESCE(${totalScore ?? null}, total_score),
+      emotional_status     = COALESCE(${emotionalStatus ?? null}, emotional_status),
       therapist_note       = ${notes ?? null},
       status                = COALESCE(${status ?? null}, status),
-      score_participation  = ${scoreParticipation ?? null},
-      score_attention      = ${scoreAttention ?? null},
-      score_endurance      = ${scoreEndurance ?? null},
-      score_emotion        = ${scoreEmotion ?? null},
-      score_interaction    = ${scoreInteraction ?? null}
+      score_participation  = COALESCE(${scoreParticipation ?? null}, score_participation),
+      score_attention      = COALESCE(${scoreAttention ?? null}, score_attention),
+      score_endurance      = COALESCE(${scoreEndurance ?? null}, score_endurance),
+      score_emotion        = COALESCE(${scoreEmotion ?? null}, score_emotion),
+      score_interaction    = COALESCE(${scoreInteraction ?? null}, score_interaction)
     WHERE ${sessionIdWhereClause(id)}
       AND patient_id IN (SELECT id FROM patients WHERE organization_id = ${session.organizationId})
     RETURNING patient_id

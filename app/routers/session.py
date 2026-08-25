@@ -1068,6 +1068,8 @@ async def _generate_story_summary(llm_service, db: AsyncSession, session_id: str
             {"role": "user", "content": (
                 f"以下是今天療程的記錄：\n\n{transcript}\n\n"
                 "請用100字以內、第三人稱、溫暖但客觀的語氣，只根據長者實際所說的內容摘要他今天分享的回憶與整體狀態。"
+                "全篇一律用「長者」稱呼，不要用「阿公」「阿嬤」「爺爺」「奶奶」「他」「她」等會透露或臆測性別的稱謂或代名詞，"
+                "因為逐字稿裡沒有提供長者的性別資訊。"
                 "如果長者實際所說的內容很少、講得很簡短籠統，摘要也要如實反映內容有限，不要延伸編造沒說過的細節。"
                 "只回摘要文字，不要其他說明。"
             )},
@@ -1092,7 +1094,8 @@ async def _generate_round_summary(llm_service, patient_response: str) -> str:
             )},
             {"role": "user", "content": (
                 f"長者這個回合說的話：\n{patient_response}\n\n"
-                "請用20字以內、第三人稱的一句話摘要重點，只回摘要文字本身，不要加任何說明或標點以外的內容。"
+                "請用20字以內、第三人稱的一句話摘要重點，一律用「長者」稱呼、不要用「阿公」「阿嬤」「他」「她」等"
+                "會臆測性別的稱謂或代名詞，只回摘要文字本身，不要加任何說明或標點以外的內容。"
             )},
         ]
         summary = await llm_service.chat(messages, temperature=0.3)

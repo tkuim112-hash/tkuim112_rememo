@@ -15,11 +15,12 @@ class Settings(BaseSettings):
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://kinect:8000"
-    stt_model: str = "Systran/faster-whisper-large-v3"
-    # 最終辨識（isFinal）用的模型：中文微調過的 Whisper checkpoint，
-    # 準確度比 stock large-v3 好，interim（即時預覽文字）仍用 stt_model
-    # 求速度，避免每 3 秒一次的高頻呼叫被拖慢。
-    stt_model_final: str = "XA9/Belle-faster-whisper-large-v3-zh-punct"
+    # 中文微調過的 Whisper checkpoint（BELLE-2），interim（即時預覽）跟
+    # 最終辨識統一都用這個模型：即時預覽文字實際上只有分享頁的打字機動畫
+    # 會顯示給人看（見 Unity ShareController.cs），其餘場景長者根本看不到
+    # 辨識中的文字（GameController.cs／MicController.cs），BELLE-2 常駐 GPU
+    # 又只處理短音訊片段，沒有必要為了 interim 額外維護一個較不準的快模型。
+    stt_model: str = "XA9/Belle-faster-whisper-large-v3-zh-punct"
 
     # === TTS (BlueMagpie-TTS 本地語音合成) ===
     tts_host: str = "http://tts:8080"
