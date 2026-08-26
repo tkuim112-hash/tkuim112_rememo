@@ -511,24 +511,48 @@ public class GameController : MonoBehaviour
         }
 
         var body = new RespondRequest { elder_response = elderResponse, state = currentState };
-        using var req = new UnityWebRequest($"{backendUrl}/session/respond", "POST");
-        req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(body)));
-        req.downloadHandler = new DownloadHandlerBuffer();
-        req.SetRequestHeader("Content-Type", "application/json");
-        AuthService.AttachAuthHeader(req);
-        yield return req.SendWebRequest();
+        byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
+
+        // 2026-08-26稽核（使用者發現）：這支請求一旦失敗（網路抖動/逾時），
+        // currentState 完全沒有機會更新，下一次送出還是帶著同一份舊的
+        // question_number——後端可能把答案配對到錯的題號，甚至讓題號序列
+        // 整個錯位（見 app/routers/session.py _fill_round_exchange_answer／
+        // next_qn 計算說明）。原本只有「顯示一次錯誤」沒有重試，長者這句
+        // 話就此消失。改成原地重試幾次（間隔1.5秒），大部分暫時性的網路
+        // 抖動這樣就能救回來，只有重試用盡才真的放棄顯示錯誤。
+        const int maxAttempts = 3;
+        string responseText = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            using var req = new UnityWebRequest($"{backendUrl}/session/respond", "POST");
+            req.uploadHandler   = new UploadHandlerRaw(payload);
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "application/json");
+            AuthService.AttachAuthHeader(req);
+            yield return req.SendWebRequest();
+
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                responseText = req.downloadHandler.text;
+                break;
+            }
+
+            Debug.LogWarning($"[Respond] API 第{attempt}次失敗: {req.error}");
+            if (attempt < maxAttempts)
+                yield return new WaitForSeconds(1.5f);
+        }
 
         loadingSpinner.SetActive(false);
         if (generatingImageText != null) generatingImageText.SetActive(false);
 
-        if (req.result != UnityWebRequest.Result.Success)
+        if (responseText == null)
         {
-            Debug.LogError($"[Respond] API 失敗: {req.error}");
+            Debug.LogError($"[Respond] API 重試{maxAttempts}次後仍失敗，長者這句回答暫時無法送出");
             aiText.gameObject.SetActive(true);
             yield break;
         }
 
-        var resp = JsonUtility.FromJson<RespondResponse>(req.downloadHandler.text);
+        var resp = JsonUtility.FromJson<RespondResponse>(responseText);
 
         if (resp.action == "end_session")
         {
