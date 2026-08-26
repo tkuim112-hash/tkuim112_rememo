@@ -25,6 +25,8 @@ public class ShareController : MonoBehaviour
     public KinectAudioSender kinectAudioSender;
     [Tooltip("拖入場景中的 KinectSensorSender；供分享階段情緒追蹤及反應時間計算")]
     public KinectSensorSender kinectSensorSender;
+    [Tooltip("拖入場景中的 HandCursorRemapper；治療師端暫停/繼續時用來鎖定/解鎖手部游標")]
+    public HandCursorRemapper handCursorRemapper;
 
     [Header("後端設定")]
     public string backendUrl = "https://api.re-memo.com";
@@ -185,6 +187,9 @@ public class ShareController : MonoBehaviour
 
     void OnSubmit()
     {
+        // KinectButtonHover 是直接 onClick.Invoke()，不會檢查 interactable，
+        // 這裡要自己再擋一次，不能只靠游標被鎖走這個側面效果。
+        if (!submitButton.interactable) return;
         if (isRecording) StopRecording();
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         StartCoroutine(SubmitClosing());
@@ -245,6 +250,7 @@ public class ShareController : MonoBehaviour
 
     void OnMicToggle()
     {
+        if (!micButton.interactable) return;
         if (!isRecording) StartRecording();
         else              StopRecording();
     }
@@ -382,14 +388,18 @@ public class ShareController : MonoBehaviour
                     isPaused = true;
                     micButton.interactable = false;
                     submitButton.interactable = false;
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(true);
                     break;
                 case "resume":
                     isPaused = false;
                     micButton.interactable = true;
                     RefreshSubmitButton();
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "replay_audio":
-                    OnReplay();
+                    // 暫停中不重播，跟 GameController 的 replay_audio 處理一致。
+                    if (!isPaused)
+                        OnReplay();
                     break;
                 case "end":
                     // 治療師手動結束，直接走 ThankYouScene，沿用 LoadingScene 轉場

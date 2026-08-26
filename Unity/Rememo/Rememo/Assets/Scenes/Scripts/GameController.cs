@@ -147,6 +147,10 @@ public class GameController : MonoBehaviour
 
     void OnMicToggle()
     {
+        // KinectButtonHover 是直接 onClick.Invoke()，不會檢查 interactable，
+        // 暫停時 micButton.interactable 被設 false 這裡要自己再擋一次，
+        // 不能只靠游標被鎖走這個側面效果。
+        if (!micButton.interactable) return;
         if (!isRecording) StartRecording();
         else              StopRecording();
     }
@@ -472,6 +476,7 @@ public class GameController : MonoBehaviour
 
     void OnReplayAudio()
     {
+        if (replayButton != null && !replayButton.interactable) return;
         if (audioSource == null || audioSource.clip == null) return;
         audioSource.Stop();
         audioSource.Play();

@@ -1298,6 +1298,7 @@ MonoBehaviour:
   audioSource: {fileID: 1186508246}
   kinectAudioSender: {fileID: 1806627863}
   kinectSensorSender: {fileID: 1806627864}
+  handCursorRemapper: {fileID: 1853010728}
   backendUrl: https://api.re-memo.com
   serverUrl: wss://api.re-memo.com/ws/stt
   sampleRate: 16000
