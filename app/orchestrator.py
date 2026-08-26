@@ -117,6 +117,7 @@ start_round、_start_round2_free_followup、_start_round3_closing 的說明，
 的 prompt 本身也都會先把 taboo_words 帶給 LLM，讓模型從生成當下就
 主動避開，而不是完全依賴這道事後防護。
 """
+import asyncio
 import json
 import random
 import re
@@ -631,7 +632,7 @@ _FIVE_W1H_BANK = {
             "Where": {"variants": ["那通常是在哪裡呢？", "那個時候，都在哪裡進行呢？"]},
             "When": {"variants": ["那通常是什麼時候呢？", "那個時候，通常是什麼時間做這件事呢？"]},
             "How": {"variants": ["通常是怎麼進行的呢？", "那時候，你都是怎麼做的呢？"]},
-            "Why": {"variants": ["這件事裡，最讓你放不下的是哪一部分？", "說起這個興趣，最讓你著迷的是什麼？"]},
+            "Why": {"variants": ["說起這個興趣，最讓你著迷的是什麼？"]},
         },
     },
 
@@ -1394,6 +1395,26 @@ def _void_non_sensory_opinion_evidence(checks: list) -> list:
     return result
 
 
+# _missing_from_checks 的 allow_cross_dimension_gap 用：縫隙如果只是這些
+# 沒有實質內容的連接詞/標點（例如「五點『，就』等他們下班」中間的「，就」），
+# 不需要在其他維度的證據裡找到對應，直接視為可放行的縫隙——這種詞不可能是
+# 任何維度「專屬」的內容，跟需要「縫隙=其他維度已驗證證據」那條規則要防的
+# 「憑空編造內容」是不同的風險等級。
+_GAP_FILLER_RE = re.compile(r"^[，,、。！？\s]*(?:就|便|即|才|都|也|還|再)?[，,、。！？\s]*$")
+
+
+def _mark_task_exception_retrieved(task: asyncio.Task) -> None:
+    """給 asyncio.create_task 背景任務掛 add_done_callback 用（見
+    _start_scene_after_detail 的 pre_image_covered_w_task）：如果呼叫端
+    在真正 await 到這個 task 之前，因為別的例外提早離開函式，這個 task
+    就永遠不會被 await——若它本身也失敗，asyncio 會印出「Task exception
+    was never retrieved」的警告噪音。這裡只是呼叫 task.exception() 把
+    例外標記為「已讀取」，不做任何處理；如果呼叫端後續真的有機會
+    await 到這個 task，結果/例外的行為完全不受影響。"""
+    if not task.cancelled():
+        task.exception()
+
+
 def _find_evidence_gap(evidence: str, source_text: str) -> str | None:
     """
     2026-08-18稽核（使用者提案，實測後補）：見 _missing_from_checks 的
@@ -1482,7 +1503,10 @@ def _missing_from_checks(
         is_valid = _is_real_evidence(evidence, source_text)
         if not is_valid and allow_cross_dimension_gap and evidence != "找不到":
             gap = _find_evidence_gap(evidence, source_text)
-            is_valid = bool(gap) and any(gap in accepted for accepted in accepted_evidence_texts)
+            is_valid = bool(gap) and (
+                _GAP_FILLER_RE.match(gap) is not None
+                or any(gap in accepted for accepted in accepted_evidence_texts)
+            )
         if evidence_norm in seen_evidence or not is_valid:
             missing.append(item)
             continue
@@ -2148,8 +2172,23 @@ class TherapyOrchestrator:
             # 的5W1H流程從零開始重問一次——用跟 STEP2 背景追蹤同一套判斷
             # （_detect_covered_w），把這裡偵測到的W維度接續進 state，STEP1/
             # STEP3 就會自動避開已經聊過的方向。
-            pre_image_covered_w = await self._detect_covered_w(elder_detail, [])
-            print(f"  → 生圖前訪談已自然涵蓋 W: {pre_image_covered_w}")
+            # 2026-08-26效能稽核（使用者提案）：這個結果一直到下面組
+            # new_state（"covered_w"）才會用到，中間還要做脫敏、規劃/生成
+            # 圖片這一長串工作，彼此互不依賴——用 create_task 先背景送出去，
+            # 讓它跟後面的脫敏/生圖同時進行，真正需要值的時候再 await，
+            # 省下這次LLM往返原本要排隊等待的時間，不影響任何邏輯。
+            pre_image_covered_w_task = asyncio.create_task(
+                self._detect_covered_w(elder_detail, [])
+            )
+            # 2026-08-26稽核（code review 發現）：這個 task 一直到下面才會
+            # await，中間 _plan_image_from_detail／_plan_image（沒包
+            # try/except）如果先丟例外，函式會直接往外傳播、永遠不會走到
+            # 下面 await 這個 task 的那一行——如果 task 本身也剛好失敗，
+            # asyncio 會印出「Task exception was never retrieved」的警告。
+            # 掛一個 done_callback 把例外標記為已讀取，不管有沒有真的被
+            # await 到都不會再有這個警告；task 本身還是照常在背景跑完，
+            # 不影響任何邏輯。
+            pre_image_covered_w_task.add_done_callback(_mark_task_exception_retrieved)
         else:
             # 退回 RAG 記憶時，elder_detail 不是這次生圖真正的內容來源
             # （太空洞或長者沒回答），不能拿它來判斷涵蓋了哪些W，也沒有
@@ -2157,7 +2196,7 @@ class TherapyOrchestrator:
             # RAG 已經在 start_round 一開始就撈過、存進 state["cached_rag_
             # memories"]，這裡直接讀，不用再發一次查詢讓長者多等一輪。
             memories = state.get("cached_rag_memories", [])
-            pre_image_covered_w = []
+            pre_image_covered_w_task = None
             elder_detail = ""
 
         # 脫敏要在這裡做（送進LLM規劃畫面之前），不能只在下面對LLM吐出來的
@@ -2242,6 +2281,11 @@ class TherapyOrchestrator:
             print(f"  → 圖片生成失敗（不影響對話主流程，長者端這回合沒有配圖）: {e}")
             image_path = ""
         print(f"  → 圖片: {image_path}")
+
+        pre_image_covered_w = (
+            await pre_image_covered_w_task if pre_image_covered_w_task else []
+        )
+        print(f"  → 生圖前訪談已自然涵蓋 W: {pre_image_covered_w}")
 
         # 圖生成後不直接問 STEP1，先出示圖片、留白讓長者自己反應——長者這句
         # 反應由 process_response 收到 last_question_type=="image_reveal"
@@ -2882,9 +2926,17 @@ class TherapyOrchestrator:
             # _PRE_IMAGE_PRIORITY_ORDER 選中、連續好幾輪問同一個問題）。
             skipped_w = list(state.get("skipped_w", []))
             last_w = state.get("pre_image_q2_last_w")
-            if last_w and last_w not in covered_w and last_w not in skipped_w:
-                skipped_w.append(last_w)
-                print(f"  → W({last_w}) 這輪沒答到，加進 skipped_w，不再重問")
+            # 2026-08-26稽核（使用者提案）：這一題是 get_scenario2_followup
+            # 針對 last_w 直接追問的，長者只要不是拒答（q2_answer 已經在上面
+            # 用 _is_true_refusal 篩過、拒答會在前面就 return），不管回答
+            # 內容有沒有被 _detect_covered_w 抓到對應證據，都直接算已經
+            # 回答到這個維度——證據抽取本來就可能有雜訊（例如漏抄「，就」
+            # 這種連接詞，見 _GAP_FILLER_RE），與其一直修補抽取規則，不如
+            # 直接信任「問A答A」這個更可靠的事實來源，不讓通用的證據比對
+            # 反過來否定長者剛剛針對性回答過的內容，導致同一個維度反覆
+            # 被判定沒答到、卡住一直重問（跳針）。
+            if last_w and last_w not in covered_w:
+                covered_w.append(last_w)
             round_count = state.get("pre_image_q2_round", 1)
             max_rounds = state.get("pre_image_q2_max_rounds", 1)
             picked = None
@@ -2960,16 +3012,23 @@ class TherapyOrchestrator:
 
         # ── STEP2：自由對話中背景追蹤 W 覆蓋 ────────────────────
         if not quick_end:
-            newly_covered = await self._detect_covered_w(elder_response, covered_w)
+            # 2026-08-26效能稽核（使用者提案）：_detect_covered_w／
+            # _detect_covered_senses 都只吃 elder_response 當輸入，各自寫入
+            # 互不相干的 covered_w／covered_senses，彼此不需要對方的結果，
+            # 原本卻依序 await，等於白白多等一次LLM往返。改成 asyncio.gather
+            # 平行送出，省下其中一次呼叫的時間，不影響任何邏輯或結果。
+            newly_covered, newly_covered_senses = await asyncio.gather(
+                self._detect_covered_w(elder_response, covered_w),
+                self._detect_covered_senses(
+                    elder_response, covered_senses, state.get("topic_senses"),
+                ),
+            )
             for w in newly_covered:
                 if w not in covered_w:
                     covered_w.append(w)
             if newly_covered:
                 print(f"  → 自然涵蓋 W: {newly_covered}，covered={covered_w}")
 
-            newly_covered_senses = await self._detect_covered_senses(
-                elder_response, covered_senses, state.get("topic_senses"),
-            )
             for s in newly_covered_senses:
                 if s not in covered_senses:
                     covered_senses.append(s)
@@ -2988,10 +3047,24 @@ class TherapyOrchestrator:
         # 的排除機制，跟W維度的追蹤方式不對稱，見_relevant_uncovered_senses
         # 稽核筆記）。
         if last_sense_asked and last_sense_asked not in covered_senses:
-            if last_sense_asked not in skipped_senses:
-                skipped_senses.append(last_sense_asked)
-                print(f"  → 感官({last_sense_asked})這輪沒答到，加進 "
-                      f"skipped_senses，不再重問")
+            # 2026-08-26稽核（使用者提案）：跟 pre_image_q2 那邊 covered_w／
+            # last_w 同一套邏輯——上一題就是針對 last_sense_asked 直接追問
+            # 的（見上面 3503 行 last_sense_asked 的設定說明），長者只要不是
+            # quick_end（真的沒答/拒答，見 _is_quick_end），不管
+            # _detect_covered_senses 的證據抽取有沒有剛好抓到對應片段，都
+            # 直接算已經回答到這個感官，不讓證據抽取本來就有的雜訊（跟
+            # covered_w 是同一種風險）反過來否定長者剛剛針對性回答過的
+            # 內容，導致同一個感官反覆被判定沒答到、卡住一直重問。只有
+            # quick_end（真的沒有實質回答）才記進 skipped_senses。
+            if quick_end:
+                if last_sense_asked not in skipped_senses:
+                    skipped_senses.append(last_sense_asked)
+                    print(f"  → 感官({last_sense_asked})這輪沒答到，加進 "
+                          f"skipped_senses，不再重問")
+            else:
+                covered_senses.append(last_sense_asked)
+                print(f"  → 感官({last_sense_asked})視為已回答（追問+非"
+                      f"quick_end），covered_senses={covered_senses}")
         state["skipped_senses"] = skipped_senses
 
         # ── 5W1H 全部自然涵蓋 → 結束回合（順其自然的好結局，不是硬湊出來的）──

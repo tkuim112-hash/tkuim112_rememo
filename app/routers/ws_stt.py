@@ -40,18 +40,23 @@ async def _mark_abnormal_end(session_id: str) -> None:
 
 
 async def _build_patient_prompt(r, session_id: str) -> str:
-    """從 session:{id}:meta 查出 patient_id，組出 STT 最終辨識用的 initial prompt。
+    """從 session:{id}:meta 查出 patient_id/topic，組出 STT 最終辨識用的 initial prompt。
 
-    把長者的姓名/故鄉/家人/興趣餵給 Whisper 當前文脈絡，同音字辨識時會偏向
-    選這裡出現過的詞，藉此提升人名、地名這類罕見專有名詞的辨識率
-    （見 app/services/stt.py transcribe_bytes 的 prompt 參數）。查不到就回傳空字串，
-    上層會直接跳過 prompt，不影響原本的辨識行為。
+    把長者的姓名/故鄉/家人/興趣，加上這場療程的今日主題（治療師啟動療程時
+    手動輸入的自由文字，見 _init_session_meta 的 topic 參數）餵給 Whisper
+    當前文脈絡，同音字辨識時會偏向選這裡出現過的詞或同主題詞彙，藉此提升
+    人名、地名，以及當天話題相關詞彙的辨識率（見 app/services/stt.py transcribe_bytes 的 prompt 參數）。
+    topic 是自由文字、沒有固定詞庫，換成任何主題都能直接沿用，不需要為
+    每個主題另外維護詞彙表。查不到就回傳空字串，上層會直接跳過 prompt，
+    不影響原本的辨識行為。
     """
     try:
         meta_raw = await r.get(f"session:{session_id}:meta")
         if not meta_raw:
             return ""
-        patient_id = json.loads(meta_raw).get("patient_id")
+        meta = json.loads(meta_raw)
+        patient_id = meta.get("patient_id")
+        topic = meta.get("topic")
         if not patient_id:
             return ""
 
@@ -67,6 +72,8 @@ async def _build_patient_prompt(r, session_id: str) -> str:
             parts.append(f"家人有{patient.family}")
         if patient.preferences:
             parts.append(f"興趣是{patient.preferences}")
+        if topic:
+            parts.append(f"今天聊的主題是{topic}")
         return "，".join(parts) + "。"
     except Exception as e:
         print(f"[WS/STT] 組 initial_prompt 失敗: {e}")

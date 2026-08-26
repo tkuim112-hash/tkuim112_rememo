@@ -307,7 +307,14 @@ FIVE_W1H_AUDIO_KEYS = {
             "Where": ["w_hobby_where1", "w_hobby_where2"],
             "When": ["w_hobby_when1", "w_hobby_when2"],
             "How": ["w_hobby_how1", "w_hobby_how2"],
-            "Why": ["w_hobby_why1", "w_hobby_why2"],
+            # orchestrator.py _FIVE_W1H_BANK 的「興趣」Why 已經把原本
+            # index 0 那句（「這件事裡，最讓你放不下的是哪一部分？」，
+            # 對應 w_hobby_why1）刪掉，只剩原本 index 1 那句「說起這個
+            # 興趣，最讓你著迷的是什麼？」——這裡要同步拿掉 w_hobby_why1，
+            # 讓剩下唯一的 variant（現在的 index 0）正確對到它原本的
+            # w_hobby_why2，不要因為兩邊清單長度不同步，讓 index 0 誤查到
+            # 已經刪掉那句的舊音檔。
+            "Why": ["w_hobby_why2"],
         },
     },
     "專長": {

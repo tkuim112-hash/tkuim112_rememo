@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -517,7 +518,27 @@ public class KinectCalibrationManager : MonoBehaviour
             statusIndicator.sprite = calibrated ? spriteSuccess : spriteDetecting;
     }
 
-    void OnDestroy() => ws?.Close();
+    // 2026-08-26稽核（使用者發現，code review 再稽核修正）：場景卸載時如果
+    // ws 還在背景執行緒讀取 frame header，直接 Close() 會把讀到一半的
+    // stream 硬切斷，WebSocketSharp 內部把這個情況標成 Fatal 等級丟出
+    // WebSocketException（"The header of a frame cannot be read from the
+    // stream."）。這個時間點資料（基準值）早就送達、後端也已經回 ok，純粹
+    // 是關閉時機不乾淨的噪音，不影響功能。
+    // 原本只在 ReadyState == Open 才呼叫 Close()，但這個檔案自己上面的
+    // 註解就寫了 TLS handshake 可能拖到 30～40 秒、比15秒的校正視窗還長——
+    // 如果場景在 ws 還處於 Connecting（尚未變成 Open）時就被卸載，改成只
+    // 判斷 Open 會讓 Close() 完全不會被呼叫，連線/背景執行緒永遠不會被
+    // 關掉，比原本「不管狀態一律呼叫 Close()」還倒退。改成 Open／
+    // Connecting 都呼叫 Close()（覆蓋原本所有非 Closed/Closing 的情況），
+    // 外層包 try/catch 吞掉上述已知無害的 Fatal 噪音，兩個問題一起解決。
+    void OnDestroy()
+    {
+        if (ws == null) return;
+        if (ws.ReadyState != WebSocketState.Open && ws.ReadyState != WebSocketState.Connecting)
+            return;
+        try { ws.Close(); }
+        catch (Exception e) { Debug.LogWarning($"[Calibration WS] 關閉時發生例外（可忽略）: {e.Message}"); }
+    }
 }
 
 [System.Serializable]

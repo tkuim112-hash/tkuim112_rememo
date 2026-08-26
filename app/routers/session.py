@@ -376,14 +376,37 @@ async def _save_round_exchange(
         if round_row is None:
             return
         await db.flush()
-        db.add(RoundExchange(
-            round_id=round_row.id,
-            question_number=question_number,
-            question=question,
-            stage=stage,
-        ))
+        # 2026-08-26稽核（使用者回報 round 2 答案沒進來後追查發現，code review
+        # 再稽核修正）：前端把 question_number 存在往返的 state 裡，如果某次
+        # /session/respond 的回應沒有真的套用到前端（例如網路請求失敗/逾時），
+        # 前端下一次還是會帶著同一個舊 question_number 送出，這裡如果單純
+        # SELECT 再 INSERT，兩個幾乎同時抵達的請求可能都通過「查無此題號」
+        # 檢查、各自插入一列（正式資料庫也真的抓到一組：round_id=718,
+        # question_number=2）——不只白佔一筆資料，_fill_round_exchange_answer
+        # 之後查到兩筆會丟 MultipleResultsFound，長者這題答案就永遠補不進去。
+        # 跟 _get_or_create_round 對 rounds(session_id, round_number) 同一套
+        # 修法（見該函式說明、migration f1a3c9e7b2d4）：改用
+        # round_exchanges(round_id, question_number) 唯一約束搭配
+        # ON CONFLICT DO NOTHING，插入本身就是原子操作，不會有 race window。
+        stmt = (
+            pg_insert(RoundExchange)
+            .values(
+                round_id=round_row.id,
+                question_number=question_number,
+                question=question,
+                stage=stage,
+            )
+            .on_conflict_do_nothing(index_elements=["round_id", "question_number"])
+        )
+        result = await db.execute(stmt)
         await db.commit()
-        print(f"[DB] round_exchanges 新增問題: round={round_number} q#={question_number}")
+        if result.rowcount == 0:
+            print(
+                f"[DB] round_exchanges 同一題號已存在，略過重複新增: "
+                f"round={round_number} q#={question_number}"
+            )
+        else:
+            print(f"[DB] round_exchanges 新增問題: round={round_number} q#={question_number}")
     except Exception as e:
         print(f"[DB] round_exchanges 寫入失敗（不影響主流程）: {e}")
         await db.rollback()
@@ -395,28 +418,47 @@ async def _fill_round_exchange_answer(
     round_number: int,
     question_number: int,
     answer: str,
-) -> None:
-    """長者回答後，補上對應 round_exchanges 列的 answer。"""
+) -> bool:
+    """長者回答後，補上對應 round_exchanges 列的 answer。
+
+    回傳 True 代表這是第一次補上這題的答案；回傳 False 代表這一列早就有
+    answer 了（或整列查不到）——呼叫端（session_respond）用這個判斷這次
+    請求是不是前端逾時重試造成的重複提交，藉此避免 _save_round_response／
+    _accumulate_round_response_time 被同一句回答重複觸發兩次（見
+    2026-08-26 code review 稽核：GameController.cs 新增的重試機制，如果
+    只是回應在路上弄丟、後端其實已經處理成功，重送會帶著同一組
+    round+question_number，答案文字被寫進 patient_response 兩次、反應時間
+    統計也被重複累加）。
+    """
     try:
         round_row = await _get_or_create_round(db, session_id, round_number)
         if round_row is None:
-            return
+            return False
+        # 用 .first()（依 id 排序取最新一筆）而不是 scalar_one_or_none()：
+        # _save_round_exchange 現在已經用 DB 唯一約束＋ON CONFLICT DO NOTHING
+        # 擋掉新的重複 insert（見 migration f1a3c9e7b2d4），但這筆修復前就
+        # 累積的舊資料仍可能有重複列，scalar_one_or_none() 遇到多筆會直接丟
+        # MultipleResultsFound，讓長者這題答案整個補不進去；取最新一筆更
+        # 符合「長者剛答的是最近這題」的實際情況。
         exchange = (
             await db.execute(
                 select(RoundExchange).where(
                     RoundExchange.round_id == round_row.id,
                     RoundExchange.question_number == question_number,
-                )
+                ).order_by(RoundExchange.id.desc())
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if exchange is None:
-            return
+            return False
+        already_answered = bool(exchange.answer)
         exchange.answer = answer
         await db.commit()
         print(f"[DB] round_exchanges 補上答案: round={round_number} q#={question_number}")
+        return not already_answered
     except Exception as e:
         print(f"[DB] round_exchanges answer 寫入失敗（不影響主流程）: {e}")
         await db.rollback()
+        return False
 
 
 async def _accumulate_round_response_time(r, session_id: str, round_number: int, elapsed_ms: int) -> None:
@@ -1386,26 +1428,38 @@ async def session_respond(
         r = request.app.state.redis
         metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
         emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
-        # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話
-        # rounds.emotion 給治療師頁面顯示用，要存中文標籤（見 sensor.py 的
-        # emotion_label），不能存這裡的英文 emotion_raw——上面 emotion 變數
-        # 保留英文原值是因為下面 orchestrator.process_response 內部（含
-        # closing_templates 判斷情緒是否觸發安撫）是拿英文值做比對。
-        await _save_round_response(
-            db, body.state.session_id, body.state.round,
-            text=body.elder_response, emotion=metrics.get("emotion", ""),
-            patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
-        )
-        # 補上長者剛剛回答的那一題的 answer
-        await _fill_round_exchange_answer(
+        # 2026-08-26稽核（code review 發現）：先查/補這題的 round_exchanges
+        # 答案，順便判斷這是不是前端逾時重試造成的重複提交（見
+        # _fill_round_exchange_answer 說明）——GameController.cs 新增的重試
+        # 機制，如果只是回應在路上弄丟、後端其實已經處理成功，重送會帶著
+        # 同一組 round+question_number。是重複提交的話，底下落地逐字稿／
+        # 累加反應時間都要跳過，不然長者同一句話會被記兩次、反應時間統計
+        # 也會被重複累加。
+        is_first_answer = await _fill_round_exchange_answer(
             db, body.state.session_id, body.state.round,
             question_number=body.state.question_number, answer=body.elder_response,
         )
-        # 這一題長者花了多久回答，累加進本回合的反應時間統計
-        if body.state.question_asked_at:
-            elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
-            await _accumulate_round_response_time(
-                r, body.state.session_id, body.state.round, elapsed_ms
+        if is_first_answer:
+            # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話
+            # rounds.emotion 給治療師頁面顯示用，要存中文標籤（見 sensor.py 的
+            # emotion_label），不能存這裡的英文 emotion_raw——上面 emotion 變數
+            # 保留英文原值是因為下面 orchestrator.process_response 內部（含
+            # closing_templates 判斷情緒是否觸發安撫）是拿英文值做比對。
+            await _save_round_response(
+                db, body.state.session_id, body.state.round,
+                text=body.elder_response, emotion=metrics.get("emotion", ""),
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
+            # 這一題長者花了多久回答，累加進本回合的反應時間統計
+            if body.state.question_asked_at:
+                elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
+                await _accumulate_round_response_time(
+                    r, body.state.session_id, body.state.round, elapsed_ms
+                )
+        else:
+            print(
+                f"[DB] round={body.state.round} q#={body.state.question_number} "
+                f"這題已經有答案，判定為重複提交，跳過逐字稿/反應時間累加"
             )
         await _update_live_view(
             request.app.state.redis, body.state.session_id,
