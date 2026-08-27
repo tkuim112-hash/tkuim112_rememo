@@ -35,7 +35,11 @@ public class HandCursorRemapper : MonoBehaviour
 
     [Header("關節短暫遮擋緩衝")]
     [Tooltip("手伸到身體前方（例如靠近麥克風按鈕）時，Kinect 常會短暫追蹤不到手。連續多少 frame 都追蹤不到才視為「手放下了」並歸位，避免單幀誤判造成的閃爍/跳動")]
-    public int untrackedDebounceFrames = 10;
+    public int untrackedDebounceFrames = 18;
+
+    [Header("放手判定緩衝")]
+    [Tooltip("raiseThreshold(0.15) 跟 lowerThreshold(0.08) 之間只有 0.07 的差距，手部自然晃動很容易單幀跨過底線又彈回來。連續多少 frame 的 ny 都低於 lowerThreshold 才真的判定放手歸位，避免操作中手明明還舉著卻被誤判放手跳回角落")]
+    public int lowerDebounceFrames = 18;
 
     private RectTransform _rect;
     private Canvas _canvas;
@@ -50,6 +54,8 @@ public class HandCursorRemapper : MonoBehaviour
     // 最近一次有效追蹤時計算出的目標位置，短暫遮擋期間繼續朝這個位置平滑移動，而不是瞬間跳到角落
     private Vector2 _lastGoalPos;
     private int _untrackedFrames = 0;
+    // ny 低於 lowerThreshold 已經連續幾個 frame，用來對「放手判定」做 debounce
+    private int _belowLowerFrames = 0;
 
     // 治療師端暫停旗標：鎖定期間游標每幀強制釘在左下角起始位置、完全不讀手部座標，
     // 直到治療師端送出繼續（SetLocked(false)）才解除
@@ -79,6 +85,7 @@ public class HandCursorRemapper : MonoBehaviour
     {
         _isActive = false;
         _waitingForLower = true;
+        _belowLowerFrames = 0;
     }
 
     Vector2 GetCornerPos(Vector2 canvasSize)
@@ -98,6 +105,7 @@ public class HandCursorRemapper : MonoBehaviour
             _isActive = false;
             _waitingForLower = false;
             _untrackedFrames = 0;
+            _belowLowerFrames = 0;
             _lastGoalPos = cornerPos;
             _smoothedPos = cornerPos;
             _initialized = true;
@@ -124,6 +132,7 @@ public class HandCursorRemapper : MonoBehaviour
             _isActive = false;
             _waitingForLower = false;
             _untrackedFrames = 0;
+            _belowLowerFrames = 0;
             _lastGoalPos = cornerPos;
             goalPos = cornerPos;
         }
@@ -144,6 +153,7 @@ public class HandCursorRemapper : MonoBehaviour
                 {
                     _isActive = false;
                     _waitingForLower = false;
+                    _belowLowerFrames = 0;
                     _lastGoalPos = cornerPos;
                 }
                 goalPos = _lastGoalPos;
@@ -173,13 +183,30 @@ public class HandCursorRemapper : MonoBehaviour
                     // 按鈕觸發後，等手真正放下（低於 lowerThreshold）才解除鎖定
                     if (ny < lowerThreshold)
                         _waitingForLower = false;
+                    _belowLowerFrames = 0;
                 }
                 else
                 {
                     if (!_isActive && ny >= raiseThreshold)
+                    {
                         _isActive = true;
-                    else if (_isActive && ny < lowerThreshold)
-                        _isActive = false;
+                        _belowLowerFrames = 0;
+                    }
+                    else if (_isActive)
+                    {
+                        // raiseThreshold(0.15) 跟 lowerThreshold(0.08) 只差 0.07，單幀手震很容易誤判放手，
+                        // 所以要連續 lowerDebounceFrames 幀都低於門檻才真的歸位，中途彈回門檻之上就重置計數
+                        if (ny < lowerThreshold)
+                        {
+                            _belowLowerFrames++;
+                            if (_belowLowerFrames >= lowerDebounceFrames)
+                                _isActive = false;
+                        }
+                        else
+                        {
+                            _belowLowerFrames = 0;
+                        }
+                    }
                 }
 
                 if (_isActive)

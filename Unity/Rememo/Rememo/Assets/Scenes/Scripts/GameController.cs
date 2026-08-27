@@ -147,6 +147,10 @@ public class GameController : MonoBehaviour
 
     void OnMicToggle()
     {
+        // KinectButtonHover 是直接 onClick.Invoke()，不會檢查 interactable，
+        // 暫停時 micButton.interactable 被設 false 這裡要自己再擋一次，
+        // 不能只靠游標被鎖走這個側面效果。
+        if (!micButton.interactable) return;
         if (!isRecording) StartRecording();
         else              StopRecording();
     }
@@ -425,7 +429,10 @@ public class GameController : MonoBehaviour
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
 
-        StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
+        // /session/start 回傳時 image_path 一定是空字串（見 StartRound 下方註解），
+        // 圖片要等長者答完生圖前引導問題、/session/respond 才第一次真的生出來。
+        if (!string.IsNullOrEmpty(resp.image_path))
+            StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
 
         var uris = new List<string>();
         uris.AddRange(LocalAudioPlayer.BuildUris(
@@ -469,6 +476,7 @@ public class GameController : MonoBehaviour
 
     void OnReplayAudio()
     {
+        if (replayButton != null && !replayButton.interactable) return;
         if (audioSource == null || audioSource.clip == null) return;
         audioSource.Stop();
         audioSource.Play();

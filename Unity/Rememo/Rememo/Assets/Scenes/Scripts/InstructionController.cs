@@ -22,6 +22,12 @@ public class InstructionController : MonoBehaviour
 
     [Header("UI 元件")]
     public Image progressBar;
+    [Tooltip("進度條填滿後要一起隱藏的容器（進度條本身 + 底圖）")]
+    public GameObject progressBarContainer;
+    [Tooltip("進度條填滿後才出現，使用者按下才切下一場景")]
+    public Button startButton;
+    [Tooltip("手掌游標，開始按鈕出現前不給操作，跟開始按鈕同時出現")]
+    public GameObject handCursor;
 
     [Header("進度條動畫參數")]
     [Tooltip("等後端生成內容的期間，進度條先爬到這個比例，剩下留給內容真的生成完畢那一刻")]
@@ -46,6 +52,12 @@ public class InstructionController : MonoBehaviour
             nextScene = PlayerPrefs.GetString("NextScene");
 
         progressBar.fillAmount = 0f;
+        if (startButton != null)
+        {
+            startButton.gameObject.SetActive(false);
+            startButton.onClick.AddListener(OnStartClicked);
+        }
+        if (handCursor != null) handCursor.SetActive(false);
         StartCoroutine(RunLoadingFlow());
     }
 
@@ -62,6 +74,16 @@ public class InstructionController : MonoBehaviour
         // 直接放行讓 GameScene 進場時照舊自己打一次 API，不讓這個環節卡住展示。
 
         yield return StartCoroutine(FillToComplete());
+
+        // 進度條滿了不再自動切場景，改成隱藏進度條、換開始按鈕出來，
+        // 等長者自己按下才進下一頁。
+        if (progressBarContainer != null) progressBarContainer.SetActive(false);
+        if (startButton != null) startButton.gameObject.SetActive(true);
+        if (handCursor != null) handCursor.SetActive(true);
+    }
+
+    void OnStartClicked()
+    {
         SceneManager.LoadScene(nextScene);
     }
 
