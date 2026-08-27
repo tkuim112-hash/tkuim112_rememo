@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { logAccess } from "@/lib/audit";
+import { sessionIdWhereClause } from "@/lib/session-id";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     JOIN sessions s ON s.id = r.session_id
     JOIN patients p ON p.id = s.patient_id
     LEFT JOIN round_exchanges re ON re.round_id = r.id
-    WHERE r.session_id = ${parseInt(id)}
+    WHERE ${sessionIdWhereClause(id, "s")}
       AND p.organization_id = ${session.organizationId}
     ORDER BY r.round_number ASC, re.question_number ASC
   `;
