@@ -326,13 +326,13 @@ async def _save_round_response(
     session_id: str,
     round_number: int,
     text: str,
-    emotion: str = "",
     patient_id: int | None = None,
     therapist_id: int | None = None,
 ) -> None:
     """
     把長者原話累加到 rounds.patient_response（真相源，之後可重建向量庫），
-    同回合多次回應以換行分隔；emotion 記錄該回合最後一次偵測值。
+    同回合多次回應以換行分隔。emotion 不在這裡寫——改由回合結束時
+    _finalize_round_emotion 依整回合累積的 frame 數多數決寫入，見該函式說明。
     """
     try:
         round_row = await _get_or_create_round(
@@ -344,8 +344,6 @@ async def _save_round_response(
             round_row.patient_response += "\n" + text
         else:
             round_row.patient_response = text
-        if emotion:
-            round_row.emotion = emotion
         await db.commit()
         print(f"[DB] rounds.patient_response 寫入成功: round={round_number} len={len(text)}")
 
@@ -493,6 +491,38 @@ async def _finalize_round_response_time(
                 print(f"[DB] rounds.response_time 寫入成功: round={round_number} avg={avg_seconds:.1f}s")
         except Exception as e:
             print(f"[DB] rounds.response_time 寫入失敗（不影響主流程）: {e}")
+            await db.rollback()
+    await r.delete(key)
+
+
+async def _finalize_round_emotion(
+    db: AsyncSession,
+    r,
+    session_id: str,
+    round_number: int,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """回合結束時，把 sensor.py _update_session_stats 依回合分桶累積的 emo_*
+    frame 數取多數決，寫入 rounds.emotion，取代舊版只存「回答那一瞬間」EMA
+    快照的作法——單一瞬間容易受雜訊影響（例如剛好在回答問題時比較有活力），
+    跟整回合（含看圖、聽故事、思考）的實際情緒觀感不一致，多數決更能代表
+    整回合狀態，也才會跟療程整體情緒（_compute_and_save_assessment 的
+    dominant_emotion）用同一套邏輯、可比較。"""
+    key = f"session:{session_id}:round:{round_number}:emotion"
+    raw = await r.hgetall(key)
+    emo = {k: int(raw.get(k, 0)) for k in ("happy", "excited", "angry", "sad")}
+    if any(emo.values()):
+        dominant = max(emo, key=emo.get)
+        emotion_label = _EMOTION_LABEL_MAP.get(dominant, "適當")
+        try:
+            round_row = await _get_or_create_round(db, session_id, round_number, patient_id, therapist_id)
+            if round_row is not None:
+                round_row.emotion = emotion_label
+                await db.commit()
+                print(f"[DB] rounds.emotion 寫入成功: round={round_number} emotion={emotion_label}")
+        except Exception as e:
+            print(f"[DB] rounds.emotion 寫入失敗（不影響主流程）: {e}")
             await db.rollback()
     await r.delete(key)
 
@@ -1440,14 +1470,12 @@ async def session_respond(
             question_number=body.state.question_number, answer=body.elder_response,
         )
         if is_first_answer:
-            # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話
-            # rounds.emotion 給治療師頁面顯示用，要存中文標籤（見 sensor.py 的
-            # emotion_label），不能存這裡的英文 emotion_raw——上面 emotion 變數
-            # 保留英文原值是因為下面 orchestrator.process_response 內部（含
-            # closing_templates 判斷情緒是否觸發安撫）是拿英文值做比對。
+            # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話。
+            # rounds.emotion 不在這裡寫，改由回合結束時 _finalize_round_emotion
+            # 依整回合累積的 frame 數多數決寫入（見該函式說明）。
             await _save_round_response(
                 db, body.state.session_id, body.state.round,
-                text=body.elder_response, emotion=metrics.get("emotion", ""),
+                text=body.elder_response,
                 patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
             )
             # 這一題長者花了多久回答，累加進本回合的反應時間統計
@@ -1489,6 +1517,10 @@ async def session_respond(
         if result.get("state") is None:
             # 回合結束（end_round / end_session），把這回合累積的平均反應時間寫進 rounds.response_time
             await _finalize_round_response_time(
+                db, r, body.state.session_id, body.state.round,
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
+            await _finalize_round_emotion(
                 db, r, body.state.session_id, body.state.round,
                 patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
             )

@@ -2,20 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { logAccess } from "@/lib/audit";
+import { sessionIdWhereClause } from "@/lib/session-id";
 
 // 這支路由的 id 參數有兩種來源：從個案頁「歷次活動」清單點進來的是 PostgreSQL
 // 內部整數 sessions.id；從「活動觀察頁面」（治療師端即時療程）結束時帶過來的
 // 是 Python 後端用的 UUID session_uuid（見 LiveSessionView.tsx 的 sessionId）。
-// parseInt() 對 UUID 字串只會取到開頭數字（例如 "157fcc28-..." 變成 157），
-// 查到完全不相關的 row，導致這條路徑一直悄悄查不到資料/存不進去卻沒有報錯。
-// 兩種都要認得，用是否為純數字判斷要查哪個欄位；tableAlias 因為 PUT 的
-// UPDATE 語句沒有下 alias、GET 的 SELECT 有下 "s"，兩邊欄位前綴不一樣。
-function sessionIdWhereClause(id: string, tableAlias = "") {
-  const col = tableAlias ? `${tableAlias}.` : "";
-  return /^\d+$/.test(id)
-    ? sql`${sql.unsafe(col)}id = ${parseInt(id)}`
-    : sql`${sql.unsafe(col)}session_uuid = ${id}`;
-}
+// 判斷邏輯見 @/lib/session-id.ts——2026-08-27稽核：/rounds 這支路由當初沒有
+// 一併套用同一套判斷，一直是直接 parseInt(id)，UUID 字串查到不相關的
+// session_id，導致治療師網頁從活動觀察頁結束後看歷史逐字稿整頁是空的，已經
+// 抽成共用 function 讓兩支路由用同一份，不再各自維護。
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
