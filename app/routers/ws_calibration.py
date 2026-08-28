@@ -29,7 +29,8 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
         "jointZ": [...]
       }
 
-    寫入 Redis key: session:{session_id}:calibration（無 TTL，療程結束時隨 meta 一起清除）
+    寫入 Redis key: session:{session_id}:calibration（TTL 7200 秒，與 /session/pending
+    的 case:{patient_id}:pending_session 對齊；療程正式跑完時仍會隨 meta 一起提前清除）。
     session_id 缺失時拒絕儲存（回傳 ok: false），個人化功能 fallback 為固定常數。
     """
     try:
@@ -39,6 +40,15 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
         return
 
     await websocket.accept()
+
+    r = websocket.app.state.redis
+    if session_id:
+        # 同一個 session_id 在 2 小時內可能被同一位病患重複沿用（見 /session/pending）。
+        # 若上一輪校正完成後療程沒有正式跑完（沒被 /session/start 之後的流程清掉），
+        # 這裡殘留的舊校正資料會讓 /session/{id}/status 誤判成「已校正」、跳過
+        # calibrating 中間態。新連線代表要重新校正一次，先清掉舊值。
+        await r.delete(f"session:{session_id}:calibration")
+
     # 從這裡到收到最終校正資料為止，這條連線會一直卡在下面的 receive_json()——
     # 掛著沒斷代表 Unity 正在跑校正流程，供 /session/{id}/status 回報「校正進行中」
     # 給治療師網頁（見 ws_registry.py）。
@@ -54,8 +64,7 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
             await websocket.send_json({"ok": False, "error": "missing session_id"})
             return
 
-        r = websocket.app.state.redis
-        await r.set(f"session:{session_id}:calibration", json.dumps(data))
+        await r.set(f"session:{session_id}:calibration", json.dumps(data), ex=7200)
         await websocket.send_json({"ok": True, "session_id": session_id})
 
     except WebSocketDisconnect:

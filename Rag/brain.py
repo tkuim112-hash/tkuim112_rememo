@@ -40,8 +40,14 @@ class ElderlyAI:
             embedding=self.embeddings
         )
 
-    def retrieve_memories(self, elder_id, query, limit=3, score_threshold=0.5):
-        """單次向量搜尋：查一次、依 Qdrant 回傳的真實相似度排序，低於門檻的結果直接排除（避免硬湊不相關記憶）。"""
+    def retrieve_memories(self, elder_id, query, limit=3, score_threshold=0.65):
+        """單次向量搜尋：查一次、依 Qdrant 回傳的真實相似度排序，低於門檻的結果直接排除（避免硬湊不相關記憶）。
+
+        2026-08-20 稽核：門檻從 0.5 調到 0.65——bge-m3 這類多語 embedding 模型，
+        中文短句之間即使主題不相關，cosine 相似度本來就常落在 0.4-0.6 這段
+        （句長/句式結構相似也會拉高分數），0.5 太容易放進「表面像但語意無關」
+        的結果。這次同時修掉了 ingest.py 存入內容是詞語沙拉的根因問題，
+        threshold 調整算是第二層防線，不是唯一解法。"""
         hits = self.db.similarity_search_with_score(
             query, k=limit,
             filter=models.Filter(must=[

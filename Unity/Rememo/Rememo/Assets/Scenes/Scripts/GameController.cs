@@ -32,15 +32,18 @@ public class GameController : MonoBehaviour
     public TMP_Text inputText;
     public GameObject loadingSpinner;
     public RawImage photoDisplay;
+    public GameObject generatingImageText;
 
     [Header("Kinect 整合")]
     [Tooltip("拖入場景中的 KinectAudioSender；若留空則退回使用內建麥克風")]
     public KinectAudioSender kinectAudioSender;
     [Tooltip("拖入場景中的 KinectSensorSender；若留空則不追蹤反應時間")]
     public KinectSensorSender kinectSensorSender;
+    [Tooltip("拖入場景中的 HandCursorRemapper；治療師端暫停/繼續時用來鎖定/解鎖手部游標")]
+    public HandCursorRemapper handCursorRemapper;
 
     [Header("WebSocket STT 設定（內建麥克風模式用）")]
-    public string sttServerUrl = "ws://localhost:8000/ws/stt";
+    public string sttServerUrl = "wss://api.re-memo.com/ws/stt";
     public int sampleRate = 16000;
     public int maxRecordSeconds = 60;
 
@@ -58,19 +61,29 @@ public class GameController : MonoBehaviour
     private bool isWaitingForStt = false;
     private bool isSubmitting = false;
     private bool isPaused = false;
+    private bool hasSpeechInput = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
-    private Coroutine reactionTimeoutCoroutine;
-    private readonly WaitForSeconds reactionTimeoutWait = new WaitForSeconds(30f);
     private const string NoResponseMarker = "（長者未回應）";
     private readonly Queue<string> incomingMessages = new Queue<string>();
     private readonly object queueLock = new object();
     private string displayedText = "";
 
+    // 內建麥克風模式的 STT WebSocket 斷線重連（見 ConnectWebSocket 內的 OnClose/OnError）。
+    // 治療師的暫停/跳過等指令要靠這條連線才送得到，斷線後若不重連，按鈕會永久失效
+    // 直到長者重開 App。
+    private volatile bool needsWsReconnect = false;
+    private float wsReconnectTimer = 0f;
+    private bool isQuitting = false;
+    private const float WsReconnectDelay = 3f;
+
     private bool UseKinect => kinectAudioSender != null;
 
     [System.Serializable]
     private class ControlPayload { public string type; }
+
+    [System.Serializable]
+    private class TextPayload { public string text; }
 
     [System.Serializable]
     private class STTMessage { public string type; public string text; public bool isFinal; public string action; }
@@ -82,15 +95,17 @@ public class GameController : MonoBehaviour
 
         // 跟 WarmupScene 的 KinectCalibrationManager 用同一組 session_id（由 SessionService
         // 在 UserSelectScene 選定病患時換好），校正資料才會跟這次療程的對話記錄綁在一起。
-        string sharedSessionId = PlayerPrefs.GetString("session_id", "");
+        string sharedSessionId = AuthSession.SessionId ?? "";
         if (!string.IsNullOrEmpty(sharedSessionId)) sessionId = sharedSessionId;
 
         submitButton.onClick.AddListener(OnSubmit);
         if (micButton != null) micButton.onClick.AddListener(OnMicToggle);
         if (replayButton != null) replayButton.onClick.AddListener(OnReplayAudio);
         ResetInputText();
+        RefreshSubmitButton();
         UpdateRoundBadge();
         loadingSpinner.SetActive(false);
+        if (generatingImageText != null) generatingImageText.SetActive(false);
 
         if (UseKinect)
             // 掛在 Start() 而不是 StartRecording()：治療師端的暫停/繼續/跳過/重播指令
@@ -119,9 +134,10 @@ public class GameController : MonoBehaviour
         // 指令轉發到哪一條連線（見 app/ws_registry.py）。
         string url = string.IsNullOrEmpty(sessionId) ? sttServerUrl : $"{sttServerUrl}?session_id={sessionId}";
         ws = new WebSocket(AuthService.AppendToken(url));
+        ws.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
         ws.OnOpen  += (s, e) => Debug.Log("[Game STT WS] 已連線");
-        ws.OnError += (s, e) => Debug.LogError($"[Game STT WS] 錯誤: {e.Message}");
-        ws.OnClose += (s, e) => Debug.Log("[Game STT WS] 已關閉");
+        ws.OnError += (s, e) => { Debug.LogError($"[Game STT WS] 錯誤: {e.Message}"); needsWsReconnect = true; };
+        ws.OnClose += (s, e) => { Debug.Log("[Game STT WS] 已關閉"); if (!isQuitting) needsWsReconnect = true; };
         ws.OnMessage += (s, e) => {
             if (!e.IsText) return;
             lock (queueLock) incomingMessages.Enqueue(e.Data);
@@ -131,14 +147,18 @@ public class GameController : MonoBehaviour
 
     void OnMicToggle()
     {
+        // KinectButtonHover 是直接 onClick.Invoke()，不會檢查 interactable，
+        // 暫停時 micButton.interactable 被設 false 這裡要自己再擋一次，
+        // 不能只靠游標被鎖走這個側面效果。
+        if (!micButton.interactable) return;
         if (!isRecording) StartRecording();
         else              StopRecording();
     }
 
     void StartRecording()
     {
-        CancelReactionTimeout();
         isRecording = true;
+        hasSpeechInput = true;
         displayedText = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -184,26 +204,20 @@ public class GameController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
-        // 逾時前都沒收到任何 transcript 訊息，displayedText 還是空的：代表整段
-        // 錄音沒辨識到任何內容，見 OnSttFinal 的 noSpeechRecognized 說明。
-        OnSttFinal(noSpeechRecognized: string.IsNullOrEmpty(displayedText));
+        OnSttFinal();
     }
 
-    void OnSttFinal(bool noSpeechRecognized = false)
+    void OnSttFinal()
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        // 沒辨識到任何內容時，把卡住的「辨識中...」換成「辨識完成」，不要留著
-        // 讓長者/治療師誤以為還在辨識；真的有辨識到文字的情況完全不動這裡，
-        // 文字框已經在 HandleSTTMessage 被實際辨識結果蓋過了。
-        if (noSpeechRecognized)
-            inputText.text = "辨識完成";
+        inputText.text = "辨識完成，請按送出";
         RefreshSubmitButton();
     }
 
     void RefreshSubmitButton()
     {
-        bool enabled = !isRecording && !isWaitingForStt && !isSubmitting;
+        bool enabled = hasSpeechInput && !isRecording && !isWaitingForStt && !isSubmitting && !isPaused;
         submitButton.interactable = enabled;
         if (submitButton.image != null)
             submitButton.image.color = enabled ? Color.white : new Color(0.55f, 0.55f, 0.55f, 1f);
@@ -219,6 +233,18 @@ public class GameController : MonoBehaviour
     {
         if (!UseKinect && isRecording) StreamMicAudio();
         DrainIncomingMessages();
+        if (!UseKinect) TickWsReconnect();
+    }
+
+    void TickWsReconnect()
+    {
+        if (!needsWsReconnect) return;
+        wsReconnectTimer += Time.deltaTime;
+        if (wsReconnectTimer < WsReconnectDelay) return;
+        wsReconnectTimer = 0f;
+        needsWsReconnect = false;
+        Debug.Log("[Game STT WS] 嘗試重新連線");
+        ConnectWebSocket();
     }
 
     void StreamMicAudio()
@@ -277,45 +303,57 @@ public class GameController : MonoBehaviour
             switch (msg.action)
             {
                 case "replay_audio":
-                    OnReplayAudio();
+                    // 暫停中不重播：重播會重新排反應逾時倒數，等於讓暫停中的療程自己繼續跑。
+                    if (!isPaused)
+                        OnReplayAudio();
                     break;
                 case "skip_scene":
                     // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
-                    // 沿用 ReactionTimeout 逾時時同樣的忙碌判斷，避免跟錄音/送出中互撞。
-                    CancelReactionTimeout();
+                    // 避免跟錄音/送出中互撞。
                     if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused)
                         StartCoroutine(AutoSubmitNoResponse());
                     break;
                 case "pause":
                     isPaused = true;
-                    CancelReactionTimeout();
                     micButton.interactable = false;
                     submitButton.interactable = false;
+                    if (replayButton != null) replayButton.interactable = false;
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(true);
                     break;
                 case "resume":
                     isPaused = false;
                     RefreshSubmitButton();
                     micButton.interactable = true;
-                    StartReactionTimeout();
+                    if (replayButton != null) replayButton.interactable = true;
+                    if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
                 case "end":
-                    Application.Quit();
+                    // 治療師手動結束，跳過剩餘回合／心得環節，直接走 ThankYouScene，
+                    // 沿用 LoadingScene 轉場（ThankYouController 不需要任何 PlayerPrefs 資料）。
+                    PlayerPrefs.SetString("NextScene", "ThankYouScene");
+                    SceneManager.LoadScene("LoadingScene");
+                    break;
+                case "generating_image":
+                    // 後端 orchestrator._start_scene_after_detail 真正開始生圖前推播
+                    // 的通知（見 app/routers/session.py 呼叫 process_response 時的
+                    // on_generating_image callback）；只有這個訊號會打開這個標籤，
+                    // 生圖前追問Q2那種不生圖的分支不會走到這裡，不會誤顯示。
+                    if (generatingImageText != null) generatingImageText.SetActive(true);
                     break;
             }
             return;
         }
 
         if (msg.type != "transcript") return;
+        // 長者不會在畫面上看到辨識出的文字，只在背後記錄下來供送出時使用；
+        // inputText 維持 StartRecording/StopRecording 設的「錄音中...」「辨識中...」狀態，
+        // 直到 OnSttFinal 換成「辨識完成，請按送出」。
         bool hasText = !string.IsNullOrWhiteSpace(msg.text);
         if (hasText)
-        {
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            inputText.text = msg.text;
-            displayedText  = msg.text;
-        }
+            displayedText = msg.text;
         if (msg.isFinal)
         {
-            OnSttFinal(noSpeechRecognized: !hasText);
+            OnSttFinal();
             if (hasText)
                 StartCoroutine(PostTranscript(msg.text));
         }
@@ -323,7 +361,10 @@ public class GameController : MonoBehaviour
 
     IEnumerator PostTranscript(string text)
     {
-        byte[] body = Encoding.UTF8.GetBytes($"{{\"text\":{JsonUtility.ToJson(text)}}}");
+        // JsonUtility.ToJson 不支援直接序列化裸字串（只能序列化 [Serializable]
+        // 物件），對字串呼叫會回傳 "{}"，導致送出的 JSON 變成 {"text":{}}，
+        // 後端 Pydantic 驗證型別不符直接 422。要包成物件再序列化。
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/response", "POST");
         req.uploadHandler   = new UploadHandlerRaw(body);
         req.downloadHandler = new DownloadHandlerBuffer();
@@ -340,6 +381,7 @@ public class GameController : MonoBehaviour
         inputText.text = placeholderText;
         inputText.color = new Color(0.67f, 0.67f, 0.67f, 1f);
         displayedText = "";
+        hasSpeechInput = false;
     }
 
     // ─── 回合流程 ──────────────────────────────────────────────────
@@ -369,14 +411,28 @@ public class GameController : MonoBehaviour
         ApplyRoundResponse(resp);
     }
 
+    // scene_text（開場白／承接語）跟 question 接成一段一起顯示，跟
+    // ShareController.cs LoadClosingText 同一套做法——scene_text 之前只被
+    // 打包進音檔序列播放語音，畫面上完全沒有顯示，長者只看得到問題本身，
+    // 沒有前面的暖場鋪墊（2026-08-19 稽核發現）。
+    static string BuildAiText(string sceneText, string question)
+    {
+        if (string.IsNullOrEmpty(sceneText)) return question;
+        if (string.IsNullOrEmpty(question)) return sceneText;
+        return $"{sceneText}\n{question}";
+    }
+
     void ApplyRoundResponse(StartRoundResponse resp)
     {
         currentState = resp.state;
-        aiText.text = resp.question;
+        aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
 
-        StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
+        // /session/start 回傳時 image_path 一定是空字串（見 StartRound 下方註解），
+        // 圖片要等長者答完生圖前引導問題、/session/respond 才第一次真的生出來。
+        if (!string.IsNullOrEmpty(resp.image_path))
+            StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
 
         var uris = new List<string>();
         uris.AddRange(LocalAudioPlayer.BuildUris(
@@ -387,9 +443,7 @@ public class GameController : MonoBehaviour
             new[] { resp.question_audio_key }));
 
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, StartReactionTimeout));
-        else
-            StartReactionTimeout();
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -422,6 +476,7 @@ public class GameController : MonoBehaviour
 
     void OnReplayAudio()
     {
+        if (replayButton != null && !replayButton.interactable) return;
         if (audioSource == null || audioSource.clip == null) return;
         audioSource.Stop();
         audioSource.Play();
@@ -435,19 +490,17 @@ public class GameController : MonoBehaviour
 
     IEnumerator ProcessSubmit()
     {
-        CancelReactionTimeout();
         isSubmitting = true;
         if (isRecording) StopRecording();
         isWaitingForStt = false;
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         RefreshSubmitButton();
 
+        string userSpeech = displayedText;
+
         ResetInputText();
         aiText.gameObject.SetActive(false);
         loadingSpinner.SetActive(true);
-
-        string userSpeech = displayedText;
-        displayedText = "";
 
         yield return StartCoroutine(SendResponse(userSpeech));
 
@@ -460,28 +513,54 @@ public class GameController : MonoBehaviour
         if (currentState == null)
         {
             loadingSpinner.SetActive(false);
+            if (generatingImageText != null) generatingImageText.SetActive(false);
             aiText.gameObject.SetActive(true);
             yield break;
         }
 
         var body = new RespondRequest { elder_response = elderResponse, state = currentState };
-        using var req = new UnityWebRequest($"{backendUrl}/session/respond", "POST");
-        req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(body)));
-        req.downloadHandler = new DownloadHandlerBuffer();
-        req.SetRequestHeader("Content-Type", "application/json");
-        AuthService.AttachAuthHeader(req);
-        yield return req.SendWebRequest();
+        byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
+
+        // 2026-08-26稽核（使用者發現）：這支請求一旦失敗（網路抖動/逾時），
+        // currentState 完全沒有機會更新，下一次送出還是帶著同一份舊的
+        // question_number——後端可能把答案配對到錯的題號，甚至讓題號序列
+        // 整個錯位（見 app/routers/session.py _fill_round_exchange_answer／
+        // next_qn 計算說明）。原本只有「顯示一次錯誤」沒有重試，長者這句
+        // 話就此消失。改成原地重試幾次（間隔1.5秒），大部分暫時性的網路
+        // 抖動這樣就能救回來，只有重試用盡才真的放棄顯示錯誤。
+        const int maxAttempts = 3;
+        string responseText = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            using var req = new UnityWebRequest($"{backendUrl}/session/respond", "POST");
+            req.uploadHandler   = new UploadHandlerRaw(payload);
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "application/json");
+            AuthService.AttachAuthHeader(req);
+            yield return req.SendWebRequest();
+
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                responseText = req.downloadHandler.text;
+                break;
+            }
+
+            Debug.LogWarning($"[Respond] API 第{attempt}次失敗: {req.error}");
+            if (attempt < maxAttempts)
+                yield return new WaitForSeconds(1.5f);
+        }
 
         loadingSpinner.SetActive(false);
+        if (generatingImageText != null) generatingImageText.SetActive(false);
 
-        if (req.result != UnityWebRequest.Result.Success)
+        if (responseText == null)
         {
-            Debug.LogError($"[Respond] API 失敗: {req.error}");
+            Debug.LogError($"[Respond] API 重試{maxAttempts}次後仍失敗，長者這句回答暫時無法送出");
             aiText.gameObject.SetActive(true);
             yield break;
         }
 
-        var resp = JsonUtility.FromJson<RespondResponse>(req.downloadHandler.text);
+        var resp = JsonUtility.FromJson<RespondResponse>(responseText);
 
         if (resp.action == "end_session")
         {
@@ -494,7 +573,7 @@ public class GameController : MonoBehaviour
             PlayerPrefs.SetString("ClosingSceneAudioKeys", JoinAudioKeys(resp.scene_audio_keys));
             PlayerPrefs.SetString("ClosingThanksAudioKeys", JoinAudioKeys(resp.thanks_audio_keys));
             PlayerPrefs.SetString("ClosingQuestionAudioKeys", JoinAudioKeys(resp.question_audio_keys));
-            PlayerPrefs.SetString("session_id", sessionId);
+            AuthSession.SessionId = sessionId;
             PlayerPrefs.SetString("NextScene", "ShareScene");
             currentRound = 1;
             SceneManager.LoadScene("LoadingScene");
@@ -511,9 +590,16 @@ public class GameController : MonoBehaviour
         }
 
         currentState = resp.state;
-        aiText.text = resp.question;
+        aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
         kinectSensorSender?.OnQuestionAsked();
+
+        // /session/start、/session/round 回傳時 image_path 一定是空字串（見
+        // ApplyRoundResponse 上方註解），圖片是長者答完生圖前引導問題、這支
+        // /session/respond 才第一次真的生出來，所以載入圖片要放在這裡，不是
+        // ApplyRoundResponse。
+        if (!string.IsNullOrEmpty(resp.image_path))
+            StartCoroutine(LoadPhoto(BuildImageUrl(resp.image_path)));
 
         var uris = new List<string>();
         uris.AddRange(LocalAudioPlayer.BuildUris(
@@ -524,9 +610,7 @@ public class GameController : MonoBehaviour
             new[] { resp.question_audio_key }));
 
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, StartReactionTimeout));
-        else
-            StartReactionTimeout();
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
     }
 
     static string JoinAudioKeys(string[] keys)
@@ -535,30 +619,7 @@ public class GameController : MonoBehaviour
         return string.Join("|", keys);
     }
 
-    // ─── 反應逾時（長者聽完問題30秒沒按麥克風）────────────────────────
-
-    void CancelReactionTimeout()
-    {
-        if (reactionTimeoutCoroutine != null)
-        {
-            StopCoroutine(reactionTimeoutCoroutine);
-            reactionTimeoutCoroutine = null;
-        }
-    }
-
-    void StartReactionTimeout()
-    {
-        CancelReactionTimeout();
-        reactionTimeoutCoroutine = StartCoroutine(ReactionTimeout());
-    }
-
-    IEnumerator ReactionTimeout()
-    {
-        yield return reactionTimeoutWait;
-        reactionTimeoutCoroutine = null;
-        if (isRecording || isWaitingForStt || isSubmitting || isPaused) yield break;
-        StartCoroutine(AutoSubmitNoResponse());
-    }
+    // ─── 長者未回應（治療師端「跳過」觸發，見 skip_scene）───────────────
 
     IEnumerator AutoSubmitNoResponse()
     {
@@ -583,6 +644,7 @@ public class GameController : MonoBehaviour
 
     void OnDestroy()
     {
+        isQuitting = true;
         if (!UseKinect && isRecording)
             Microphone.End(micDevice);
         ws?.Close();
@@ -597,6 +659,9 @@ public class GameController : MonoBehaviour
     {
         public string action;
         public string scene_text;
+        // action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次真的
+        // 生出圖片（見 app/routers/session.py session_respond 的同一段說明）。
+        public string image_path;
         public string scene_audio_path;
         public string scene_audio_key;
         // scene_audio_keys／thanks_audio_keys／question_audio_keys：只有

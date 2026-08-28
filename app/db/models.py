@@ -48,7 +48,7 @@ class Patient(Base):
     scene_weights: Mapped[str | None] = mapped_column(Text)
     avatar: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=func.now()
+        DateTime, server_default=func.now()
     )
 
 
@@ -96,6 +96,10 @@ class TherapyRound(Base):
     generated_scene: Mapped[str | None] = mapped_column(Text)
     patient_response: Mapped[str | None] = mapped_column(Text)
     scene_image: Mapped[str | None] = mapped_column(Text)
+    # 這回合長者發言的一句話重點摘要（LLM 生成，見 session.py
+    # _generate_round_summary），給歷史療程列表快速瀏覽用，避免把長者
+    # 原話整段堆在畫面上。
+    summary: Mapped[str | None] = mapped_column(Text)
 
 
 class RoundExchange(Base):
@@ -128,7 +132,7 @@ class AuditLog(Base):
     resource: Mapped[str | None] = mapped_column(Text)
     ip_address: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=func.now()
+        DateTime, server_default=func.now()
     )
 
 
@@ -139,6 +143,6 @@ class PasswordResetCode(Base):
     email: Mapped[str] = mapped_column(Text, nullable=False)
     verification_code: Mapped[str] = mapped_column(String(6), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=func.now()
+        DateTime, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

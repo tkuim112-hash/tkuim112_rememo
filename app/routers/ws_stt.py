@@ -4,11 +4,80 @@ import json
 import wave
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy import update
 
 from auth import get_therapist_id_from_ws_token
+from db.models import Patient, TherapySession
+from db.session import AsyncSessionLocal
 import ws_registry
 
 router = APIRouter()
+
+
+async def _mark_abnormal_end(session_id: str) -> None:
+    """/ws/stt 斷線，但既不是治療師按「結束活動」（ws_registry.consume_ending）、
+    也不是三回合正常跑完轉場去問心得（session:{id}:reached_closing，見
+    session.py session_respond 對 end_session 的處理）——代表長者端 App 或
+    治療師網頁被直接關掉、當機、斷線，療程不正常中止。status 卡在 in_progress
+    會讓治療師頁面（cases/[id]/page.tsx）誤判成「還在進行中」、把治療師導去
+    永遠不會再更新的即時監控頁，這裡把它視同已結束。只在還是 in_progress 時
+    才動（避免蓋掉本來就是 completed / scheduled 的資料）。"""
+    if not session_id:
+        return
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(TherapySession)
+                .where(
+                    TherapySession.session_uuid == session_id,
+                    TherapySession.status == "in_progress",
+                )
+                .values(status="completed")
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[WS/STT] 標記不正常結束失敗: {e}")
+
+
+async def _build_patient_prompt(r, session_id: str) -> str:
+    """從 session:{id}:meta 查出 patient_id/topic，組出 STT 最終辨識用的 initial prompt。
+
+    把長者的姓名/故鄉/家人/興趣，加上這場療程的今日主題（治療師啟動療程時
+    手動輸入的自由文字，見 _init_session_meta 的 topic 參數）餵給 Whisper
+    當前文脈絡，同音字辨識時會偏向選這裡出現過的詞或同主題詞彙，藉此提升
+    人名、地名，以及當天話題相關詞彙的辨識率（見 app/services/stt.py transcribe_bytes 的 prompt 參數）。
+    topic 是自由文字、沒有固定詞庫，換成任何主題都能直接沿用，不需要為
+    每個主題另外維護詞彙表。查不到就回傳空字串，上層會直接跳過 prompt，
+    不影響原本的辨識行為。
+    """
+    try:
+        meta_raw = await r.get(f"session:{session_id}:meta")
+        if not meta_raw:
+            return ""
+        meta = json.loads(meta_raw)
+        patient_id = meta.get("patient_id")
+        topic = meta.get("topic")
+        if not patient_id:
+            return ""
+
+        async with AsyncSessionLocal() as db:
+            patient = await db.get(Patient, int(patient_id))
+        if not patient:
+            return ""
+
+        parts = [f"長者{patient.name}"]
+        if patient.hometown:
+            parts.append(f"故鄉在{patient.hometown}")
+        if patient.family:
+            parts.append(f"家人有{patient.family}")
+        if patient.preferences:
+            parts.append(f"興趣是{patient.preferences}")
+        if topic:
+            parts.append(f"今天聊的主題是{topic}")
+        return "，".join(parts) + "。"
+    except Exception as e:
+        print(f"[WS/STT] 組 initial_prompt 失敗: {e}")
+        return ""
 
 
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> bytes:
@@ -51,10 +120,13 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
         return
 
     stt_service = websocket.app.state.stt_service
+    r = websocket.app.state.redis
 
     await websocket.accept()
     ws_registry.register(session_id, websocket)
     audio_buf: bytearray = bytearray()
+    # 整條連線對應同一場療程、同一位長者，只在連線建立時查一次即可。
+    stt_prompt = await _build_patient_prompt(r, session_id)
 
     SAMPLE_RATE = 16000
     INTERIM_BYTES = SAMPLE_RATE * 2 * 3   # 每 3 秒觸發一次 interim
@@ -97,7 +169,15 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
                     ended = True
                     if len(audio_buf) > SAMPLE_RATE * 2 * 0.3:
                         wav = _pcm_to_wav(bytes(audio_buf))
-                        text = await stt_service.transcribe_bytes(wav)
+                        # 最終結果會存進資料庫、餵給 LLM，用中文微調過的模型
+                        # （interim 預覽文字現在也是同一個模型，見 config.py stt_model）。
+                        # timeout 拉長：BELLE 現在雖然靠 PRELOAD_MODELS+WHISPER__TTL=-1
+                        # 常駐在 stt，但萬一它重啟又要冷啟動（可能超過10分鐘），
+                        # 預設 120 秒的 httpx timeout 會讓這裡拋例外、把整條 WebSocket
+                        # 連線打斷（見本函式外層 except），辨識文字就永遠送不到後端。
+                        text = await stt_service.transcribe_bytes(
+                            wav, timeout=600.0, prompt=stt_prompt,
+                        )
                         await websocket.send_json(
                             {"type": "transcript", "text": text, "isFinal": True}
                         )
@@ -118,3 +198,8 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
         print(f"[WS/STT] {e}")
     finally:
         ws_registry.unregister(session_id, websocket)
+        ended_via_control = ws_registry.consume_ending(session_id)
+        if not ended_via_control:
+            reached_closing = await r.get(f"session:{session_id}:reached_closing")
+            if not reached_closing:
+                await _mark_abnormal_end(session_id)

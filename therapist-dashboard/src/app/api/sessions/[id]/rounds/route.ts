@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { logAccess } from "@/lib/audit";
+import { sessionIdWhereClause } from "@/lib/session-id";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -11,14 +12,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const rows = await sql`
     SELECT
-      r.id, r.round_number, r.type, r.response_time, r.emotion, r.generated_scene, r.patient_response, r.scene_image,
+      r.id, r.round_number, r.type, r.response_time, r.emotion, r.generated_scene, r.patient_response, r.scene_image, r.summary,
       s.patient_id,
       re.id AS exchange_id, re.question_number, re.question, re.answer, re.stage
     FROM rounds r
     JOIN sessions s ON s.id = r.session_id
     JOIN patients p ON p.id = s.patient_id
     LEFT JOIN round_exchanges re ON re.round_id = r.id
-    WHERE r.session_id = ${parseInt(id)}
+    WHERE ${sessionIdWhereClause(id, "s")}
       AND p.organization_id = ${session.organizationId}
     ORDER BY r.round_number ASC, re.question_number ASC
   `;
@@ -47,6 +48,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     duration: r.response_time ?? 0,
     sceneName: r.generated_scene ?? "",
     content: r.patient_response ?? "",
+    // LLM 生成的一句話重點摘要（見 app/routers/session.py
+    // _generate_round_summary），沒有的話（例如舊資料還沒補、或生成失敗）
+    // 前端 fallback 顯示 content 原文。
+    summary: r.summary ?? "",
     emotion: r.emotion ?? "—",
     sceneImage: r.scene_image ? (r.scene_image as string).replace("/media", "") : null,
     exchanges: exchanges.map(e => ({

@@ -19,7 +19,7 @@ public class KinectSensorSender : MonoBehaviour
     public float LastMouthMoved  { get; private set; }
 
     [Header("後端設定")]
-    public string backendUrl   = "http://localhost:8000";
+    public string backendUrl   = "https://api.re-memo.com";
     public float  sendInterval = 2f;
 
     [Header("外部參考")]
@@ -192,7 +192,7 @@ public class KinectSensorSender : MonoBehaviour
             // ── 組合 payload 送後端分類 ─────────────────────────────
             string sid = gameController != null
                 ? gameController.sessionId
-                : PlayerPrefs.GetString("session_id", "unknown");
+                : (AuthSession.SessionId ?? "unknown");
             var payload = new SensorPayload
             {
                 session_id             = sid,

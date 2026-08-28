@@ -229,9 +229,19 @@ async def _update_session_stats(r, session_id: str, p: SensorPayload, emotion_ra
     key = f"session:{session_id}:stats"
     await r.hsetnx(key, "session_start", str(p.timestamp or time.time()))
 
+    # 回合層級情緒統計：以目前所在回合分桶累積 emo_* frame 數，回合結束時
+    # 由 session.py _finalize_round_emotion 取多數決寫入 rounds.emotion，
+    # 取代舊版「回答那一瞬間」EMA 快照的作法（單點雜訊大，容易跟整回合觀感
+    # 不一致）。current_round 由 session.py _update_live_view 在每回合開場
+    # 時寫入 session:{id}:metrics，理論上不會缺席，缺席時退回回合 1。
+    current_round = await r.hget(f"session:{session_id}:metrics", "current_round") or "1"
+    round_key = f"session:{session_id}:round:{current_round}:emotion"
+
     pipe = r.pipeline(transaction=False)
     pipe.hincrby(key, "frame_count",    1)
     pipe.hincrby(key, f"emo_{emotion_raw}", 1)
+    pipe.hincrby(round_key, emotion_raw, 1)
+    pipe.expire(round_key, 86400)
 
     if p.face_looking_away in ("Yes", "Maybe"):
         pipe.hincrby(key, "looking_away_n", 1)

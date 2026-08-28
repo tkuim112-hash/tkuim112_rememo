@@ -20,6 +20,7 @@ public static class SessionService
     private class SessionStatusResponse
     {
         public bool calibrated;
+        public bool requested;
         public bool started;
     }
 
@@ -47,8 +48,8 @@ public static class SessionService
     }
 
     /// <summary>
-    /// 查詢治療師是否已按下「啟動療程」（即後端 /session/start 是否已被呼叫過）。
-    /// 供 WarmupController 在校正完成後 poll，等治療師端啟動才解鎖本地開始按鈕。
+    /// 查詢第一回合內容是否已經真正生成完畢（/session/start 已完整跑完 LLM 分類、
+    /// RAG 檢索、TTS 合成）。供 InstructionScene poll，決定何時把內容拿回來、進場 GameScene。
     /// </summary>
     public static IEnumerator FetchStatus(
         string backendUrl,
@@ -69,5 +70,31 @@ public static class SessionService
 
         var resp = JsonUtility.FromJson<SessionStatusResponse>(req.downloadHandler.text);
         onSuccess?.Invoke(resp?.started ?? false);
+    }
+
+    /// <summary>
+    /// 查詢治療師是否已按下「啟動療程」（/session/start 已被呼叫，但不保證生成完畢）。
+    /// 供 WarmupController 在校正完成後 poll，一偵測到就立刻切去 InstructionScene，
+    /// 讓真正耗時的生成過程改到說明頁用進度條呈現。
+    /// </summary>
+    public static IEnumerator FetchRequested(
+        string backendUrl,
+        string sessionId,
+        Action<bool> onSuccess,
+        Action<string> onFail)
+    {
+        using var req = UnityWebRequest.Get($"{backendUrl}/session/{sessionId}/status");
+        AuthService.AttachAuthHeader(req);
+
+        yield return req.SendWebRequest();
+
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            onFail?.Invoke($"取得療程狀態失敗：{req.error}");
+            yield break;
+        }
+
+        var resp = JsonUtility.FromJson<SessionStatusResponse>(req.downloadHandler.text);
+        onSuccess?.Invoke(resp?.requested ?? false);
     }
 }

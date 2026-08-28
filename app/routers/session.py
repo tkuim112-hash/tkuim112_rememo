@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import uuid
@@ -19,6 +20,37 @@ import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
 
+# patient:{patient_id}:active（見 /session/pending、/session/{id}/metrics、
+# /session/{id}/control）採心跳式續命，不是設一次就管 2 小時：
+# _ACTIVE_INITIAL_TTL 是 Unity 選定病患當下先給的緩衝時間，撐到治療師端「活動
+# 觀察頁」開始 polling metrics 接手續命為止（校正+啟動流程跑完可能要一兩分鐘）；
+# 之後只要 /metrics 還在被 2 秒一次正常 polling，就會不斷刷新成 _ACTIVE_HEARTBEAT_TTL，
+# 視窗關掉／斷線／Unity 當機只要停止 polling，最多這麼多秒後就會自動消失，
+# 不用等完整 2 小時、也不用依賴任何一方乾淨地送出「結束」訊號。
+_ACTIVE_INITIAL_TTL = 180
+_ACTIVE_HEARTBEAT_TTL = 30
+
+# 跟 orchestrator.py 的 _NO_RESPONSE_MARKER 同一個字串（GameController.cs 的
+# NoResponseMarker），長者反應逾時自動送出時填的佔位內容，不是長者真的說的話。
+# _generate_story_summary／_generate_round_summary 要把這種「幾乎沒有實質內容」
+# 的回合排除掉，不然 LLM 收到空蕩蕩的內容還是會被要求生出摘要，容易編造出
+# 長者根本沒說過的細節（見這兩支函式內的說明）。
+_NO_RESPONSE_MARKER = "（長者未回應）"
+_MIN_SUMMARIZABLE_LEN = 6  # 少於這個字數視同沒有實質內容，不夠摘要
+
+
+def _has_substantive_content(text: str | None) -> bool:
+    if not text:
+        return False
+    # patient_response 可能是同一回合多次回應用換行接起來的（見 _save_round_
+    # response），不能整段一起判斷：同回合裡如果某一題 30 秒逾時被自動送出
+    # 「（長者未回應）」、但另一題長者有真的回答，還是要算有實質內容，不能
+    # 因為剛好有一行是未回應標記就把整個回合都當成沒有內容而濾掉。
+    return any(
+        len(line.strip()) >= _MIN_SUMMARIZABLE_LEN and _NO_RESPONSE_MARKER not in line
+        for line in text.split("\n")
+    )
+
 
 def _to_int(val) -> int | None:
     try:
@@ -35,6 +67,19 @@ async def _synthesize_safe(tts, **kwargs) -> str | None:
         return await tts.synthesize(**kwargs)
     except Exception as e:
         print(f"[TTS] 語音合成失敗（不影響主流程，長者端這段沒有語音）: {e}")
+        return None
+
+
+async def _synthesize_edge_safe(tts, **kwargs) -> str | None:
+    """跟 _synthesize_safe 一樣是不影響主流程的降級呼叫，差別是走
+    tts.synthesize_edge（edge-tts／HsiaoYu 即時生成），給 _PRE_IMAGE_Q1_
+    QUESTION_TEMPLATE／_PRE_IMAGE_Q1_FALLBACK_QUESTION 這段帶著治療師自由
+    輸入今日主題、永遠無法預錄的動態文字用（見 orchestrator.py
+    _build_pre_image_question 的 tts_text 說明）。"""
+    try:
+        return await tts.synthesize_edge(**kwargs)
+    except Exception as e:
+        print(f"[TTS] edge-tts 語音合成失敗（不影響主流程，長者端這段沒有語音）: {e}")
         return None
 
 
@@ -105,6 +150,30 @@ async def _get_cached_start_result(r, session_id: str) -> dict | None:
 
 async def _cache_start_result(r, session_id: str, result: dict) -> None:
     await r.set(f"session:{session_id}:round1_result", json.dumps(result), ex=86400)
+
+
+async def _acquire_start_lock(r, session_id: str) -> bool:
+    """
+    /session/start 有兩個呼叫者（見 _get_cached_start_result 說明），但「檢查
+    快取」（session_start 開頭）到「寫入快取」（_cache_start_result，整個
+    orchestrator.start_round 都跑完才會執行）中間隔著 LLM 分類／RAG 檢索／
+    生圖／TTS 合成，耗時經常長達數秒到數十秒，兩個呼叫者常常會前後腳都通過
+    「還沒快取」的檢查，各自完整跑一次 start_round。
+
+    2026-08-20稽核（使用者實測案例）：治療師端帶明確 topic 呼叫、Unity 端
+    沒帶 topic 呼叫，兩次 orchestrator.start_round 各自算出不同的
+    today_topic（沒帶 topic 的那次會退回 patient.preferences 算出的預設
+    主題，見 DBUserProfileClient.get_user 說明），兩邊的生成結果混進同一個
+    round 1，出現「開場問題問A主題、長者沒回應退回RAG記憶生圖時卻查到B
+    主題」的精神分裂畫面。加一把短期 lock，讓兩個呼叫者裡只有一個真的
+    執行 start_round，另一個改成輪詢等待快取（見 session_start 呼叫處），
+    不再各自獨立生成。
+    """
+    return bool(await r.set(f"session:{session_id}:start_lock", "1", ex=60, nx=True))
+
+
+async def _release_start_lock(r, session_id: str) -> None:
+    await r.delete(f"session:{session_id}:start_lock")
 
 
 async def _get_session_topic(r, session_id: str) -> str | None:
@@ -257,13 +326,13 @@ async def _save_round_response(
     session_id: str,
     round_number: int,
     text: str,
-    emotion: str = "",
     patient_id: int | None = None,
     therapist_id: int | None = None,
 ) -> None:
     """
     把長者原話累加到 rounds.patient_response（真相源，之後可重建向量庫），
-    同回合多次回應以換行分隔；emotion 記錄該回合最後一次偵測值。
+    同回合多次回應以換行分隔。emotion 不在這裡寫——改由回合結束時
+    _finalize_round_emotion 依整回合累積的 frame 數多數決寫入，見該函式說明。
     """
     try:
         round_row = await _get_or_create_round(
@@ -275,8 +344,6 @@ async def _save_round_response(
             round_row.patient_response += "\n" + text
         else:
             round_row.patient_response = text
-        if emotion:
-            round_row.emotion = emotion
         await db.commit()
         print(f"[DB] rounds.patient_response 寫入成功: round={round_number} len={len(text)}")
 
@@ -307,14 +374,37 @@ async def _save_round_exchange(
         if round_row is None:
             return
         await db.flush()
-        db.add(RoundExchange(
-            round_id=round_row.id,
-            question_number=question_number,
-            question=question,
-            stage=stage,
-        ))
+        # 2026-08-26稽核（使用者回報 round 2 答案沒進來後追查發現，code review
+        # 再稽核修正）：前端把 question_number 存在往返的 state 裡，如果某次
+        # /session/respond 的回應沒有真的套用到前端（例如網路請求失敗/逾時），
+        # 前端下一次還是會帶著同一個舊 question_number 送出，這裡如果單純
+        # SELECT 再 INSERT，兩個幾乎同時抵達的請求可能都通過「查無此題號」
+        # 檢查、各自插入一列（正式資料庫也真的抓到一組：round_id=718,
+        # question_number=2）——不只白佔一筆資料，_fill_round_exchange_answer
+        # 之後查到兩筆會丟 MultipleResultsFound，長者這題答案就永遠補不進去。
+        # 跟 _get_or_create_round 對 rounds(session_id, round_number) 同一套
+        # 修法（見該函式說明、migration f1a3c9e7b2d4）：改用
+        # round_exchanges(round_id, question_number) 唯一約束搭配
+        # ON CONFLICT DO NOTHING，插入本身就是原子操作，不會有 race window。
+        stmt = (
+            pg_insert(RoundExchange)
+            .values(
+                round_id=round_row.id,
+                question_number=question_number,
+                question=question,
+                stage=stage,
+            )
+            .on_conflict_do_nothing(index_elements=["round_id", "question_number"])
+        )
+        result = await db.execute(stmt)
         await db.commit()
-        print(f"[DB] round_exchanges 新增問題: round={round_number} q#={question_number}")
+        if result.rowcount == 0:
+            print(
+                f"[DB] round_exchanges 同一題號已存在，略過重複新增: "
+                f"round={round_number} q#={question_number}"
+            )
+        else:
+            print(f"[DB] round_exchanges 新增問題: round={round_number} q#={question_number}")
     except Exception as e:
         print(f"[DB] round_exchanges 寫入失敗（不影響主流程）: {e}")
         await db.rollback()
@@ -326,28 +416,47 @@ async def _fill_round_exchange_answer(
     round_number: int,
     question_number: int,
     answer: str,
-) -> None:
-    """長者回答後，補上對應 round_exchanges 列的 answer。"""
+) -> bool:
+    """長者回答後，補上對應 round_exchanges 列的 answer。
+
+    回傳 True 代表這是第一次補上這題的答案；回傳 False 代表這一列早就有
+    answer 了（或整列查不到）——呼叫端（session_respond）用這個判斷這次
+    請求是不是前端逾時重試造成的重複提交，藉此避免 _save_round_response／
+    _accumulate_round_response_time 被同一句回答重複觸發兩次（見
+    2026-08-26 code review 稽核：GameController.cs 新增的重試機制，如果
+    只是回應在路上弄丟、後端其實已經處理成功，重送會帶著同一組
+    round+question_number，答案文字被寫進 patient_response 兩次、反應時間
+    統計也被重複累加）。
+    """
     try:
         round_row = await _get_or_create_round(db, session_id, round_number)
         if round_row is None:
-            return
+            return False
+        # 用 .first()（依 id 排序取最新一筆）而不是 scalar_one_or_none()：
+        # _save_round_exchange 現在已經用 DB 唯一約束＋ON CONFLICT DO NOTHING
+        # 擋掉新的重複 insert（見 migration f1a3c9e7b2d4），但這筆修復前就
+        # 累積的舊資料仍可能有重複列，scalar_one_or_none() 遇到多筆會直接丟
+        # MultipleResultsFound，讓長者這題答案整個補不進去；取最新一筆更
+        # 符合「長者剛答的是最近這題」的實際情況。
         exchange = (
             await db.execute(
                 select(RoundExchange).where(
                     RoundExchange.round_id == round_row.id,
                     RoundExchange.question_number == question_number,
-                )
+                ).order_by(RoundExchange.id.desc())
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if exchange is None:
-            return
+            return False
+        already_answered = bool(exchange.answer)
         exchange.answer = answer
         await db.commit()
         print(f"[DB] round_exchanges 補上答案: round={round_number} q#={question_number}")
+        return not already_answered
     except Exception as e:
         print(f"[DB] round_exchanges answer 寫入失敗（不影響主流程）: {e}")
         await db.rollback()
+        return False
 
 
 async def _accumulate_round_response_time(r, session_id: str, round_number: int, elapsed_ms: int) -> None:
@@ -382,6 +491,38 @@ async def _finalize_round_response_time(
                 print(f"[DB] rounds.response_time 寫入成功: round={round_number} avg={avg_seconds:.1f}s")
         except Exception as e:
             print(f"[DB] rounds.response_time 寫入失敗（不影響主流程）: {e}")
+            await db.rollback()
+    await r.delete(key)
+
+
+async def _finalize_round_emotion(
+    db: AsyncSession,
+    r,
+    session_id: str,
+    round_number: int,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """回合結束時，把 sensor.py _update_session_stats 依回合分桶累積的 emo_*
+    frame 數取多數決，寫入 rounds.emotion，取代舊版只存「回答那一瞬間」EMA
+    快照的作法——單一瞬間容易受雜訊影響（例如剛好在回答問題時比較有活力），
+    跟整回合（含看圖、聽故事、思考）的實際情緒觀感不一致，多數決更能代表
+    整回合狀態，也才會跟療程整體情緒（_compute_and_save_assessment 的
+    dominant_emotion）用同一套邏輯、可比較。"""
+    key = f"session:{session_id}:round:{round_number}:emotion"
+    raw = await r.hgetall(key)
+    emo = {k: int(raw.get(k, 0)) for k in ("happy", "excited", "angry", "sad")}
+    if any(emo.values()):
+        dominant = max(emo, key=emo.get)
+        emotion_label = _EMOTION_LABEL_MAP.get(dominant, "適當")
+        try:
+            round_row = await _get_or_create_round(db, session_id, round_number, patient_id, therapist_id)
+            if round_row is not None:
+                round_row.emotion = emotion_label
+                await db.commit()
+                print(f"[DB] rounds.emotion 寫入成功: round={round_number} emotion={emotion_label}")
+        except Exception as e:
+            print(f"[DB] rounds.emotion 寫入失敗（不影響主流程）: {e}")
             await db.rollback()
     await r.delete(key)
 
@@ -473,6 +614,18 @@ class SessionState(BaseModel):
     # 範圍時直接複用，不用重複分類。同樣需要宣告在這裡才能透過 API 往返存活，
     # 理由同上面 question_count/supplement_count 的說明。
     topic_category: str | None = None
+    # 生圖前 Q1 開場時就對 today_topic 本身分類過適合哪些感官（見
+    # orchestrator.py _classify_topic_senses、_SENSE_EXCLUDED_TOPIC_
+    # CATEGORIES），供後續感官追蹤（covered_senses／skipped_senses）需要
+    # 判斷「這個主題還剩哪些相關感官沒問過」時直接複用，不用重複分類。
+    # 同樣需要宣告在這裡才能透過 API 往返存活，理由同上面 topic_category。
+    topic_senses: list[str] = []
+    # 情境2成立、且主題是sub_item granularity時分類出的子項目（見
+    # orchestrator.py _classify_pre_image_sub_item、get_scenario2_
+    # followup 的 excluded_fields 說明）。同樣需要宣告在這裡才能透過 API
+    # 往返存活，否則 pre_image_q2 情境2分支第二輪起讀到的 sub_item 永遠是
+    # None，等於白分類一次、排除規則沒生效。
+    pre_image_sub_item: str | None = None
     # start_round 一開始就撈好的 RAG 候選記憶（見 orchestrator.py
     # _retrieve_candidate_memories），供 _start_scene_after_detail 需要
     # RAG fallback 時直接讀，不用重新查一次。同樣需要宣告在這裡才能透過
@@ -520,6 +673,17 @@ class SessionState(BaseModel):
     # 等欄位都踩過同一個坑，見上面說明）。
     last_sense_asked: str = ""
     skipped_senses: list[str] = []
+    # 生圖前Q2「情境2（缺維度，直接問缺的那個W）」的輪次追蹤（見
+    # orchestrator.py process_response 的 pre_image_q2 分支、
+    # get_scenario2_followup）。同樣必須宣告在這裡才能透過 API 往返存活，
+    # 否則會被 FastAPI 驗證悄悄丟棄——踩的是跟上面這幾個欄位同一個坑：
+    # scenario 讀不到就永遠當情境1處理，情境1那條分支沒有輪數上限保護，
+    # 疊加 _detect_pre_image_w_coverage 本身非決定性、W維度判斷結果會飄動，
+    # 會導致單回合一路追問下去、卡在第1回合出不去。
+    pre_image_q2_scenario: int = 1
+    pre_image_q2_round: int = 1
+    pre_image_q2_max_rounds: int = 1
+    pre_image_q2_last_w: str = ""
 
 
 class RespondRequest(BaseModel):
@@ -551,7 +715,7 @@ async def session_pending(
     candidate = str(uuid.uuid4())
     was_set = await r.set(key, candidate, ex=7200, nx=True)
     if source == "unity":
-        await r.set(f"patient:{patient_id}:active", "1", ex=7200)
+        await r.set(f"patient:{patient_id}:active", "1", ex=_ACTIVE_INITIAL_TTL)
     if was_set:
         return {"session_id": candidate}
     existing = await r.get(key)
@@ -580,13 +744,24 @@ async def session_status(
     calibrated：Unity 是否已把校正基準存進 session:{id}:calibration（見 ws_calibration.py）。
     calibrating：Unity 目前是否連著 /ws/calibration、正在跑校正流程但還沒完成
       （見 ws_registry.py）；跟 calibrated 互斥，一旦 calibrated 為 true 就不算 calibrating。
-    started：/session/start 是否已被呼叫過（session:{id}:meta 已建立）。
+    requested：治療師是否已按下「啟動療程」（/session/start 已被呼叫，但 LLM 分類／
+      RAG 檢索／TTS 合成不保證跑完）。Unity 的 WarmupController 只需要這個訊號就能
+      切去 InstructionScene，讓真正耗時的生成過程用說明頁的進度條呈現，不用在
+      WarmupScene 乾等。
+    started：/session/start 是否已完整跑完（session:{id}:meta 已建立），代表第一回合
+      內容真的生成好了。InstructionScene 靠這個訊號決定何時把內容拿回來、進場 GameScene。
     """
     r = request.app.state.redis
     calibrated = bool(await r.exists(f"session:{session_id}:calibration"))
     calibrating = (not calibrated) and ws_registry.is_calibrating(session_id)
+    requested = bool(await r.exists(f"session:{session_id}:requested"))
     started = bool(await r.exists(f"session:{session_id}:meta"))
-    return {"calibrated": calibrated, "calibrating": calibrating, "started": started}
+    return {
+        "calibrated": calibrated,
+        "calibrating": calibrating,
+        "requested": requested,
+        "started": started,
+    }
 
 
 @router.post("/start")
@@ -607,9 +782,28 @@ async def session_start(
     orchestrator = request.app.state.orchestrator
     topic = topic.strip()
     r = request.app.state.redis
+    # 一進來就標記「治療師已按下啟動療程」，讓 Unity 的 WarmupController 立刻切去
+    # InstructionScene；下面的 LLM 分類／RAG 檢索／TTS 合成才是真正耗時的部分，
+    # 讓說明頁的進度條去撐，不要讓長者停在 WarmupScene 乾等。
+    await r.set(f"session:{session_id}:requested", "1")
     cached = await _get_cached_start_result(r, session_id)
     if cached:
         return cached
+
+    if not await _acquire_start_lock(r, session_id):
+        # 沒搶到鎖：代表治療師網頁／Unity 另一個呼叫者正在跑同一個 session
+        # 的 start_round（見 _acquire_start_lock 說明），輪詢等它寫入快取，
+        # 不要自己也跑一次、各自算出不同的 today_topic。輪詢上限抓超過
+        # 「LLM分類＋RAG＋生圖＋TTS」實測最壞情況的時間，真的等超時了才
+        # 視為持鎖者已經掛掉，自己接手跑一次（不然鎖到期前不會有人補上
+        # 快取，長者會被晾在原地）。
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            cached = await _get_cached_start_result(r, session_id)
+            if cached:
+                return cached
+        await _acquire_start_lock(r, session_id)
+
     try:
         result = await orchestrator.start_round(
             user_id=user_id,
@@ -630,18 +824,19 @@ async def session_start(
                 turn_number=None,
             )
         # Q1邀請語帶著治療師自由輸入的今日主題，orchestrator.start_round
-        # 已經拆好 question_tts_text（該即時TTS的動態部分）跟
-        # question_audio_key（後半段邀請語的預錄音檔key，見 orchestrator.py
-        # _build_pre_image_question 說明）——沒有這兩個欄位（理論上不會，
-        # round 1 一定是走 Q1）才退回對整句 question 查表/即時TTS。
-        question_audio_path, _lookup_key = await _synthesize_or_key(
+        # 已經拆好 question_tts_text（該即時TTS的動態部分，用edge-tts／
+        # HsiaoYu生成——這段治療師自由輸入、沒辦法預錄）跟 question_audio_key
+        # （後半段邀請語的預錄音檔key，見 orchestrator.py _build_pre_image_
+        # question 說明）——沒有這兩個欄位（理論上不會，round 1 一定是走 Q1）
+        # 才退回對整句 question 即時TTS。
+        question_audio_path = await _synthesize_edge_safe(
             tts,
-            result.get("question_tts_text", result["question"]),
+            text=result.get("question_tts_text", result["question"]),
             session_id=session_id,
             round_number=1,
             turn_number=1,
         )
-        question_audio_key = result.get("question_audio_key") or _lookup_key
+        question_audio_key = result.get("question_audio_key")
         result["scene_audio_path"] = scene_audio_path
         result["scene_audio_key"] = scene_audio_key
         result["question_audio_path"] = question_audio_path
@@ -683,6 +878,8 @@ async def session_start(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"療程開場失敗: {str(e)}")
+    finally:
+        await _release_start_lock(r, session_id)
 
 
 @router.post("/round")
@@ -735,14 +932,14 @@ async def session_round(
             # 這個分支 round_number 一定是 1（round 2/3 被上面的
             # not in (2, 3) 擋掉），一定是 Q1 邀請語，見 session_start 那份
             # 一樣的說明。
-            question_audio_path, _lookup_key = await _synthesize_or_key(
+            question_audio_path = await _synthesize_edge_safe(
                 tts,
-                result.get("question_tts_text", result["question"]),
+                text=result.get("question_tts_text", result["question"]),
                 session_id=session_id,
                 round_number=round_number,
                 turn_number=1,
             )
-            question_audio_key = result.get("question_audio_key") or _lookup_key
+            question_audio_key = result.get("question_audio_key")
             result["scene_audio_path"] = scene_audio_path
             result["scene_audio_key"] = scene_audio_key
             result["question_audio_path"] = question_audio_path
@@ -776,7 +973,7 @@ async def session_round(
         raise HTTPException(status_code=500, detail=f"回合開場失敗: {str(e)}")
 
 
-_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume"}
+_CONTROL_ACTIONS = {"replay_audio", "skip_scene", "pause", "resume", "end"}
 
 
 class ControlPayload(BaseModel):
@@ -785,8 +982,10 @@ class ControlPayload(BaseModel):
 
 @router.post("/{session_id}/control", summary="治療師網頁即時控制療程（重播/跳過/暫停/繼續）")
 async def session_control(
+    request: Request,
     session_id: str,
     body: ControlPayload,
+    db: AsyncSession = Depends(get_db),
     therapist_id: int = Depends(get_current_therapist_id),
 ):
     """
@@ -795,13 +994,42 @@ async def session_control(
       replay_audio → 重播目前這一題的語音
       skip_scene   → 跳過目前這一題（不是跳過整個回合），視同長者未回應直接進下一步
       pause/resume → 暫停/繼續本回合（暫停時取消反應逾時、鎖住麥克風與送出鈕）
+      end          → 治療師按「結束活動」，Unity 收到後 Application.Quit()
 
     長者端如果目前沒有連線（例如療程還沒進到 GameScene），delivered 會是 false，
     不當錯誤處理——網頁不需要特別跳錯誤訊息給治療師。
+
+    action=="end" 先呼叫 mark_ending：Unity Quit() 之後 /ws/stt 連線隨即斷線，
+    ws_stt.py 的 finally 區塊要知道這次斷線是治療師主動結束、不是不正常斷線
+    （見該檔 _mark_abnormal_end 說明），才不會把治療師稍後在 /activity/{id}/end
+    頁面選的「稍後填寫」（故意留著 in_progress）蓋回去。
+
+    action=="end" 也順便清掉 patient:{patient_id}:active（見 /session/pending），
+    治療師手動結束療程不用等 2 小時 TTL 到期，個案列表的「活動中」徽章能立刻消失。
     """
     if body.action not in _CONTROL_ACTIONS:
         raise HTTPException(status_code=400, detail=f"不支援的控制動作: {body.action}")
+    if body.action == "end":
+        ws_registry.mark_ending(session_id)
     delivered = await ws_registry.send_control(session_id, body.action)
+    if body.action == "end":
+        r = request.app.state.redis
+        meta_raw = await r.get(f"session:{session_id}:meta")
+        if meta_raw:
+            patient_id = json.loads(meta_raw).get("patient_id")
+            if patient_id:
+                await r.delete(f"patient:{patient_id}:active")
+        # 治療師提前手動結束（長者可能還沒念到心得回合），/closing 那條
+        # 自動寫入路徑不會被觸發——這裡補上，讓評估分數與 status="completed"
+        # 一定會落地，治療師隨後在 /activity/{id}/end 頁面看到的才是真實
+        # 數據而不是前端的預設分數。若長者剛好已經正常走完心得，
+        # _compute_and_save_assessment 早就算過一次並清掉 Redis stats，
+        # 這裡重複呼叫會因為讀不到 stats 而丟 404，直接吞掉即可（不是
+        # 錯誤，是正常的「已經結束過了」）。
+        try:
+            await _compute_and_save_assessment(request, session_id, db, therapist_id)
+        except HTTPException as e:
+            print(f"[Control] end 觸發評估略過: {e.detail}")
     return {"ok": True, "delivered": delivered}
 
 
@@ -812,6 +1040,17 @@ async def session_metrics(
     therapist_id: int = Depends(get_current_therapist_id),
 ):
     r = request.app.state.redis
+
+    # 心跳續命：只要治療師端「活動觀察頁」還在正常 polling 這支 API，就代表
+    # 這場療程還活著，把 patient:{patient_id}:active 的存活時間刷新回短 TTL。
+    # 用 EXPIRE 不用 SET，key 不存在（例如已經被 /session/{id}/control 的
+    # action=="end" 清掉）就不會誤把它救回來。
+    meta_raw = await r.get(f"session:{session_id}:meta")
+    if meta_raw:
+        patient_id = json.loads(meta_raw).get("patient_id")
+        if patient_id:
+            await r.expire(f"patient:{patient_id}:active", _ACTIVE_HEARTBEAT_TTL)
+
     data: dict = await r.hgetall(f"session:{session_id}:metrics")
     try:
         suggestions = json.loads(data.get("ai_suggestions", "[]"))
@@ -825,6 +1064,11 @@ async def session_metrics(
         "ai_suggestions": suggestions,
         "current_round": _to_int(data.get("current_round")) or 1,
         "total_rounds": _to_int(data.get("total_rounds")) or 3,
+        # session:{id}:meta 只有在 _compute_and_save_assessment 算完評估分數、
+        # 療程真正結束時才會被清掉（見該函式），前端「活動觀察頁」還在 polling
+        # 的當下 meta 一定存在，一旦這裡變 false 就代表心得已經答完、評估算完了，
+        # 可以自動跳轉到結束頁面，不用等治療師自己按「結束活動」。
+        "session_completed": not meta_raw,
     }
 
 
@@ -870,22 +1114,35 @@ async def _generate_story_summary(llm_service, db: AsyncSession, session_id: str
             )
         ).scalars().all()
 
+        # 只收錄長者真的有實質回答的回合——generated_scene 是 AI 呈現給長者看的
+        # 引導畫面文字，不是長者說的話，不能單獨拿來充當「長者分享的內容」；
+        # 如果這回合長者沒有實質回答，連同該回合的場景說明一起跳過，避免 LLM
+        # 誤把 AI 寫的情境當成長者自己講的故事。
         parts = []
         for rnd in rounds:
+            if not _has_substantive_content(rnd.patient_response):
+                continue
             label = "心得" if rnd.type == "心得" else f"第{rnd.round_number}回合"
             if rnd.generated_scene:
-                parts.append(f"【{label}｜場景】{rnd.generated_scene}")
-            if rnd.patient_response:
-                parts.append(f"【{label}｜長者所說】{rnd.patient_response}")
+                parts.append(f"【{label}｜AI呈現的情境（僅供參考背景，不是長者說的話）】{rnd.generated_scene}")
+            parts.append(f"【{label}｜長者實際所說】{rnd.patient_response}")
         if not parts:
             return ""
         transcript = "\n".join(parts)
 
         messages = [
-            {"role": "system", "content": "你是懷舊療法的紀錄整理助手，負責把一場療程的對話內容整理成簡短的故事摘要，給治療師和家屬快速了解今天聊了什麼。"},
+            {"role": "system", "content": (
+                "你是懷舊療法的紀錄整理助手，負責把一場療程的對話內容整理成簡短的故事摘要，"
+                "給治療師和家屬快速了解今天聊了什麼。你只能根據標記【長者實際所說】的內容摘要，"
+                "標記【AI呈現的情境】的段落只是背景參考、不是長者說的話，絕對不能當成長者的發言寫進摘要。"
+                "禁止編造逐字稿裡沒有出現過的具體細節、人名、地點或事件。"
+            )},
             {"role": "user", "content": (
-                f"以下是今天療程的場景與長者發言記錄：\n\n{transcript}\n\n"
-                "請用100字以內、第三人稱、溫暖但客觀的語氣，摘要長者今天分享的回憶內容與整體狀態。"
+                f"以下是今天療程的記錄：\n\n{transcript}\n\n"
+                "請用100字以內、第三人稱、溫暖但客觀的語氣，只根據長者實際所說的內容摘要他今天分享的回憶與整體狀態。"
+                "全篇一律用「長者」稱呼，不要用「阿公」「阿嬤」「爺爺」「奶奶」「他」「她」等會透露或臆測性別的稱謂或代名詞，"
+                "因為逐字稿裡沒有提供長者的性別資訊。"
+                "如果長者實際所說的內容很少、講得很簡短籠統，摘要也要如實反映內容有限，不要延伸編造沒說過的細節。"
                 "只回摘要文字，不要其他說明。"
             )},
         ]
@@ -894,6 +1151,70 @@ async def _generate_story_summary(llm_service, db: AsyncSession, session_id: str
     except Exception as e:
         print(f"[LLM] story_summary 生成失敗（不影響評估寫入）: {e}")
         return ""
+
+
+async def _generate_round_summary(llm_service, patient_response: str) -> str:
+    """把單一回合裡長者的完整發言整理成一句話重點摘要，給歷史療程「各回合紀錄」
+    列表快速瀏覽用，避免把長者原話整段堆在畫面上。失敗回傳空字串，呼叫端
+    （HistorySessionView.tsx）會 fallback 顯示原文，不影響評估寫入本身。"""
+    try:
+        messages = [
+            {"role": "system", "content": (
+                "你是懷舊療法的紀錄整理助手，負責把長者在一個回合裡的發言整理成一句話重點摘要，"
+                "給治療師快速瀏覽。只能根據下面實際提供的內容摘要，禁止編造內容裡沒有出現過的"
+                "具體細節、人名、地點或事件。"
+            )},
+            {"role": "user", "content": (
+                f"長者這個回合說的話：\n{patient_response}\n\n"
+                "請用20字以內、第三人稱的一句話摘要重點，一律用「長者」稱呼、不要用「阿公」「阿嬤」「他」「她」等"
+                "會臆測性別的稱謂或代名詞，只回摘要文字本身，不要加任何說明或標點以外的內容。"
+            )},
+        ]
+        summary = await llm_service.chat(messages, temperature=0.3)
+        return summary.strip()
+    except Exception as e:
+        print(f"[LLM] round_summary 生成失敗（不影響評估寫入）: {e}")
+        return ""
+
+
+async def _generate_and_save_round_summaries(llm_service, db: AsyncSession, session_id: str) -> None:
+    """療程結束、評估分數算完時，順便幫每個有長者發言的回合（不含心得回合，
+    心得本身另有彈窗顯示原文，不需要摘要）各生成一句話摘要並寫回 rounds.summary。
+    這支獨立於 _compute_and_save_assessment 的主要交易之外呼叫，失敗只印 log，
+    不影響評估分數已經寫入成功這件事。"""
+    try:
+        session_row = (
+            await db.execute(select(TherapySession).where(TherapySession.session_uuid == session_id))
+        ).scalar_one_or_none()
+        if session_row is None:
+            return
+        rounds = (
+            await db.execute(
+                select(TherapyRound)
+                .where(TherapyRound.session_id == session_row.id)
+                .where(TherapyRound.type.is_(None) | (TherapyRound.type != "心得"))
+                .where(TherapyRound.patient_response.is_not(None))
+            )
+        ).scalars().all()
+        # SQL 只能濾掉 NULL，「（長者未回應）」佔位字串跟內容太短（幾乎沒有
+        # 實質內容）這兩種情況要在這裡濾掉，不然 LLM 拿到空蕩蕩的內容還是會
+        # 被逼著生出一句摘要，容易編造長者根本沒說過的細節（見 _has_substantive_
+        # content 說明）。這些回合就讓 rounds.summary 留空，前端會 fallback
+        # 顯示原文（例如「（長者未回應）」），比生一句編出來的假摘要誠實。
+        rounds = [rnd for rnd in rounds if _has_substantive_content(rnd.patient_response)]
+        if not rounds:
+            return
+
+        summaries = await asyncio.gather(
+            *(_generate_round_summary(llm_service, rnd.patient_response) for rnd in rounds)
+        )
+        for rnd, summary in zip(rounds, summaries):
+            if summary:
+                rnd.summary = summary
+        await db.commit()
+    except Exception as e:
+        print(f"[LLM] 回合摘要批次生成失敗（不影響評估寫入）: {e}")
+        await db.rollback()
 
 
 async def _compute_and_save_assessment(
@@ -1010,10 +1331,12 @@ async def _compute_and_save_assessment(
             action="generate_assessment",
             resource=f"session:{session_id}",
         )
+        await _generate_and_save_round_summaries(request.app.state.llm_service, db, session_id)
 
         # DB 寫入成功後清除所有 session Redis key
         await r.delete(
             f"session:{session_id}:meta",
+            f"session:{session_id}:requested",
             f"session:{session_id}:stats",
             f"session:{session_id}:metrics",
             f"session:{session_id}:ema",
@@ -1135,22 +1458,36 @@ async def session_respond(
         r = request.app.state.redis
         metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
         emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
-        # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話
-        await _save_round_response(
-            db, body.state.session_id, body.state.round,
-            text=body.elder_response, emotion=emotion,
-            patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
-        )
-        # 補上長者剛剛回答的那一題的 answer
-        await _fill_round_exchange_answer(
+        # 2026-08-26稽核（code review 發現）：先查/補這題的 round_exchanges
+        # 答案，順便判斷這是不是前端逾時重試造成的重複提交（見
+        # _fill_round_exchange_answer 說明）——GameController.cs 新增的重試
+        # 機制，如果只是回應在路上弄丟、後端其實已經處理成功，重送會帶著
+        # 同一組 round+question_number。是重複提交的話，底下落地逐字稿／
+        # 累加反應時間都要跳過，不然長者同一句話會被記兩次、反應時間統計
+        # 也會被重複累加。
+        is_first_answer = await _fill_round_exchange_answer(
             db, body.state.session_id, body.state.round,
             question_number=body.state.question_number, answer=body.elder_response,
         )
-        # 這一題長者花了多久回答，累加進本回合的反應時間統計
-        if body.state.question_asked_at:
-            elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
-            await _accumulate_round_response_time(
-                r, body.state.session_id, body.state.round, elapsed_ms
+        if is_first_answer:
+            # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話。
+            # rounds.emotion 不在這裡寫，改由回合結束時 _finalize_round_emotion
+            # 依整回合累積的 frame 數多數決寫入（見該函式說明）。
+            await _save_round_response(
+                db, body.state.session_id, body.state.round,
+                text=body.elder_response,
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
+            # 這一題長者花了多久回答，累加進本回合的反應時間統計
+            if body.state.question_asked_at:
+                elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
+                await _accumulate_round_response_time(
+                    r, body.state.session_id, body.state.round, elapsed_ms
+                )
+        else:
+            print(
+                f"[DB] round={body.state.round} q#={body.state.question_number} "
+                f"這題已經有答案，判定為重複提交，跳過逐字稿/反應時間累加"
             )
         await _update_live_view(
             request.app.state.redis, body.state.session_id,
@@ -1160,6 +1497,9 @@ async def session_respond(
             elder_response=body.elder_response,
             state=body.state.model_dump(),
             emotion=emotion,
+            on_generating_image=lambda: ws_registry.send_control(
+                body.state.session_id, "generating_image"
+            ),
         )
 
         if result.get("image_path"):
@@ -1180,7 +1520,20 @@ async def session_respond(
                 db, r, body.state.session_id, body.state.round,
                 patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
             )
+            await _finalize_round_emotion(
+                db, r, body.state.session_id, body.state.round,
+                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+            )
             if result.get("action") == "end_session":
+                # 三回合正常跑完、準備轉場到 ShareScene 問心得——GameController 的
+                # /ws/stt 連線會在轉場時斷線（ShareController 開的是另一條沒帶
+                # session_id 的連線，見該檔 ConnectWebSocket），這個斷線不是治療師
+                # 按「結束活動」、也不是不正常斷線，是正常流程的一部分，這裡先標記
+                # 起來供 ws_stt.py 的 finally 區塊排除，避免誤判成不正常結束。
+                await r.set(
+                    f"session:{body.state.session_id}:reached_closing",
+                    "1", ex=3600,
+                )
                 # 心得問題出現的時間點，供 /session/{id}/closing 計算心得回合的反應時間
                 await r.set(
                     f"session:{body.state.session_id}:closing_asked_at",
@@ -1217,6 +1570,7 @@ async def session_respond(
                         "scene_composition": body.state.scene_composition,
                         "pre_image_detail": body.state.pre_image_detail,
                         "topic_category": body.state.topic_category,
+                        "topic_senses": body.state.topic_senses,
                         # round 1 結束時已經自然涵蓋的 W 維度——round 2 開場用來
                         # 排除補問候選，不要再問長者已經在 round 1 講過的具體事實
                         # （見 orchestrator.py _start_round2_free_followup 的
