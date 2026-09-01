@@ -39,9 +39,10 @@ public class WarmupController : MonoBehaviour
 
         // 校正完成，等治療師端按下「啟動療程」（後端 /session/start 一被呼叫就馬上標記
         // requested=true，不等 LLM 分類／RAG 檢索／TTS 合成跑完）就立刻切去
-        // InstructionScene——真正耗時的生成過程改到說明頁用進度條呈現，不讓長者
-        // 停在 WarmupScene 乾等。sessionId 拿不到（離線 demo、換取 pending session
-        // 失敗）就沿用舊行為直接放行，不讓這個環節卡住展示。
+        // WarmupGameScene 做暖身動作卡，做完再進 InstructionScene——真正耗時的
+        // 生成過程改到說明頁用進度條呈現，不讓長者停在 WarmupScene 乾等。
+        // sessionId 拿不到（離線 demo、換取 pending session 失敗）就沿用舊行為
+        // 直接放行，不讓這個環節卡住展示。
         if (!string.IsNullOrEmpty(sessionId))
         {
             var wait = new WaitForSeconds(therapistPollInterval);
@@ -75,6 +76,6 @@ public class WarmupController : MonoBehaviour
         GameController.currentRound = 1;
         PendingSessionStart.Response = null;
         PlayerPrefs.SetString("NextScene", "GameScene-1");
-        SceneManager.LoadScene("InstructionScene");
+        SceneManager.LoadScene("WarmupGameScene");
     }
 }
