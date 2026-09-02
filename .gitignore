@@ -71,6 +71,7 @@ test/
 **/.DS_Store
 **/__MACOSX/
 **/ProjectSettings/ShaderGraphSettings.asset
+**/Assets/_Recovery/
 
 ## Kinect v2 SDK（RF Solutions 版權）
 *.unitypackage
