@@ -1,7 +1,7 @@
 "use client";
 
 
-import { useState, Fragment, useEffect } from "react";
+import { useState, Fragment, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { ActiveSession } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
@@ -32,6 +32,8 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
    responseTime: "—",
    aiSuggestions: [],
    tabooTopics: [],
+   reviewStatus: "",
+   elderResponseDraft: "",
  });
  const [currentRound, setCurrentRound] = useState(1);
  const [view, setView] = useState<View>("scene");
@@ -39,6 +41,25 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
 
  const router = useRouter();
  const [showConfirm, setShowConfirm] = useState(false);
+
+ // 治療師正在編輯、還沒送出的審核文字（一開始是空字串，等偵測到新的待審核
+ // 內容才會被填入，見下面那個 useEffect）。
+ const [draftText, setDraftText] = useState("");
+ const [confirming, setConfirming] = useState(false);
+ const [confirmError, setConfirmError] = useState(false);
+ // 用來記住「上一次看到的 reviewStatus」，這樣才能只在它從空字串「變成」
+ // pending 的那一瞬間做事（帶入草稿文字、自動切到回應分頁），而不是每 2 秒
+ // polling 都重複做一次、把治療師正在打的字蓋掉。
+ const prevReviewStatusRef = useRef<ActiveSession["reviewStatus"]>("");
+
+ useEffect(() => {
+   if (session.reviewStatus !== "" && prevReviewStatusRef.current === "") {
+     setDraftText(session.elderResponseDraft);
+     setConfirmError(false);
+     setView("response");
+   }
+   prevReviewStatusRef.current = session.reviewStatus;
+ }, [session.reviewStatus, session.elderResponseDraft]);
 
 
  useEffect(() => {
@@ -95,6 +116,8 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
          elderResponse: data.elder_response ?? s.elderResponse,
          currentRound: data.current_round ?? s.currentRound,
          totalRounds: data.total_rounds ?? s.totalRounds,
+         reviewStatus: data.review_status ?? s.reviewStatus,
+         elderResponseDraft: data.elder_response_draft ?? s.elderResponseDraft,
        }));
        if (data.current_round) setCurrentRound(data.current_round);
      } catch {
@@ -129,6 +152,34 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
  const handleEnd = async () => {
    await sendControl("end");
    router.push(`/activity/${sessionId}/end?from=live`);
+ };
+
+ // 「確認並送回長者畫面」按鈕——回合1-3跟心得回合是兩支不同的後端API，
+ // 用 reviewStatus 判斷現在是哪一種，打對應的那支。
+ const handleConfirmResponse = async () => {
+   setConfirming(true);
+   setConfirmError(false);
+   try {
+     const url =
+       session.reviewStatus === "pending_closing"
+         ? `${API_BASE}/session/${sessionId}/closing/confirm_response`
+         : `${API_BASE}/session/${sessionId}/confirm_response`;
+     const res = await fetch(url, {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+       credentials: "include",
+       body: JSON.stringify({ elder_response: draftText }),
+     });
+     if (!res.ok) throw new Error("confirm_response failed");
+     // 樂觀更新：不用等下一次 polling，按下去畫面就先恢復唯讀顯示。
+     setSession((s) => ({ ...s, reviewStatus: "", elderResponse: draftText }));
+   } catch {
+     // 這支失敗代表長者會一直卡在「等待治療師確認中」，不能像 sendControl
+     // 那樣靜默吞掉，要讓治療師看到錯誤、可以重試。
+     setConfirmError(true);
+   } finally {
+     setConfirming(false);
+   }
  };
 
 
@@ -198,14 +249,41 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
                  className={view === "response" ? "text-[#e09540]" : "text-[#888]"}
                >
                  長者的回應
+                 {session.reviewStatus !== "" && (
+                   <span className="inline-block w-2 h-2 rounded-full bg-[#fb2c36] ml-1.5 align-middle" />
+                 )}
                </button>
              </h2>
            </div>
-           <div className="bg-white rounded-xl p-3 md:p-3 lg:p-5 xl:p-6 h-[90px] md:h-[100px] lg:h-[160px] xl:h-[200px] overflow-y-auto">
-             <p className="text-[14px] md:text-[16px] lg:text-[20px] text-black leading-relaxed">
-               {view === "scene" ? session.currentScene : session.elderResponse}
-             </p>
-           </div>
+           {view === "response" && session.reviewStatus !== "" ? (
+             <div className="bg-white rounded-xl p-3 md:p-3 lg:p-5 xl:p-6 h-[170px] md:h-[210px] lg:h-[270px] xl:h-[320px] flex flex-col gap-2 lg:gap-3">
+               <p className="shrink-0 pl-2 text-[14px] md:text-[16px] lg:text-[18px] xl:text-[20px] text-[#7a4a28] font-medium">
+                 長者剛講完話，確認或編輯後送回長者畫面
+               </p>
+               <textarea
+                 value={draftText}
+                 onChange={(e) => setDraftText(e.target.value)}
+                 className="flex-1 min-h-0 w-full text-[14px] md:text-[16px] lg:text-[20px] text-black leading-relaxed border border-[#e5e7eb] rounded-lg p-2 resize-none focus:outline-none focus:border-[#7a4a28]"
+               />
+               {confirmError && (
+                 <p className="shrink-0 text-[12px] md:text-[13px] text-[#fb2c36]">送出失敗，請重試</p>
+               )}
+               <button
+                 type="button"
+                 onClick={handleConfirmResponse}
+                 disabled={confirming || draftText.trim() === ""}
+                 className="shrink-0 self-end bg-[#7a4a28] text-white rounded-lg py-2 px-4 text-[13px] md:text-[15px] lg:text-[16px] font-medium hover:bg-[#5f3a1f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+               >
+                 {confirming ? "送出中…" : "確認並送回長者畫面"}
+               </button>
+             </div>
+           ) : (
+             <div className="bg-white rounded-xl p-3 md:p-3 lg:p-5 xl:p-6 h-[170px] md:h-[210px] lg:h-[270px] xl:h-[320px] overflow-y-auto">
+               <p className="text-[14px] md:text-[16px] lg:text-[20px] text-black leading-relaxed">
+                 {view === "scene" ? session.currentScene : session.elderResponse}
+               </p>
+             </div>
+           )}
          </div>
 
 

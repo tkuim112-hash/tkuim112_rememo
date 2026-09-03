@@ -62,6 +62,12 @@ public class GameController : MonoBehaviour
     private bool isSubmitting = false;
     private bool isPaused = false;
     private bool hasSpeechInput = false;
+    // STT辨識完成後不再直接讓長者送出，改成鎖畫面等治療師在平板審核/編輯——
+    // isPendingTherapistReview 鎖住麥克風/送出鍵；pendingFinalResponse 存治療師
+    // 確認後（透過 /ws/stt 推播的 "final_response" 訊息）收到的結果，長者按送出
+    // 時直接套用它，不用再打一次 /session/respond（治療師確認當下後端已經處理完了）。
+    private bool isPendingTherapistReview = false;
+    private RespondResponse pendingFinalResponse = null;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
     private const string NoResponseMarker = "（長者未回應）";
@@ -217,7 +223,13 @@ public class GameController : MonoBehaviour
 
     void RefreshSubmitButton()
     {
-        bool enabled = hasSpeechInput && !isRecording && !isWaitingForStt && !isSubmitting && !isPaused;
+        // pendingFinalResponse != null：治療師已經確認（可能編輯過）這一題的回答，
+        // 長者只需要看完內容按送出，不受 hasSpeechInput/isRecording/isWaitingForStt
+        // 這些「還沒送審」狀態限制；isPendingTherapistReview 則整個鎖死，避免
+        // 審核結果還沒回來時誤觸。
+        bool enabled = !isSubmitting && !isPaused && !isPendingTherapistReview &&
+                       (pendingFinalResponse != null ||
+                        (hasSpeechInput && !isRecording && !isWaitingForStt));
         submitButton.interactable = enabled;
         if (submitButton.image != null)
             submitButton.image.color = enabled ? Color.white : new Color(0.55f, 0.55f, 0.55f, 1f);
@@ -309,8 +321,10 @@ public class GameController : MonoBehaviour
                     break;
                 case "skip_scene":
                     // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
-                    // 避免跟錄音/送出中互撞。
-                    if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused)
+                    // 避免跟錄音/送出中互撞。isPendingTherapistReview 中也不能跳過——
+                    // 這句話已經送治療師審核了，治療師平板那邊可能正在編輯，
+                    // 這裡搶著用 NoResponseMarker 蓋過去會跟治療師的確認結果打架。
+                    if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused && !isPendingTherapistReview)
                         StartCoroutine(AutoSubmitNoResponse());
                     break;
                 case "pause":
@@ -323,7 +337,9 @@ public class GameController : MonoBehaviour
                 case "resume":
                     isPaused = false;
                     RefreshSubmitButton();
-                    micButton.interactable = true;
+                    // 還在等治療師審核時麥克風維持鎖定（理由同 HandleSTTMessage 的
+                    // final_response 分支），不能因為「繼續」就解鎖去搶新錄音。
+                    if (!isPendingTherapistReview) micButton.interactable = true;
                     if (replayButton != null) replayButton.interactable = true;
                     if (handCursorRemapper != null) handCursorRemapper.SetLocked(false);
                     break;
@@ -344,6 +360,27 @@ public class GameController : MonoBehaviour
             return;
         }
 
+        if (msg.type == "final_response")
+        {
+            // 治療師在平板確認（可能編輯過）長者這一題的回答後，後端推播過來的結果——
+            // 資料庫/orchestrator 那些處理治療師確認當下就已經做完了，這裡只是把
+            // 確認後的文字顯示給長者看，等長者按送出時直接套用，不再另外打 API
+            // （見 ApplyFinalResponse／OnSubmit）。
+            RespondResponse resp;
+            try { resp = JsonUtility.FromJson<RespondResponse>(json); }
+            catch { return; }
+            isPendingTherapistReview = false;
+            pendingFinalResponse = resp;
+            displayedText = resp.elder_response;
+            inputText.text = resp.elder_response;
+            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+            // 麥克風維持鎖定，避免長者在按送出前又開始新錄音——這會讓
+            // pendingFinalResponse 跟一段還在錄的新音訊互相打架。等
+            // ApplyFinalResponse 進到下一題/下一回合時才解鎖（見該函式）。
+            RefreshSubmitButton();
+            return;
+        }
+
         if (msg.type != "transcript") return;
         // 長者不會在畫面上看到辨識出的文字，只在背後記錄下來供送出時使用；
         // inputText 維持 StartRecording/StopRecording 設的「錄音中...」「辨識中...」狀態，
@@ -353,9 +390,61 @@ public class GameController : MonoBehaviour
             displayedText = msg.text;
         if (msg.isFinal)
         {
-            OnSttFinal();
             if (hasText)
-                StartCoroutine(PostTranscript(msg.text));
+            {
+                // 有辨識到文字：不再直接開放長者送出，改成鎖畫面送治療師平板審核。
+                isPendingTherapistReview = true;
+                inputText.text = "等待治療師確認中";
+                inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+                micButton.interactable = false;
+                RefreshSubmitButton();
+                StartCoroutine(PostTranscript(msg.text));   // 統計用途，維持不變
+                StartCoroutine(RequestReview(msg.text));
+            }
+            else
+            {
+                // 沒辨識到任何文字（例如長者沒說話）：維持原本可直接送出空字串的行為，
+                // 不需要治療師介入。
+                OnSttFinal();
+            }
+        }
+    }
+
+    IEnumerator RequestReview(string text)
+    {
+        var body = new RespondRequest { elder_response = text, state = currentState };
+        byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
+
+        // 跟 SendResponse 同一種重試邏輯（3次、間隔1.5秒）：這支打不通的話，
+        // 治療師平板永遠不會看到這句話，長者就會永久卡在「等待治療師確認中」，
+        // 比原本 SendResponse 失敗只是「這句話送不出去」更嚴重，所以重試用盡後
+        // 直接退回舊流程讓長者自己送出，不留長者卡死的畫面。
+        const int maxAttempts = 3;
+        bool success = false;
+        for (int attempt = 1; attempt <= maxAttempts && !success; attempt++)
+        {
+            using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/review_request", "POST");
+            req.uploadHandler   = new UploadHandlerRaw(payload);
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "application/json");
+            AuthService.AttachAuthHeader(req);
+            yield return req.SendWebRequest();
+
+            success = req.result == UnityWebRequest.Result.Success;
+            if (!success)
+            {
+                Debug.LogWarning($"[ReviewRequest] 第{attempt}次失敗: {req.error}");
+                if (attempt < maxAttempts)
+                    yield return new WaitForSeconds(1.5f);
+            }
+        }
+
+        if (!success)
+        {
+            Debug.LogError("[ReviewRequest] 重試用盡，退回原本流程讓長者直接送出");
+            isPendingTherapistReview = false;
+            if (!isPaused) micButton.interactable = true;
+            OnSttFinal();
         }
     }
 
@@ -485,7 +574,34 @@ public class GameController : MonoBehaviour
     void OnSubmit()
     {
         if (!submitButton.interactable) return;
+
+        if (pendingFinalResponse != null)
+        {
+            // 治療師已經確認（可能編輯過）這一題的回答，資料庫/orchestrator 那些
+            // 處理治療師確認當下就做完了，這裡不用再打 API，直接套用收到的結果。
+            var resp = pendingFinalResponse;
+            pendingFinalResponse = null;
+            StartCoroutine(ApplyConfirmedResponse(resp));
+            return;
+        }
+
+        // 沒有待套用的治療師確認結果：走舊路徑，給「沒辨識到文字」或
+        // RequestReview 重試用盡退回舊流程這兩種邊界情況用。
         StartCoroutine(ProcessSubmit());
+    }
+
+    IEnumerator ApplyConfirmedResponse(RespondResponse resp)
+    {
+        isSubmitting = true;
+        RefreshSubmitButton();
+        ResetInputText();
+        aiText.gameObject.SetActive(false);
+        loadingSpinner.SetActive(true);
+
+        yield return StartCoroutine(ApplyFinalResponse(resp));
+
+        isSubmitting = false;
+        RefreshSubmitButton();
     }
 
     IEnumerator ProcessSubmit()
@@ -561,6 +677,18 @@ public class GameController : MonoBehaviour
         }
 
         var resp = JsonUtility.FromJson<RespondResponse>(responseText);
+        yield return StartCoroutine(ApplyFinalResponse(resp));
+    }
+
+    // 抽出來給 SendResponse（沒辨識到文字/審核重試失敗的舊流程，HTTP 回應直接拿到 resp）
+    // 跟 HandleSTTMessage 收到 "final_response"（治療師審核流程，長者按送出時直接套用
+    // 已經拿到的 resp，不用再打一次 API）共用，內容跟原本 SendResponse 尾段完全一樣。
+    IEnumerator ApplyFinalResponse(RespondResponse resp)
+    {
+        // 長者按送出、真正進到下一題/下一回合了，麥克風才重新解鎖——鎖定期間
+        // （等待治療師審核／已經在看治療師確認結果）不能讓長者提前開始新錄音，
+        // 避免跟 pendingFinalResponse 打架（見 HandleSTTMessage 的 final_response 分支）。
+        if (!isPaused) micButton.interactable = true;
 
         if (resp.action == "end_session")
         {
@@ -657,6 +785,12 @@ public class GameController : MonoBehaviour
     [System.Serializable]
     class RespondResponse
     {
+        // type／elder_response：只有透過 /ws/stt 收到的 "final_response" 推播訊息才會有值
+        // （治療師確認/編輯後的文字，見 HandleSTTMessage）。SendResponse 直接 POST
+        // /session/respond 拿到的 HTTP 回應本來就沒有這兩欄，JsonUtility 反序列化
+        // 時單純留空字串，不影響原本的欄位解析。
+        public string type;
+        public string elder_response;
         public string action;
         public string scene_text;
         // action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次真的

@@ -22,11 +22,19 @@ def unregister(session_id: str, websocket: WebSocket) -> None:
 async def send_control(session_id: str, action: str) -> bool:
     """回傳是否真的送達。長者端目前沒連線（例如療程還沒進到 GameScene）不算錯誤，
     只是沒地方送，呼叫端應把 False 當「沒送達」處理，不用報錯給治療師看。"""
+    return await send_message(session_id, {"type": "control", "action": action})
+
+
+async def send_message(session_id: str, payload: dict) -> bool:
+    """跟 send_control 同一份連線表，但可以送任意形狀的 JSON——治療師在
+    /confirm_response、/closing/confirm_response 確認（可能編輯過）長者回應後，
+    用這支把處理結果整包推給 Unity 顯示，不用像 send_control 那樣侷限在
+    固定的 {type, action} 格式。"""
     websocket = _connections.get(session_id)
     if websocket is None:
         return False
     try:
-        await websocket.send_json({"type": "control", "action": action})
+        await websocket.send_json(payload)
         return True
     except Exception:
         _connections.pop(session_id, None)
