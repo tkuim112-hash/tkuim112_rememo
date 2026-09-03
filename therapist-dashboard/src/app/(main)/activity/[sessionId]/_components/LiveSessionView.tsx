@@ -257,7 +257,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
            </div>
            {view === "response" && session.reviewStatus !== "" ? (
              <div className="bg-white rounded-xl p-3 md:p-3 lg:p-5 xl:p-6 h-[170px] md:h-[210px] lg:h-[270px] xl:h-[320px] flex flex-col gap-2 lg:gap-3">
-               <p className="shrink-0 pl-2 text-[14px] md:text-[16px] lg:text-[18px] xl:text-[20px] text-[#7a4a28] font-medium">
+               <p className="shrink-0 text-[14px] md:text-[16px] lg:text-[18px] xl:text-[20px] text-[#7a4a28] font-medium">
                  長者剛講完話，確認或編輯後送回長者畫面
                </p>
                <textarea
