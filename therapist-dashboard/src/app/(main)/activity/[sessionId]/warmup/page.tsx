@@ -8,10 +8,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 // 對應 API 後，這裡改成 fetch 動作清單，示範圖改吃後端回傳的圖片網址。
 const WARMUP_STEPS = [
   { label: "手臂平舉 5 秒" },
-  { label: "舉手過肩 5 秒" },
-  { label: "左右轉頭 5 秒" },
-  { label: "深呼吸 5 秒" },
-  { label: "輕拍雙肩 5 秒" },
+  { label: "原地踏步 5 秒" },
+  { label: "手臂旋轉3次" },
+  { label: "扭腰5秒" },
+  { label: "踢腿3次" },
+  { label: "擴胸" }
 ];
 
 function IconEdit() {
@@ -62,8 +63,8 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
     <div className="min-h-screen bg-[#f5e6d3] flex flex-col">
       {/* 標題列 */}
       <div className="px-10 pt-8 pb-6">
-        <h1 className="text-[32px] font-bold text-[#3d2b1f]">{caseName}</h1>
-        <p className="text-[16px] text-[#a08d78] mt-1">暖身活動</p>
+        <h1 className="text-[38px] font-bold text-[#3d2b1f]">{caseName}</h1>
+        <p className="text-[20px] text-[#7d6a56] mt-1">暖身活動</p>
       </div>
 
       {/* 內容區 */}
@@ -75,7 +76,7 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
               // eslint-disable-next-line @next/next/no-img-element
               <img src={poseImage} alt={currentStep.label} className="max-w-full max-h-full object-contain" />
             ) : (
-              <span className="text-[13px] text-[#bbb]">動作示範圖由後端提供</span>
+              <span className="text-[13px] text-[#bbb]">動作示範圖放置位置</span>
             )}
           </div>
         </div>
