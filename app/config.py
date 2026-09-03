@@ -11,11 +11,16 @@ class Settings(BaseSettings):
 
     # === LLM (Ollama) ===
     ollama_host: str = "http://ollama:11434"
-    ollama_model: str = "rememo-llama3"
+    ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:q4_k_m"
 
     # === STT (faster-whisper-server) ===
-    stt_host: str = "http://kinect:8000"
-    stt_model: str = "Systran/faster-whisper-large-v3"
+    stt_host: str = "http://stt:8000"
+    # 中文微調過的 Whisper checkpoint（BELLE-2），interim（即時預覽）跟
+    # 最終辨識統一都用這個模型：即時預覽文字實際上只有分享頁的打字機動畫
+    # 會顯示給人看（見 Unity ShareController.cs），其餘場景長者根本看不到
+    # 辨識中的文字（GameController.cs／MicController.cs），BELLE-2 常駐 GPU
+    # 又只處理短音訊片段，沒有必要為了 interim 額外維護一個較不準的快模型。
+    stt_model: str = "XA9/Belle-faster-whisper-large-v3-zh-punct"
 
     # === TTS (BlueMagpie-TTS 本地語音合成) ===
     tts_host: str = "http://tts:8080"
@@ -39,6 +44,14 @@ class Settings(BaseSettings):
     # === CORS（允許呼叫這個後端的前端來源，逗號分隔）===
     cors_origins: str = "http://localhost:3000,https://re-memo.com"
 
+    # === 執行環境 ===
+    # 預設 production（fail-safe）：漏設這個變數時寧可docs被關掉，也不要
+    # 一台忘記設定的機器意外把 /docs、/redoc、/openapi.json 曝露給公開網域
+    # （這個後端會被 NEXT_PUBLIC_API_URL 指到的公開網域直接呼叫，見
+    # main.py FastAPI() 建構）。本機開發要看 Swagger UI 就在 .env 設
+    # ENVIRONMENT=development。
+    environment: str = "production"
+
     # === 治療師後台的瀏覽器 session cookie（Next.js 簽的另一組 HS256 JWT）===
     # /session、/sensor 有些端點同時被 Unity（帶 Authorization: Bearer）跟
     # 治療師後台瀏覽器（帶 rememo_session cookie）呼叫，這裡驗證後者用。
@@ -55,6 +68,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() != "development"
 
     @model_validator(mode="after")
     def build_urls(self) -> "Settings":

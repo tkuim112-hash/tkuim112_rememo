@@ -10,6 +10,8 @@ import io
 import logging
 import os
 import re
+import threading
+import time
 
 import numpy as np
 import soundfile as sf
@@ -31,6 +33,19 @@ SPEAKER_CENTROID_PT = os.environ.get(
 )
 CFG_VALUE   = float(os.environ.get("CFG_VALUE", "2.5"))
 INFER_STEPS = int(os.environ.get("INFER_STEPS", "10"))
+TTS_SEED    = os.environ.get("TTS_SEED")
+REFERENCE_WAV_PATH = os.environ.get("REFERENCE_WAV_PATH", "")
+
+# 閒置 N 秒沒有請求就把模型從 GPU 卸載，釋放記憶體給同一張卡上的 ollama/whisper 用；
+# 下次請求進來時再重新載入（會有一次性冷啟動延遲）。-1 = 永不卸載（常駐）。
+# 語意對齊 faster-whisper-server 的 ttl 與 ollama 的 OLLAMA_KEEP_ALIVE。
+TTS_IDLE_TTL = int(os.environ.get("TTS_IDLE_TTL", "300"))
+
+_model_id        = None
+_model_dir       = None
+_model_lock      = threading.Lock()
+_active_requests = 0
+_last_used_at    = time.time()
 
 
 def load_model(model_id: str, model_dir: str):
@@ -75,6 +90,44 @@ def load_speaker_centroid(model_dir: str):
     return None
 
 
+def _acquire_model():
+    """確保模型已載入並標記一次使用中；跟 _release_model 成對呼叫。"""
+    global bm_model, bm_tokenizer, speaker_centroid, _active_requests, _last_used_at
+    with _model_lock:
+        if bm_model is None:
+            bm_model, bm_tokenizer = load_model(_model_id, _model_dir)
+            if speaker_centroid is None:
+                speaker_centroid = load_speaker_centroid(_model_dir)
+        _active_requests += 1
+        _last_used_at = time.time()
+
+
+def _release_model():
+    global _active_requests, _last_used_at
+    with _model_lock:
+        _active_requests -= 1
+        _last_used_at = time.time()
+
+
+def _idle_watcher():
+    """背景執行緒：閒置超過 TTS_IDLE_TTL 秒就卸載模型釋放 GPU 記憶體。"""
+    global bm_model
+    if TTS_IDLE_TTL < 0:
+        return
+    while True:
+        time.sleep(30)
+        with _model_lock:
+            if (
+                bm_model is not None
+                and _active_requests == 0
+                and time.time() - _last_used_at > TTS_IDLE_TTL
+            ):
+                logger.info(f"閒置超過 {TTS_IDLE_TTL} 秒，卸載 TTS 模型釋放 GPU 記憶體")
+                del bm_model
+                bm_model = None
+                torch.cuda.empty_cache()
+
+
 def count_cjk(text: str) -> int:
     return len(re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf]', text))
 
@@ -93,7 +146,7 @@ def rubberband_stretch(audio: np.ndarray, sample_rate: int, n_chars: int) -> np.
         if abs(current_rate - TARGET_RATE) / TARGET_RATE < 0.15:
             return audio
         time_ratio = TARGET_RATE / current_rate  # <1 拉慢，>1 加快（pyrubberband rate 越高越快）
-        time_ratio = max(0.85, min(1.4, time_ratio))
+        time_ratio = max(0.65, min(1.4, time_ratio))
         logger.info(f"Rubberband: {current_rate:.2f} -> {TARGET_RATE:.2f} 字/秒 (ratio={time_ratio:.2f}x)")
         stretched = rb.time_stretch(audio.astype(np.float64), sample_rate, time_ratio)
         return stretched.astype(np.float32)
@@ -140,16 +193,17 @@ class SpeechRequest(BaseModel):
 
 @app.post("/v1/audio/speech")
 def create_speech(req: SpeechRequest):
-    if bm_model is None:
-        raise HTTPException(503, "模型尚未載入")
     if not req.input.strip():
         raise HTTPException(400, "input 不可為空")
+    _acquire_model()
     try:
         audio = _synthesize(req.input)
         wav = to_wav_bytes(audio, bm_model.sample_rate, req.input)
     except Exception as e:
         logger.exception("合成失敗")
         raise HTTPException(500, f"合成失敗：{e}")
+    finally:
+        _release_model()
     return Response(content=wav, media_type="audio/wav")
 
 
@@ -158,8 +212,7 @@ async def inference_clone(
     tts_text: str = Form(...),
     ref_wav: UploadFile = File(None),
 ):
-    if bm_model is None:
-        raise HTTPException(503, "模型尚未載入")
+    _acquire_model()
     try:
         if ref_wav is not None:
             from bluemagpie import extract_speaker_centroid
@@ -171,10 +224,13 @@ async def inference_clone(
             audio = _synthesize_with_centroid(tts_text, tmp_centroid)
         else:
             audio = _synthesize(tts_text)
+        wav = to_wav_bytes(audio, bm_model.sample_rate, tts_text)
     except Exception as e:
         logger.exception("clone 合成失敗")
         raise HTTPException(500, str(e))
-    return Response(content=to_wav_bytes(audio, bm_model.sample_rate, tts_text), media_type="audio/wav")
+    finally:
+        _release_model()
+    return Response(content=wav, media_type="audio/wav")
 
 
 def _synthesize(text: str):
@@ -186,10 +242,15 @@ def _synthesize_with_centroid(text: str, centroid):
     n = count_cjk(text)
     cfg = 3.0 if n <= 25 else CFG_VALUE
 
+    # 固定 seed：讓每次生成的取樣軌跡一致，避免同一語者向量卻聽起來像不同人
+    if TTS_SEED is not None:
+        torch.manual_seed(int(TTS_SEED))
+
     # 暖機：在前面加句號讓模型先穩定，生完後截掉前 0.3 秒的暖機音訊
     audio = bm_model.generate(
         target_text="。" + text,
         speaker_centroid=centroid,
+        reference_wav_path=REFERENCE_WAV_PATH,
         cfg_value=cfg,
         inference_timesteps=INFER_STEPS,
         max_len=2000,
@@ -216,7 +277,10 @@ if __name__ == "__main__":
     parser.add_argument("--host",      default="0.0.0.0")
     args = parser.parse_args()
 
+    _model_id, _model_dir = args.model_id, args.model_dir
     bm_model, bm_tokenizer = load_model(args.model_id, args.model_dir)
     speaker_centroid = load_speaker_centroid(args.model_dir)
+    _last_used_at = time.time()
 
+    threading.Thread(target=_idle_watcher, daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port, timeout_keep_alive=300)

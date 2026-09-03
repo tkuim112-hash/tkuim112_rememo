@@ -3,9 +3,12 @@
 
 只打真的服務：
   - LLMService  → 原生 Ollama app（.env 的 OLLAMA_HOST=http://localhost:11434，
-    OLLAMA_MODEL=cwchang/llama-3-taiwan-8b-instruct:q4_k_m，未經DPO訓練的基底模型）
-  - OpenAIImageService → 真的打 OpenAI Images API 生圖（只有回合1會生圖，
-    回合2/3不生圖，見 orchestrator.py start_round 說明）
+    OLLAMA_MODEL=cwchang/llama-3-taiwan-8b-instruct:q4_k_m，未經DPO訓練的基底模型，
+    目前也是正式環境實際使用的模型——DPO微調版 rememo-llama3 已停用）
+
+不生圖：FakeImageService 頂替 OpenAIImageService，不打 OpenAI Images API，
+直接回空字串——orchestrator._start_scene_after_detail 生圖失敗本來就有既有
+的降級路徑（見該處說明），這裡就是刻意觸發那條路徑，只測LLM文字生成。
 
 RAG（Qdrant）、user_profile（Postgres）用假的 in-memory 實作頂替，不連任何
 資料庫，長者資料直接寫死在 TEST_USER。回合之間承接的 carryover、主題紀錄
@@ -38,7 +41,6 @@ import asyncio
 
 from config import settings
 from services.llm import LLMService
-from services.image import OpenAIImageService
 from services.closing_templates import build_closing_invitation
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator, _NO_RESPONSE_MARKER
@@ -64,6 +66,22 @@ class FakeRAGClient:
         return []
 
     async def save_memory(self, **kwargs) -> None:
+        pass
+
+
+class FakeImageService:
+    """頂替 OpenAIImageService，不打 OpenAI Images API。orchestrator._start_scene_
+    after_detail 呼叫 self.image.generate(...) 本身就包在 try/except 裡（生圖失敗
+    不影響對話主流程，見該處說明），直接回空字串就能讓它自然走「這回合沒有配圖」
+    的既有降級路徑，不用真的生一張圖。"""
+
+    def __init__(self) -> None:
+        self.output_dir = Path(".")
+
+    async def generate(self, prompt: str, session_id: str, round_number: int) -> str:
+        return ""
+
+    async def close(self) -> None:
         pass
 
 
@@ -124,15 +142,11 @@ async def run_round(
 
 async def main() -> None:
     print(f"[設定] OLLAMA_HOST={settings.ollama_host}  OLLAMA_MODEL={settings.ollama_model}")
-    print("[提醒] 這是本機原生 Ollama 的基底模型，不是DPO微調後的 rememo-llama3，"
-          "問題生成品質不代表正式部署行為。\n")
+    print("[提醒] 這是本機原生 Ollama 的基底模型（未經DPO微調），"
+          "目前也是正式環境實際使用的模型，問題生成品質可代表正式部署行為。\n")
 
     llm = LLMService()
-    image = OpenAIImageService()
-    # image.py 的 output_dir 寫死容器內路徑 /media/images，本機（非docker）
-    # 對應到 repo 的 ./media/images，這裡覆寫成正確的本機路徑。
-    image.output_dir = Path(__file__).resolve().parent.parent / "media" / "images"
-    image.output_dir.mkdir(parents=True, exist_ok=True)
+    image = FakeImageService()
 
     orchestrator = TherapyOrchestrator(
         llm=llm,
@@ -163,6 +177,23 @@ async def main() -> None:
                         "scene_composition": last_state["scene_composition"],
                         "pre_image_detail": last_state.get("pre_image_detail", ""),
                         "topic_category": last_state.get("topic_category"),
+                        "topic_senses": last_state.get("topic_senses", []),
+                        "round1_covered_w": last_state.get("covered_w", []),
+                        # 照抄 session.py round==1 carryover 的
+                        # round1_last_question（2026-08-18稽核，第四次，使用者
+                        # 提案）——round 1 最後一題問了什麼，round 2 開場生成時
+                        # 當參考資訊。原本這裡帶的是round 1整份round_qa_log，
+                        # 實測回報累積的內容越長承接語／問題品質越差，已改成
+                        # 只帶最後一題的單一字串。
+                        "round1_last_question": last_state.get("last_question_text", ""),
+                        # 照抄 session.py round==1 carryover 的
+                        # round1_covered_senses（2026-08-18新增，見
+                        # orchestrator.py _start_round2_free_followup 的
+                        # known_senses 說明）——round 1 已涵蓋的感官，避免
+                        # round 2 開場又問一次已經答過的感官（實測案例：
+                        # round 1 問過「七星潭邊有什麼味道」，round 2 開場
+                        # 原句又問了一次）。
+                        "round1_covered_senses": last_state.get("covered_senses", []),
                     })
                 if last_state.get("topic_category"):
                     topics.append(last_state["topic_category"])

@@ -60,6 +60,7 @@ export interface SessionRound {
   duration: number;
   sceneName: string;
   content: string;
+  summary?: string;
   emotion: string;
   exchanges?: RoundExchange[];
   sceneImage?: string;
@@ -78,4 +79,9 @@ export interface ActiveSession {
   responseTime: string;
   aiSuggestions: string[];
   tabooTopics: string[];
+  // 長者剛講完話/心得、還卡在等治療師審核時會是 "pending_round" 或
+  // "pending_closing"，平常是空字串。LiveSessionView 用這個欄位決定要不要
+  // 顯示可編輯的審核框，以及按下確認時要打哪一支 API。
+  reviewStatus: "" | "pending_round" | "pending_closing";
+  elderResponseDraft: string;
 }

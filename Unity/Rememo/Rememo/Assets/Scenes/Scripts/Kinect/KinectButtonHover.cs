@@ -13,6 +13,11 @@ public class KinectButtonHover : MonoBehaviour
 
     private float _hoverTimer = 0f;
     private Button _currentButton = null;
+    // 剛觸發過點擊的按鈕：手沒有真的移開（hitButton 變成別顆或 null）之前，同一顆
+    // 按鈕不能重新開始累計停留時間，否則長者按下麥克風後手還沒移開，會在
+    // hoverDuration 秒後被系統自己再點一次「停止」，中間根本沒時間錄到語音
+    // （2026-08 稽核：實測到回合1 STT 因此收到空白錄音）。
+    private Button _justClickedButton = null;
     private RectTransform _rt;
     private Canvas _canvas;
     private HandCursorRemapper _cursorRemapper;
@@ -66,8 +71,15 @@ public class KinectButtonHover : MonoBehaviour
             if (hitButton != null) break;
         }
 
-        if (hitButton != null)
+        if (hitButton != null && hitButton == _justClickedButton)
         {
+            // 手還留在剛觸發過的按鈕上，先不要重新累計停留時間，避免同一次停留
+            // 又被自動判定成第二次點擊；等手移到別的按鈕或完全移開才解除。
+            ResetRing();
+        }
+        else if (hitButton != null)
+        {
+            _justClickedButton = null;
             Debug.Log($"[Hover] 找到Button: {hitButton.gameObject.name}, timer:{_hoverTimer:F2}/{hoverDuration}");
 
             // 切換目標時重置計時
@@ -85,6 +97,7 @@ public class KinectButtonHover : MonoBehaviour
 
             if (_hoverTimer >= hoverDuration)
             {
+                _justClickedButton = _currentButton;
                 _currentButton.onClick.Invoke();
                 ResetRing();
                 if (_cursorRemapper != null)
@@ -93,6 +106,7 @@ public class KinectButtonHover : MonoBehaviour
         }
         else
         {
+            _justClickedButton = null;
             ResetRing();
         }
     }

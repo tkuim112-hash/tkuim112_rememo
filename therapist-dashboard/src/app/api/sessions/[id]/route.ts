@@ -2,6 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { logAccess } from "@/lib/audit";
+import { sessionIdWhereClause } from "@/lib/session-id";
+
+// 這支路由的 id 參數有兩種來源：從個案頁「歷次活動」清單點進來的是 PostgreSQL
+// 內部整數 sessions.id；從「活動觀察頁面」（治療師端即時療程）結束時帶過來的
+// 是 Python 後端用的 UUID session_uuid（見 LiveSessionView.tsx 的 sessionId）。
+// 判斷邏輯見 @/lib/session-id.ts——2026-08-27稽核：/rounds 這支路由當初沒有
+// 一併套用同一套判斷，一直是直接 parseInt(id)，UUID 字串查到不相關的
+// session_id，導致治療師網頁從活動觀察頁結束後看歷史逐字稿整頁是空的，已經
+// 抽成共用 function 讓兩支路由用同一份，不再各自維護。
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -15,16 +24,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const [updated] = await sql`
     UPDATE sessions SET
-      total_score          = ${totalScore ?? null},
-      emotional_status     = ${emotionalStatus ?? null},
+      total_score          = COALESCE(${totalScore ?? null}, total_score),
+      emotional_status     = COALESCE(${emotionalStatus ?? null}, emotional_status),
       therapist_note       = ${notes ?? null},
       status                = COALESCE(${status ?? null}, status),
-      score_participation  = ${scoreParticipation ?? null},
-      score_attention      = ${scoreAttention ?? null},
-      score_endurance      = ${scoreEndurance ?? null},
-      score_emotion        = ${scoreEmotion ?? null},
-      score_interaction    = ${scoreInteraction ?? null}
-    WHERE id = ${parseInt(id)}
+      score_participation  = COALESCE(${scoreParticipation ?? null}, score_participation),
+      score_attention      = COALESCE(${scoreAttention ?? null}, score_attention),
+      score_endurance      = COALESCE(${scoreEndurance ?? null}, score_endurance),
+      score_emotion        = COALESCE(${scoreEmotion ?? null}, score_emotion),
+      score_interaction    = COALESCE(${scoreInteraction ?? null}, score_interaction)
+    WHERE ${sessionIdWhereClause(id)}
       AND patient_id IN (SELECT id FROM patients WHERE organization_id = ${session.organizationId})
     RETURNING patient_id
   `;
@@ -69,7 +78,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         FROM rounds r WHERE r.session_id = s.id AND (r.type IS NULL OR r.type != '心得')) AS avg_response_time
     FROM sessions s
     JOIN patients p ON p.id = s.patient_id
-    WHERE s.id = ${parseInt(id)}
+    WHERE ${sessionIdWhereClause(id, "s")}
       AND p.organization_id = ${session.organizationId}
   `;
 

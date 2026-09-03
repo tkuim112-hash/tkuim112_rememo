@@ -17,6 +17,11 @@ services:
       - db
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+      # 容器預設是 UTC，date.today()（見 app/routers/session.py 記錄
+      # sessions.date）算出來的「今天」會比台灣時間慢 8 小時，半夜測試
+      # 容易記成前一天。明確指定台灣時區，跟長者/治療師實際感受的日期一致。
+      - TZ=Asia/Taipei
+      - PYTHONUNBUFFERED=1  # 沒設的話 print() 會卡在 buffer 裡，docker logs 看不到即時輸出
     env_file:
       - .env
     restart: unless-stopped
@@ -104,9 +109,10 @@ services:
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib
       - MODEL_ID=OpenFormosa/BlueMagpie-TTS
       - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
-      - CFG_VALUE=2.8
-      - INFER_STEPS=9
-      - TARGET_RATE=4.5
+      - CFG_VALUE=2.0
+      - INFER_STEPS=10
+      - TARGET_RATE=4.0
+      - TTS_SEED=42
       # 要用你自己的聲音：
       - SPEAKER_CENTROID_PT=/workspace/references/Peichi_centroid.pt
     volumes:
@@ -149,6 +155,10 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
+      # created_at 這類欄位是資料庫自己算的時間戳（func.now()），跟 app 服務
+      # 同理需要明確設台灣時區，不然預設 UTC 會跟實際台灣時間差 8 小時。
+      - TZ=Asia/Taipei
+      - PGTZ=Asia/Taipei
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
     restart: always
@@ -203,11 +213,22 @@ services:
     restart: always
   
   # M1: 感知數據處理服務 (OpenAI Whisper STT)
-  kinect-svc:
+  stt:
     image: fedirz/faster-whisper-server:latest-cuda
-    container_name: tku-care-kinect-1
+    container_name: tku-care-stt-1
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
+      - WHISPER__TTL=-1  # 模型常駐，不閒置卸載；BELLE 微調模型冷啟動要 10 分鐘以上，
+                         # 中途被卸載重載會讓 /ws/stt 最終辨識逾時、整條連線被打斷（見
+                         # app/routers/ws_stt.py 的逾時例外處理）。
+                         # 注意：這個 image 的 PRELOAD_MODELS 設定只會預先註冊模型名稱、
+                         # 不會真的載入權重（見 model_manager.py），所以沒有加在這裡；
+                         # 真正把權重載進 GPU 是靠 app 容器啟動時的暖機呼叫
+                         # （app/main.py _warmup_stt），常駐則靠這裡的 ttl=-1。
+    volumes:
+      # 沒掛volume的話容器一重啟(重開機/更新映像)模型就要重新從HuggingFace下載一次，
+      # 測試/demo當下網路不穩會很致命；掛上去讓 STT_MODEL 只下載一次。
+      - ./models/whisper_cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
