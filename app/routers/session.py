@@ -1064,6 +1064,12 @@ async def session_metrics(
         "ai_suggestions": suggestions,
         "current_round": _to_int(data.get("current_round")) or 1,
         "total_rounds": _to_int(data.get("total_rounds")) or 3,
+        # 長者這一題/心得剛講完、還卡在等治療師審核時："" | "pending_round" | "pending_closing"，
+        # 供治療師平板「長者的回應」分頁決定要不要顯示可編輯框（見 /{id}/review_request、
+        # /{id}/closing/review_request）。elder_response_draft 是還沒被確認的草稿文字，
+        # 跟上面已確認的 elder_response 分開存，確認前後兩者不會互相覆蓋。
+        "review_status": data.get("review_status", ""),
+        "elder_response_draft": data.get("elder_response_draft", ""),
         # session:{id}:meta 只有在 _compute_and_save_assessment 算完評估分數、
         # 療程真正結束時才會被清掉（見該函式），前端「活動觀察頁」還在 polling
         # 的當下 meta 一定存在，一旦這裡變 false 就代表心得已經答完、評估算完了，
@@ -1365,16 +1371,26 @@ async def session_assessment(
     return await _compute_and_save_assessment(request, session_id, db, therapist_id)
 
 
-@router.post("/{session_id}/closing", summary="記錄三回合結束後的心得回合，並自動觸發評估寫入")
-async def session_closing(
+class ConfirmResponsePayload(BaseModel):
+    """治療師確認（可能編輯過）長者回答的請求體，回合1-3與心得回合的確認端點共用。"""
+    elder_response: str
+
+
+async def _finalize_closing_response(
     request: Request,
     session_id: str,
-    body: TranscriptPayload,
-    db: AsyncSession = Depends(get_db),
-    therapist_id: int = Depends(get_current_therapist_id),
-):
+    text: str,
+    therapist_id: int,
+    db: AsyncSession,
+    answered_at_ms: int | None = None,
+) -> dict:
     """
-    長者念完收尾心得後呼叫此端點：
+    處理長者的心得收尾回答。原本是 /session/{id}/closing 端點本體，現在被治療師
+    審核流程（/{id}/closing/review_request + /{id}/closing/confirm_response）共用，
+    理由跟 _finalize_elder_response 的重構說明一樣——answered_at_ms 是 review_request
+    收到 STT 結果的時間，不能算成治療師編輯完按確認的時間。
+
+    做兩件事：
       1. 把心得問答存成 rounds.round_number=4（type='心得'）+ round_exchanges
       2. 自動觸發 /assessment 邏輯，產出五指標評分、故事摘要、整體情緒並寫入 PostgreSQL
 
@@ -1396,22 +1412,23 @@ async def session_closing(
     # 心得問題出現的時間點（session_respond 觸發 end_session 時存的），用來算這回合的反應時間
     closing_asked_at_raw = await r.get(f"session:{session_id}:closing_asked_at")
 
-    if body.text.strip():
+    if text.strip():
         try:
             round_row = await _get_or_create_round(
                 db, session_id, 4, patient_id, therapist_id, round_type="心得",
             )
             if round_row is not None:
-                round_row.patient_response = body.text
+                round_row.patient_response = text
                 if closing_asked_at_raw:
-                    elapsed_ms = max(0, int(time.time() * 1000) - int(closing_asked_at_raw))
+                    now_ms = answered_at_ms if answered_at_ms is not None else int(time.time() * 1000)
+                    elapsed_ms = max(0, now_ms - int(closing_asked_at_raw))
                     round_row.response_time = round(elapsed_ms / 1000, 1)
                 await db.flush()
                 db.add(RoundExchange(
                     round_id=round_row.id,
                     question_number=1,
                     question=closing_question,
-                    answer=body.text,
+                    answer=text,
                 ))
                 await db.commit()
                 print(f"[DB] 心得回合寫入成功: session={session_id}")
@@ -1435,28 +1452,104 @@ async def session_closing(
     return {"ok": True, "closing_message": "", "assessment": scores}
 
 
-@router.post("/respond")
-async def session_respond(
+@router.post("/{session_id}/closing", summary="記錄三回合結束後的心得回合，並自動觸發評估寫入")
+async def session_closing(
     request: Request,
-    body: RespondRequest,
+    session_id: str,
+    body: TranscriptPayload,
+    db: AsyncSession = Depends(get_db),
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """薄封裝，保留給不走治療師審核流程的呼叫端（心得回合長者沉默直接送出空字串、
+    或 /closing/review_request 重試用盡退回舊流程時，ShareController.cs 直接呼叫這支）。"""
+    return await _finalize_closing_response(request, session_id, body.text, therapist_id, db)
+
+
+class ClosingReviewRequestPayload(BaseModel):
+    text: str
+
+
+@router.post("/{session_id}/closing/review_request", summary="Unity STT辨識完成，送治療師平板審核心得回答")
+async def session_closing_review_request(
+    request: Request,
+    session_id: str,
+    body: ClosingReviewRequestPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    r = request.app.state.redis
+    payload = {"text": body.text, "received_at": int(time.time() * 1000)}
+    await r.set(
+        f"session:{session_id}:pending_closing_review",
+        json.dumps(payload, ensure_ascii=False),
+        ex=1800,
+    )
+    await _update_live_view(
+        r, session_id,
+        elder_response_draft=body.text,
+        review_status="pending_closing",
+    )
+    return {"ok": True}
+
+
+@router.post("/{session_id}/closing/confirm_response", summary="治療師確認（可能編輯過）長者的心得回答，推播回 Unity")
+async def session_closing_confirm_response(
+    request: Request,
+    session_id: str,
+    body: ConfirmResponsePayload,
     therapist_id: int = Depends(get_current_therapist_id),
     db: AsyncSession = Depends(get_db),
 ):
+    r = request.app.state.redis
+    raw = await r.get(f"session:{session_id}:pending_closing_review")
+    if not raw:
+        raise HTTPException(status_code=409, detail="沒有待確認的長者心得")
+    pending = json.loads(raw)
+
+    result = await _finalize_closing_response(
+        request, session_id, body.elder_response, therapist_id, db,
+        answered_at_ms=pending["received_at"],
+    )
+
+    await r.delete(f"session:{session_id}:pending_closing_review")
+    await _update_live_view(
+        r, session_id, elder_response=body.elder_response, review_status="",
+    )
+    await ws_registry.send_message(session_id, {
+        "type": "final_closing_response",
+        "elder_response": body.elder_response,
+        "closing_message": result.get("closing_message", ""),
+    })
+    return result
+
+
+async def _finalize_elder_response(
+    request: Request,
+    elder_response: str,
+    state: SessionState,
+    therapist_id: int,
+    db: AsyncSession,
+    answered_at_ms: int | None = None,
+) -> dict:
     """
-    長者說完話後呼叫此端點，取得下一步動作。
+    處理長者這一題的回答，取得下一步動作。原本是 /session/respond 端點本體，
+    現在被治療師審核流程（/{id}/review_request + /{id}/confirm_response）
+    共用：Unity STT 做完最終辨識後不再直接呼叫這裡，而是先呼叫 review_request
+    把文字＋state 暫存到 Redis，等治療師在平板確認（可能編輯過）後，
+    confirm_response 才真的呼叫這支函式，並把當時 review_request 收到的時間
+    當作 answered_at_ms 傳進來——反應時間要算到長者答完話那一刻，不能把
+    治療師編輯耗費的時間也算進去。answered_at_ms 是 None 時（例如 /session/respond
+    這支端點本身仍被直接呼叫）就退回用呼叫當下的時間，行為等同重構前。
 
     回傳的 action：
       open_followup    → 話題豐富，繼續順著長者深入（含 scene_text + question）
       ask_supplement_w → 話題結束，切入未問的W維度（含 scene_text + question）
       end_round        → 本回合完成，用 next_round 呼叫 /session/round
       end_session      → 三回合結束，療程收尾
-
-    前端每次收到回應後，用回傳的 state 取代本地的 state。
     """
     orchestrator = request.app.state.orchestrator
     try:
         r = request.app.state.redis
-        metrics = await r.hgetall(f"session:{body.state.session_id}:metrics")
+        metrics = await r.hgetall(f"session:{state.session_id}:metrics")
         emotion = metrics.get("emotion_raw", "")  # 沒有 Kinect 數據時存空值，不假造 happy
         # 2026-08-26稽核（code review 發現）：先查/補這題的 round_exchanges
         # 答案，順便判斷這是不是前端逾時重試造成的重複提交（見
@@ -1466,39 +1559,40 @@ async def session_respond(
         # 累加反應時間都要跳過，不然長者同一句話會被記兩次、反應時間統計
         # 也會被重複累加。
         is_first_answer = await _fill_round_exchange_answer(
-            db, body.state.session_id, body.state.round,
-            question_number=body.state.question_number, answer=body.elder_response,
+            db, state.session_id, state.round,
+            question_number=state.question_number, answer=elder_response,
         )
         if is_first_answer:
             # 先落地逐字稿（真相源），後續 LLM 流程失敗也不遺失長者的話。
             # rounds.emotion 不在這裡寫，改由回合結束時 _finalize_round_emotion
             # 依整回合累積的 frame 數多數決寫入（見該函式說明）。
             await _save_round_response(
-                db, body.state.session_id, body.state.round,
-                text=body.elder_response,
-                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                db, state.session_id, state.round,
+                text=elder_response,
+                patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
             # 這一題長者花了多久回答，累加進本回合的反應時間統計
-            if body.state.question_asked_at:
-                elapsed_ms = max(0, int(time.time() * 1000) - body.state.question_asked_at)
+            if state.question_asked_at:
+                now_ms = answered_at_ms if answered_at_ms is not None else int(time.time() * 1000)
+                elapsed_ms = max(0, now_ms - state.question_asked_at)
                 await _accumulate_round_response_time(
-                    r, body.state.session_id, body.state.round, elapsed_ms
+                    r, state.session_id, state.round, elapsed_ms
                 )
         else:
             print(
-                f"[DB] round={body.state.round} q#={body.state.question_number} "
+                f"[DB] round={state.round} q#={state.question_number} "
                 f"這題已經有答案，判定為重複提交，跳過逐字稿/反應時間累加"
             )
         await _update_live_view(
-            request.app.state.redis, body.state.session_id,
-            elder_response=body.elder_response,
+            request.app.state.redis, state.session_id,
+            elder_response=elder_response,
         )
         result = await orchestrator.process_response(
-            elder_response=body.elder_response,
-            state=body.state.model_dump(),
+            elder_response=elder_response,
+            state=state.model_dump(),
             emotion=emotion,
             on_generating_image=lambda: ws_registry.send_control(
-                body.state.session_id, "generating_image"
+                state.session_id, "generating_image"
             ),
         )
 
@@ -1509,20 +1603,20 @@ async def session_respond(
             # 沒有圖，寫進 DB 的 scene_image 會是空字串，要等這裡才補上真正的
             # 圖片路徑與場景文字。
             await _save_round_image(
-                db, body.state.session_id, body.state.round, result["image_path"],
+                db, state.session_id, state.round, result["image_path"],
                 scene_text=result.get("scene_text", ""),
-                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
 
         if result.get("state") is None:
             # 回合結束（end_round / end_session），把這回合累積的平均反應時間寫進 rounds.response_time
             await _finalize_round_response_time(
-                db, r, body.state.session_id, body.state.round,
-                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                db, r, state.session_id, state.round,
+                patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
             await _finalize_round_emotion(
-                db, r, body.state.session_id, body.state.round,
-                patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                db, r, state.session_id, state.round,
+                patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
             if result.get("action") == "end_session":
                 # 三回合正常跑完、準備轉場到 ShareScene 問心得——GameController 的
@@ -1531,23 +1625,23 @@ async def session_respond(
                 # 按「結束活動」、也不是不正常斷線，是正常流程的一部分，這裡先標記
                 # 起來供 ws_stt.py 的 finally 區塊排除，避免誤判成不正常結束。
                 await r.set(
-                    f"session:{body.state.session_id}:reached_closing",
+                    f"session:{state.session_id}:reached_closing",
                     "1", ex=3600,
                 )
                 # 心得問題出現的時間點，供 /session/{id}/closing 計算心得回合的反應時間
                 await r.set(
-                    f"session:{body.state.session_id}:closing_asked_at",
+                    f"session:{state.session_id}:closing_asked_at",
                     str(int(time.time() * 1000)), ex=3600,
                 )
                 # 心得環節開場邀請語是純規則模板（見 app/services/closing_
                 # templates.py），orchestrator._end_action 對 end_session 只回
                 # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
                 # 實際分類到的16大主題（見 _append_session_topic）。收尾語呼應
-                # 長者剛才在回合3的回答（body.elder_response 就是那句），emotion
+                # 長者剛才在回合3的回答（elder_response 就是那句），emotion
                 # 沿用這次respond一開始讀到的Kinect情緒。
-                topics = await _get_session_topics(r, body.state.session_id)
+                topics = await _get_session_topics(r, state.session_id)
                 invitation = await build_closing_invitation(
-                    topics, body.elder_response, emotion, request.app.state.llm_service,
+                    topics, elder_response, emotion, request.app.state.llm_service,
                 )
                 result["scene_text"] = invitation["scene_text"]
                 result["thanks_text"] = invitation["thanks_text"]
@@ -1559,30 +1653,30 @@ async def session_respond(
                 result["scene_audio_keys"] = invitation["scene_audio_keys"]
                 result["thanks_audio_keys"] = invitation["thanks_audio_keys"]
                 result["question_audio_keys"] = invitation["question_audio_keys"]
-            if result.get("action") == "end_round" and body.state.round in (1, 2):
+            if result.get("action") == "end_round" and state.round in (1, 2):
                 # round 2/3 開場需要承接這裡：round 1 結束時記畫面元素／話題／
                 # 生圖前訪談內容＋這句話，round 2 結束時只需要這句話（round 3
                 # 的 closing 不需要畫面），見 orchestrator.py start_round 說明。
-                carryover = {"last_elder_response": body.elder_response, "emotion": emotion}
-                if body.state.round == 1:
+                carryover = {"last_elder_response": elder_response, "emotion": emotion}
+                if state.round == 1:
                     carryover.update({
-                        "scene_elements": body.state.scene_elements,
-                        "scene_composition": body.state.scene_composition,
-                        "pre_image_detail": body.state.pre_image_detail,
-                        "topic_category": body.state.topic_category,
-                        "topic_senses": body.state.topic_senses,
+                        "scene_elements": state.scene_elements,
+                        "scene_composition": state.scene_composition,
+                        "pre_image_detail": state.pre_image_detail,
+                        "topic_category": state.topic_category,
+                        "topic_senses": state.topic_senses,
                         # round 1 結束時已經自然涵蓋的 W 維度——round 2 開場用來
                         # 排除補問候選，不要再問長者已經在 round 1 講過的具體事實
                         # （見 orchestrator.py _start_round2_free_followup 的
                         # known_facts_w 說明）。
-                        "round1_covered_w": body.state.covered_w,
+                        "round1_covered_w": state.covered_w,
                         # round 1 最後一題問了什麼——round 2 開場生成時當
                         # 參考資訊（見 orchestrator.py _start_round2_free_
                         # followup 說明）。2026-08-18稽核（第四次，使用者
                         # 提案）：這裡原本帶的是round 1整份round_qa_log，
                         # 改成只帶最後一題的單一字串，理由見
                         # SessionState.last_question_text 上方註解。
-                        "round1_last_question": body.state.last_question_text,
+                        "round1_last_question": state.last_question_text,
                         # round 1 結束時已經自然涵蓋的感官——round 2 開場用來排除
                         # 感官選項，不要再問長者已經在 round 1 答過的感官（例如
                         # 味覺/嗅覺），跟上面 round1_covered_w 同一個問題、同一種
@@ -1591,29 +1685,29 @@ async def session_respond(
                         # skipped_senses——skipped_senses 是「問了但長者沒答到」，
                         # round 2 沒理由跟著避開，跟 round1_covered_w 只帶
                         # covered_w、不帶 skipped_w 是同一個理由。
-                        "round1_covered_senses": body.state.covered_senses,
+                        "round1_covered_senses": state.covered_senses,
                     })
-                await _cache_round_carryover(r, body.state.session_id, body.state.round, carryover)
-                await _append_session_topic(r, body.state.session_id, body.state.topic_category)
+                await _cache_round_carryover(r, state.session_id, state.round, carryover)
+                await _append_session_topic(r, state.session_id, state.topic_category)
 
         if result.get("question"):
             # state 不是 None 代表回合還在繼續（open_followup / ask_supplement_w），
             # 這一題是本回合的新問題，question_number 往下一號並存進 round_exchanges；
             # state 是 None 代表 end_round/end_session，問題本身留給下一回合開場或
             # /session/{id}/closing 處理，這裡只負責播音檔。
-            next_qn = body.state.question_number + 1
+            next_qn = state.question_number + 1
             # 第二回合（自由追問）全程不合成語音，STT 仍照常。end_session 的
             # scene_text/question 是 build_closing_invitation 補上的心得環節
             # 收尾語＋開場問題（見上面 action=="end_session" 分支），這一段
             # 全部不需要語音，只當畫面上的文字。
-            if body.state.round != 2 and result.get("action") != "end_session":
+            if state.round != 2 and result.get("action") != "end_session":
                 tts = request.app.state.tts_service
                 if result.get("scene_text"):
                     scene_audio_path, scene_audio_key = await _synthesize_or_key(
                         tts,
                         result["scene_text"],
-                        session_id=body.state.session_id,
-                        round_number=body.state.round,
+                        session_id=state.session_id,
+                        round_number=state.round,
                         turn_number=None,
                     )
                     result["scene_audio_path"] = scene_audio_path
@@ -1631,15 +1725,15 @@ async def session_respond(
                     question_audio_path, question_audio_key = await _synthesize_or_key(
                         tts,
                         result["question"],
-                        session_id=body.state.session_id,
-                        round_number=body.state.round,
+                        session_id=state.session_id,
+                        round_number=state.round,
                         turn_number=next_qn if result.get("state") is not None else None,
                     )
                 result["question_audio_path"] = question_audio_path
                 result["question_audio_key"] = question_audio_key
                 result["audio_path"] = question_audio_path  # 向下相容
             await _update_live_view(
-                request.app.state.redis, body.state.session_id,
+                request.app.state.redis, state.session_id,
                 current_scene=result.get("scene_text", "") + result["question"],
                 ai_suggestions=[result["question"]],
             )
@@ -1648,9 +1742,9 @@ async def session_respond(
                 result["state"]["question_asked_at"] = int(time.time() * 1000)
                 last_type = (result.get("state") or {}).get("last_question_type", "")
                 await _save_round_exchange(
-                    db, body.state.session_id, body.state.round,
+                    db, state.session_id, state.round,
                     question_number=next_qn, question=result["question"],
-                    patient_id=_to_int(body.state.user_id), therapist_id=therapist_id,
+                    patient_id=_to_int(state.user_id), therapist_id=therapist_id,
                     stage="pre_image" if last_type.startswith("pre_image") else None,
                 )
         return result
@@ -1660,3 +1754,88 @@ async def session_respond(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"處理回應失敗: {str(e)}")
+
+
+@router.post("/respond")
+async def session_respond(
+    request: Request,
+    body: RespondRequest,
+    therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """薄封裝，保留給不走治療師審核流程的呼叫端（目前只剩 Unity 端在
+    STT 沒辨識到文字、或 /review_request 重試用盡退回舊流程時直接呼叫）。"""
+    return await _finalize_elder_response(request, body.elder_response, body.state, therapist_id, db)
+
+
+class ReviewRequestPayload(BaseModel):
+    elder_response: str
+    state: SessionState
+
+
+@router.post("/{session_id}/review_request", summary="Unity STT辨識完成，送治療師平板審核（取代直接讓長者送出）")
+async def session_review_request(
+    request: Request,
+    session_id: str,
+    body: ReviewRequestPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    長者這一題的 STT 最終結果先暫存在 Redis，不落地資料庫、不驅動 orchestrator——
+    要等治療師在 /confirm_response 確認（可能編輯過）後才真的處理。state 一併存進來，
+    因為 confirm_response 呼叫 _finalize_elder_response 需要完整的回合狀態，而
+    後端本來就不持有這份狀態（一直是 Unity 端在往返傳遞）。received_at 供
+    confirm_response 算反應時間用，不能用治療師確認的時間點（見
+    _finalize_elder_response 的 answered_at_ms 說明）。
+    """
+    r = request.app.state.redis
+    payload = {
+        "elder_response": body.elder_response,
+        "state": body.state.model_dump(),
+        "received_at": int(time.time() * 1000),
+    }
+    await r.set(
+        f"session:{session_id}:pending_review",
+        json.dumps(payload, ensure_ascii=False),
+        ex=1800,
+    )
+    await _update_live_view(
+        r, session_id,
+        elder_response_draft=body.elder_response,
+        review_status="pending_round",
+    )
+    return {"ok": True}
+
+
+@router.post("/{session_id}/confirm_response", summary="治療師確認（可能編輯過）長者這一題的回答，推播回 Unity")
+async def session_confirm_response(
+    request: Request,
+    session_id: str,
+    body: ConfirmResponsePayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
+):
+    r = request.app.state.redis
+    raw = await r.get(f"session:{session_id}:pending_review")
+    if not raw:
+        raise HTTPException(status_code=409, detail="沒有待確認的長者回應")
+    pending = json.loads(raw)
+    state = SessionState.model_validate(pending["state"])
+
+    result = await _finalize_elder_response(
+        request, body.elder_response, state, therapist_id, db,
+        answered_at_ms=pending["received_at"],
+    )
+
+    await r.delete(f"session:{session_id}:pending_review")
+    # 只保留治療師確認後的版本：elder_response 欄位寫的是這裡的（可能編輯過的）
+    # 文字，長者原始 STT 逐字稿只在 pending_review 暫存過，這裡刪掉後就不留痕跡。
+    await _update_live_view(
+        r, session_id, elder_response=body.elder_response, review_status="",
+    )
+    await ws_registry.send_message(session_id, {
+        "type": "final_response",
+        "elder_response": body.elder_response,
+        **result,
+    })
+    return {"ok": True}
