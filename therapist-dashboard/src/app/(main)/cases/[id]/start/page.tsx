@@ -128,7 +128,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || "啟動療程失敗，請確認長者端裝置與後端服務狀態");
       }
-      router.push(`/activity/${newSessionId}?caseId=${caseId}&live=1`);
+      router.push(`/activity/${newSessionId}/warmup?caseId=${caseId}`);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : "啟動療程失敗，請稍後再試");
       setIsStarting(false);
