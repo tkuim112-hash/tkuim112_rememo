@@ -55,6 +55,9 @@ public class WarmupCardController : MonoBehaviour
     [Tooltip("換卡時把目前 cardKey 回報給後端，供治療師網頁同步顯示同一張卡（本地圖片，見 ActionCard.cardKey 說明）")]
     public string backendUrl = "https://api.re-memo.com";
 
+    [Tooltip("同一張卡進行中，隔多久回報一次目前做到幾次/幾秒給後端一次。網頁目前只用來畫一跳一跳的進度條（換卡才跳格），但這個即時進度資料先持續回報留著，之後要做卡片內即時填色可以直接用")]
+    public float progressReportInterval = 0.3f;
+
     [Header("UI 元件")]
     public Image cardImage;
 
@@ -91,6 +94,7 @@ public class WarmupCardController : MonoBehaviour
     private List<ActionCard> selectedCards;
     private int currentIndex;
     private string sessionId;
+    private float progressReportTimer;
 
     private float holdTimer;
     private float holdDropoutTimer;
@@ -183,6 +187,7 @@ public class WarmupCardController : MonoBehaviour
         armAngleInitLeft = false;
         armAngleInitRight = false;
         lastArmCircleRepTime = -999f;
+        progressReportTimer = 0f;
 
         CancelInvoke(nameof(NextCard));
         if (card.poseType == PoseType.None)
@@ -196,23 +201,45 @@ public class WarmupCardController : MonoBehaviour
         ReportWarmupProgress(card);
     }
 
-    // 把目前這張卡的 cardKey 回報給後端，讓治療師網頁能同步顯示同一張卡（用它
-    // 自己本機存的圖片，見 ActionCard.cardKey 說明）。sessionId 拿不到（離線
-    // demo、換取 pending session 失敗）就不回報，不擋長者端的暖身流程——
-    // 這支只是給治療師看的旁路資訊，失敗也不影響長者實際做動作。
+    static bool IsCountType(PoseType poseType) =>
+        poseType == PoseType.CountLegLift || poseType == PoseType.CountChestExpand ||
+        poseType == PoseType.CountTouchKnees || poseType == PoseType.CountWaistTwist ||
+        poseType == PoseType.CountArmCircle;
+
+    static bool IsHoldType(PoseType poseType) =>
+        poseType == PoseType.HoldArmsRaised || poseType == PoseType.HoldTouchKnees ||
+        poseType == PoseType.HoldArmStretch;
+
+    // 目前這張卡做到多少百分比（0~1）。網頁目前只用一跳一跳的進度條（換卡才
+    // 跳格，不吃這個值），但先把即時進度持續回報留著，供之後要做卡片內填色
+    // 時直接沿用。None 類型（沒有動作偵測）沒有進度可算，固定回 0。
+    float ComputeProgressRatio(ActionCard card)
+    {
+        if (IsCountType(card.poseType))
+            return card.requiredCount > 0 ? Mathf.Clamp01((float)repCount / card.requiredCount) : 0f;
+        if (IsHoldType(card.poseType))
+            return card.requiredHoldSeconds > 0 ? Mathf.Clamp01(holdTimer / card.requiredHoldSeconds) : 0f;
+        return 0f;
+    }
+
+    // 把目前這張卡的 cardKey／進度回報給後端，讓治療師網頁能同步顯示同一張卡
+    // （用它自己本機存的圖片，見 ActionCard.cardKey 說明）。sessionId 拿不到
+    // （離線 demo、換取 pending session 失敗）就不回報，不擋長者端的暖身
+    // 流程——這支只是給治療師看的旁路資訊，失敗也不影響長者實際做動作。
     void ReportWarmupProgress(ActionCard card)
     {
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(card.cardKey)) return;
-        StartCoroutine(PostWarmupProgress(card.cardKey, currentIndex + 1, selectedCards.Count));
+        StartCoroutine(PostWarmupProgress(card.cardKey, currentIndex + 1, selectedCards.Count, ComputeProgressRatio(card)));
     }
 
-    IEnumerator PostWarmupProgress(string cardKey, int cardIndex, int totalCards)
+    IEnumerator PostWarmupProgress(string cardKey, int cardIndex, int totalCards, float progressRatio)
     {
         var payload = new WarmupProgressPayload
         {
             card_key = cardKey,
             card_index = cardIndex,
             total_cards = totalCards,
+            progress_ratio = progressRatio,
         };
         byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/warmup_progress", "POST");
@@ -233,18 +260,13 @@ public class WarmupCardController : MonoBehaviour
         if (progressText == null) return;
 
         var card = selectedCards[currentIndex];
-        bool isCountType = card.poseType == PoseType.CountLegLift || card.poseType == PoseType.CountChestExpand ||
-            card.poseType == PoseType.CountTouchKnees || card.poseType == PoseType.CountWaistTwist ||
-            card.poseType == PoseType.CountArmCircle;
-        bool isHoldType = card.poseType == PoseType.HoldArmsRaised || card.poseType == PoseType.HoldTouchKnees ||
-            card.poseType == PoseType.HoldArmStretch;
 
-        if (isCountType)
+        if (IsCountType(card.poseType))
         {
             int divisor = Mathf.Max(1, card.displayCountDivisor);
             progressText.text = $"{repCount / divisor} / {card.requiredCount / divisor}";
         }
-        else if (isHoldType)
+        else if (IsHoldType(card.poseType))
         {
             progressText.text = $"{holdTimer:F1} / {card.requiredHoldSeconds:F0} 秒";
         }
@@ -308,6 +330,15 @@ public class WarmupCardController : MonoBehaviour
         }
 
         UpdateProgressText();
+
+        // 卡片進行中持續回報進度（節流，避免每一幀都打一次 API）。網頁目前
+        // 只用來畫一跳一跳的進度條，但先把即時進度資料留著回報。
+        progressReportTimer += Time.deltaTime;
+        if (progressReportTimer >= progressReportInterval)
+        {
+            progressReportTimer = 0f;
+            ReportWarmupProgress(card);
+        }
     }
 
     void UpdateHold(bool poseMatched, float requiredHoldSeconds)
@@ -472,6 +503,8 @@ public class WarmupCardController : MonoBehaviour
         // 回來又被重複觸發一次完成。
         if (cardCompleted) return;
         cardCompleted = true;
+        // 過關那一刻先送一次 100% 進度，確保最後一小段進度不會被跳過。
+        ReportWarmupProgress(selectedCards[currentIndex]);
 
         if (audioSource != null && successSound != null)
         {
@@ -561,4 +594,5 @@ public class WarmupProgressPayload
     public string card_key;
     public int card_index;
     public int total_cards;
+    public float progress_ratio;
 }

@@ -59,6 +59,13 @@ def _to_int(val) -> int | None:
         return None
 
 
+def _to_float(val) -> float | None:
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _synthesize_safe(tts, **kwargs) -> str | None:
     """TTS 服務離線/逾時（例如本機 GPU 資源被 Ollama 占用時沒開 TTS）不該擋住整個
     回合開場/回應流程，跟圖片生成失敗一樣採不影響主流程的降級：長者端這段沒有語音，
@@ -1037,6 +1044,7 @@ class WarmupProgressPayload(BaseModel):
     card_key: str
     card_index: int
     total_cards: int
+    progress_ratio: float = 0.0
 
 
 @router.post("/{session_id}/warmup_progress", summary="Unity 換暖身動作卡時回報目前卡片，供治療師網頁同步顯示")
@@ -1053,6 +1061,11 @@ async def session_warmup_progress(
     不同卡片內容，所以用卡片自己的 cardKey 當識別碼，不能用 poseType
     （見 WarmupCardController.ActionCard.cardKey 說明）。
 
+    progress_ratio：目前這張卡做到多少百分比（0~1），Unity 在卡片進行中會
+    節流持續回報（見 WarmupCardController.progressReportInterval）。網頁目前
+    只用 card_index 畫一跳一跳的進度條，還沒用到這個欄位，先存著留給之後
+    要做卡片內即時填色時直接用，不用再改一次 Unity/後端。
+
     這支發生在 /session/start 之前（長者還在 WarmupGameScene，尚未進第一
     回合），所以不依賴 session:{id}:meta 存在，直接寫獨立的 warmup hash。
     """
@@ -1063,6 +1076,7 @@ async def session_warmup_progress(
             "card_key": body.card_key,
             "card_index": body.card_index,
             "total_cards": body.total_cards,
+            "progress_ratio": body.progress_ratio,
         },
     )
     await r.expire(f"session:{session_id}:warmup", 3600)
@@ -1081,6 +1095,7 @@ async def session_warmup_progress_get(
         "card_key": data.get("card_key", ""),
         "card_index": _to_int(data.get("card_index")) or 0,
         "total_cards": _to_int(data.get("total_cards")) or 0,
+        "progress_ratio": _to_float(data.get("progress_ratio")) or 0.0,
     }
 
 
