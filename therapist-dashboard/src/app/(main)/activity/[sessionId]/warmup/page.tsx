@@ -20,6 +20,15 @@ const WARMUP_CARDS: Record<string, { label: string; image: string }> = {
   chest_expand: { label: "擴胸 5 次", image: "/image/warmup/chest_expand.png" },
 };
 
+function IconEdit() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="shrink-0">
+      <path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function WarmupPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
   const router = useRouter();
@@ -32,6 +41,10 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
   const [cardKey, setCardKey] = useState<string | null>(null);
   const [cardIndex, setCardIndex] = useState(0);
   const [totalCards, setTotalCards] = useState(0);
+  // 5 張卡是否都做完了（見 Unity WarmupCardController.ReportAllCardsCompleted）。
+  // 「進入活動」按鈕要等這個變 true 才能按，一開始（還沒收到任何回報）預設
+  // false，維持 disabled。
+  const [allCompleted, setAllCompleted] = useState(false);
 
   useEffect(() => {
     if (!caseId) return;
@@ -54,6 +67,7 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
         if (data.card_key) setCardKey(data.card_key);
         setCardIndex(data.card_index ?? 0);
         setTotalCards(data.total_cards ?? 0);
+        setAllCompleted(Boolean(data.all_completed));
       } catch {
         // 網路暫時中斷時保留上次數值，不中斷顯示
       }
@@ -66,7 +80,23 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
 
   const currentCard = cardKey ? WARMUP_CARDS[cardKey] : undefined;
 
-  function goToActivity() {
+  // 「手動標記完成」「跳過此動作」「進入活動」都是送控制指令給 Unity 端
+  // polling 消費（見 app/routers/session.py /warmup_control、Unity
+  // WarmupCardController.PollWarmupControl），這裡不做樂觀更新——實際換卡/
+  // 切場景要等 Unity 真的處理完、下一次 polling warmup_progress 才會反映。
+  const sendWarmupControl = (action: "complete" | "skip" | "enter_activity") =>
+    fetch(`${API_BASE}/session/${sessionId}/warmup_control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action }),
+    }).catch(() => {});
+
+  const handleMarkDone = () => sendWarmupControl("complete");
+  const handleSkip = () => sendWarmupControl("skip");
+
+  async function handleEnterActivity() {
+    await sendWarmupControl("enter_activity");
     router.push(`/activity/${sessionId}?caseId=${caseId}&live=1`);
   }
 
@@ -113,17 +143,29 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
             ))}
           </div>
 
-          {/* 控制按鈕：暖身動作的推進完全由 Unity 端偵測長者的 Kinect 動作決定，
-              目前沒有反向管道能從治療師網頁推進/跳過長者端的卡片，所以「手動
-              標記完成」「跳過此動作」先移除，避免顯示成能操控長者端、實際上
-              點了沒有作用的按鈕。要補上這個功能需要另外接一條治療師網頁→
-              Unity 的控制訊號（可參考 /session/{id}/control 讓 Unity 監聽
-              WarmupGameScene 版本的控制指令）。 */}
+          {/* 控制按鈕 */}
           <div className="flex gap-3 mt-[20vh]">
             <button
               type="button"
-              onClick={goToActivity}
-              className="bg-[#1a1a1a] text-white rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#333] transition-colors"
+              onClick={handleMarkDone}
+              disabled={allCompleted}
+              className="flex items-center gap-2 border border-[#d0d0d0] rounded-xl px-5 py-3 text-[15px] font-medium text-[#1a1a1a] hover:bg-[#f5f5f5] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <IconEdit /> 手動標記完成
+            </button>
+            <button
+              type="button"
+              onClick={handleSkip}
+              disabled={allCompleted}
+              className="bg-[#b9cde8] text-[#2c4a73] rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#a9c0de] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              跳過此動作
+            </button>
+            <button
+              type="button"
+              onClick={handleEnterActivity}
+              disabled={!allCompleted}
+              className="bg-[#1a1a1a] text-white rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#333] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               進入活動
             </button>

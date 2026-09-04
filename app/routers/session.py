@@ -1045,6 +1045,7 @@ class WarmupProgressPayload(BaseModel):
     card_index: int
     total_cards: int
     progress_ratio: float = 0.0
+    all_completed: bool = False
 
 
 @router.post("/{session_id}/warmup_progress", summary="Unity 換暖身動作卡時回報目前卡片，供治療師網頁同步顯示")
@@ -1066,6 +1067,11 @@ async def session_warmup_progress(
     只用 card_index 畫一跳一跳的進度條，還沒用到這個欄位，先存著留給之後
     要做卡片內即時填色時直接用，不用再改一次 Unity/後端。
 
+    all_completed：5 張卡都做完時 Unity 會回報一次 true（見
+    WarmupCardController.ReportAllCardsCompleted），供治療師網頁把「進入
+    活動」按鈕從 disabled 改成可以按——Unity 這時停在原地等治療師端送出
+    enter_activity 控制指令才會真的切場景（見 /warmup_control）。
+
     這支發生在 /session/start 之前（長者還在 WarmupGameScene，尚未進第一
     回合），所以不依賴 session:{id}:meta 存在，直接寫獨立的 warmup hash。
     """
@@ -1077,6 +1083,7 @@ async def session_warmup_progress(
             "card_index": body.card_index,
             "total_cards": body.total_cards,
             "progress_ratio": body.progress_ratio,
+            "all_completed": "1" if body.all_completed else "",
         },
     )
     await r.expire(f"session:{session_id}:warmup", 3600)
@@ -1096,7 +1103,57 @@ async def session_warmup_progress_get(
         "card_index": _to_int(data.get("card_index")) or 0,
         "total_cards": _to_int(data.get("total_cards")) or 0,
         "progress_ratio": _to_float(data.get("progress_ratio")) or 0.0,
+        "all_completed": bool(data.get("all_completed")),
     }
+
+
+_WARMUP_CONTROL_ACTIONS = {"complete", "skip", "enter_activity"}
+
+
+class WarmupControlPayload(BaseModel):
+    action: str
+
+
+@router.post("/{session_id}/warmup_control", summary="治療師網頁暖身頁面控制（標記完成／跳過此動作／允許進入活動）")
+async def session_warmup_control(
+    request: Request,
+    session_id: str,
+    body: WarmupControlPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    Unity 在暖身階段沒有像主活動那樣常駐的 /ws/stt 連線可以即時轉發控制指令
+    （那條連線綁著 STT 音訊串流，是 GameScene 才建立的，暖身階段硬借來用
+    風險較高，見 ws_stt.py／ws_registry.py），改用輕量 polling：這裡把指令
+    推進一個 Redis list，WarmupCardController 每隔 controlPollInterval 秒
+    poll 一次 GET /warmup_control 取走最舊的一筆並清掉。
+
+    action：
+      complete       — 治療師手動標記目前這張卡完成，等同 Kinect 真的偵測到
+                        動作，Unity 會播放過關音效／徽章後換下一張卡
+      skip           — 跳過目前這張卡，不算數、不播音效／徽章，直接換下一張
+                        （這張卡不會在本次療程再出現，見 SkipCurrentCard 說明）
+      enter_activity — 5 張卡都做完後，Unity 會停在原地等這個訊號才切去
+                        InstructionScene（見 ReportAllCardsCompleted／
+                        WaitForEnterActivityThenLoadScene）
+    """
+    if body.action not in _WARMUP_CONTROL_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"不支援的暖身控制動作: {body.action}")
+    r = request.app.state.redis
+    await r.rpush(f"session:{session_id}:warmup_control_queue", body.action)
+    await r.expire(f"session:{session_id}:warmup_control_queue", 3600)
+    return {"ok": True}
+
+
+@router.get("/{session_id}/warmup_control", summary="Unity polling 是否有治療師下的暖身控制指令")
+async def session_warmup_control_get(
+    request: Request,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    r = request.app.state.redis
+    action = await r.lpop(f"session:{session_id}:warmup_control_queue")
+    return {"action": action}
 
 
 @router.get("/{session_id}/metrics", summary="取得即時檢測回饋（供治療師頁面 polling）")
