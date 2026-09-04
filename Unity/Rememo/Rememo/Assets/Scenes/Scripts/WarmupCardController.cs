@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Text;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -23,6 +25,9 @@ public class WarmupCardController : MonoBehaviour
     [System.Serializable]
     public class ActionCard
     {
+        [Tooltip("卡片的穩定識別碼，回報給後端後治療師網頁會用這個字串去對照它自己本機存的動作圖片/文字，兩邊各自的圖檔不用一致，只有這個字串要跟前端的對照表一致。同一個 poseType（例如原地踏步跟踢腿都是 CountLegLift）可能對應不同卡片，不能拿 poseType 當識別碼")]
+        public string cardKey;
+
         public Sprite image;
 
         [Tooltip("只用在 poseType 是 None 的卡：顯示幾秒後自動換下一題。有設定 poseType 的卡一定要偵測到動作才會換，這個欄位不會生效")]
@@ -45,6 +50,10 @@ public class WarmupCardController : MonoBehaviour
 
     [Header("動作卡題庫，會從裡面隨機抽 5 張、不重複")]
     public ActionCard[] cardPool;
+
+    [Header("後端設定")]
+    [Tooltip("換卡時把目前 cardKey 回報給後端，供治療師網頁同步顯示同一張卡（本地圖片，見 ActionCard.cardKey 說明）")]
+    public string backendUrl = "https://api.re-memo.com";
 
     [Header("UI 元件")]
     public Image cardImage;
@@ -81,6 +90,7 @@ public class WarmupCardController : MonoBehaviour
 
     private List<ActionCard> selectedCards;
     private int currentIndex;
+    private string sessionId;
 
     private float holdTimer;
     private float holdDropoutTimer;
@@ -114,6 +124,8 @@ public class WarmupCardController : MonoBehaviour
 
     void Start()
     {
+        sessionId = AuthSession.SessionId;
+
         if (detectionBadgeImage != null)
         {
             detectingBadgeSprite = detectionBadgeImage.sprite;
@@ -181,6 +193,36 @@ public class WarmupCardController : MonoBehaviour
         }
 
         UpdateProgressText();
+        ReportWarmupProgress(card);
+    }
+
+    // 把目前這張卡的 cardKey 回報給後端，讓治療師網頁能同步顯示同一張卡（用它
+    // 自己本機存的圖片，見 ActionCard.cardKey 說明）。sessionId 拿不到（離線
+    // demo、換取 pending session 失敗）就不回報，不擋長者端的暖身流程——
+    // 這支只是給治療師看的旁路資訊，失敗也不影響長者實際做動作。
+    void ReportWarmupProgress(ActionCard card)
+    {
+        if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(card.cardKey)) return;
+        StartCoroutine(PostWarmupProgress(card.cardKey, currentIndex + 1, selectedCards.Count));
+    }
+
+    IEnumerator PostWarmupProgress(string cardKey, int cardIndex, int totalCards)
+    {
+        var payload = new WarmupProgressPayload
+        {
+            card_key = cardKey,
+            card_index = cardIndex,
+            total_cards = totalCards,
+        };
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
+        using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/warmup_progress", "POST");
+        req.uploadHandler = new UploadHandlerRaw(body);
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success)
+            Debug.LogWarning($"[Warmup] 回報進度失敗: {req.error}");
     }
 
     // 顯示進度：CountXxx 類型顯示「做到第幾次／需要幾次」，HoldXxx 類型顯示
@@ -511,4 +553,12 @@ public class WarmupCardController : MonoBehaviour
         }
         ShowCurrentCard();
     }
+}
+
+[System.Serializable]
+public class WarmupProgressPayload
+{
+    public string card_key;
+    public int card_index;
+    public int total_cards;
 }

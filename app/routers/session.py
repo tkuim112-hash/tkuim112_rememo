@@ -1033,6 +1033,57 @@ async def session_control(
     return {"ok": True, "delivered": delivered}
 
 
+class WarmupProgressPayload(BaseModel):
+    card_key: str
+    card_index: int
+    total_cards: int
+
+
+@router.post("/{session_id}/warmup_progress", summary="Unity 換暖身動作卡時回報目前卡片，供治療師網頁同步顯示")
+async def session_warmup_progress(
+    request: Request,
+    session_id: str,
+    body: WarmupProgressPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    暖身動作卡的圖片存在治療師網頁前端本機（見 therapist-dashboard 的
+    WARMUP_CARDS 對照表），這裡只轉發 card_key 這個穩定識別碼，不傳圖片本身。
+    同一個 poseType（例如原地踏步跟踢腿的偵測邏輯都是 CountLegLift）可能對應
+    不同卡片內容，所以用卡片自己的 cardKey 當識別碼，不能用 poseType
+    （見 WarmupCardController.ActionCard.cardKey 說明）。
+
+    這支發生在 /session/start 之前（長者還在 WarmupGameScene，尚未進第一
+    回合），所以不依賴 session:{id}:meta 存在，直接寫獨立的 warmup hash。
+    """
+    r = request.app.state.redis
+    await r.hset(
+        f"session:{session_id}:warmup",
+        mapping={
+            "card_key": body.card_key,
+            "card_index": body.card_index,
+            "total_cards": body.total_cards,
+        },
+    )
+    await r.expire(f"session:{session_id}:warmup", 3600)
+    return {"ok": True}
+
+
+@router.get("/{session_id}/warmup_progress", summary="取得暖身動作目前卡片（供治療師網頁 polling）")
+async def session_warmup_progress_get(
+    request: Request,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    r = request.app.state.redis
+    data: dict = await r.hgetall(f"session:{session_id}:warmup")
+    return {
+        "card_key": data.get("card_key", ""),
+        "card_index": _to_int(data.get("card_index")) or 0,
+        "total_cards": _to_int(data.get("total_cards")) or 0,
+    }
+
+
 @router.get("/{session_id}/metrics", summary="取得即時檢測回饋（供治療師頁面 polling）")
 async def session_metrics(
     request: Request,

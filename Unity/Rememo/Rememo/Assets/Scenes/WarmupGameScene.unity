@@ -1355,40 +1355,47 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::WarmupCardController
   cardPool:
-  - image: {fileID: 21300000, guid: a83d8353b32241f1a94ecbd9ca10b8de, type: 3}
+  - cardKey: arm_raise
+    image: {fileID: 21300000, guid: a83d8353b32241f1a94ecbd9ca10b8de, type: 3}
     durationSeconds: 15
     poseType: 1
     requiredHoldSeconds: 5
     requiredCount: 1
-  - image: {fileID: 21300000, guid: 340f96829e1a40609fe8f355b5fe4321, type: 3}
+  - cardKey: leg_kick
+    image: {fileID: 21300000, guid: 340f96829e1a40609fe8f355b5fe4321, type: 3}
     durationSeconds: 20
     poseType: 4
     requiredHoldSeconds: 5
     requiredCount: 3
     legLiftThreshold: 0.15
-  - image: {fileID: 21300000, guid: 3b1a52659ca54bcf8076840eb0383447, type: 3}
+  - cardKey: march_in_place
+    image: {fileID: 21300000, guid: 3b1a52659ca54bcf8076840eb0383447, type: 3}
     durationSeconds: 25
     poseType: 4
     requiredHoldSeconds: 5
     requiredCount: 10
     legLiftThreshold: 0.08
     displayCountDivisor: 2
-  - image: {fileID: 21300000, guid: 7ba551555e57450db0ba4a8416277c98, type: 3}
+  - cardKey: touch_knees
+    image: {fileID: 21300000, guid: 7ba551555e57450db0ba4a8416277c98, type: 3}
     durationSeconds: 25
     poseType: 6
     requiredHoldSeconds: 5
     requiredCount: 5
-  - image: {fileID: 21300000, guid: 9b33314545f041349cda492c9f66241b, type: 3}
+  - cardKey: arm_circle
+    image: {fileID: 21300000, guid: 9b33314545f041349cda492c9f66241b, type: 3}
     durationSeconds: 20
     poseType: 8
     requiredHoldSeconds: 5
     requiredCount: 5
-  - image: {fileID: 21300000, guid: 91bef2d7bd4f44bd93448cb10bfca055, type: 3}
+  - cardKey: waist_twist
+    image: {fileID: 21300000, guid: 91bef2d7bd4f44bd93448cb10bfca055, type: 3}
     durationSeconds: 20
     poseType: 7
     requiredHoldSeconds: 5
     requiredCount: 5
-  - image: {fileID: 21300000, guid: 26b2d96ca9af4b5c9945b245ec8d6b1c, type: 3}
+  - cardKey: chest_expand
+    image: {fileID: 21300000, guid: 26b2d96ca9af4b5c9945b245ec8d6b1c, type: 3}
     durationSeconds: 25
     poseType: 5
     requiredHoldSeconds: 5
