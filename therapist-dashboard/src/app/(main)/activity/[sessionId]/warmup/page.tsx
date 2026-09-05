@@ -2,18 +2,23 @@
 
 import { use, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { API_BASE } from "@/lib/api";
 
-// 暖身動作清單目前是前端寫死的佔位資料——動作名稱/秒數、以及每個動作對應的
-// 示範圖，之後都要改成後端提供（見下方 IconPose 留空的地方）。等後端有
-// 對應 API 後，這裡改成 fetch 動作清單，示範圖改吃後端回傳的圖片網址。
-const WARMUP_STEPS = [
-  { label: "手臂平舉 5 秒" },
-  { label: "原地踏步 5 秒" },
-  { label: "手臂旋轉3次" },
-  { label: "扭腰5秒" },
-  { label: "踢腿3次" },
-  { label: "擴胸" }
-];
+// 每張暖身動作卡的圖片跟顯示文字都存在前端本機（public/image/warmup/）。
+// 後端只會在 Unity 換卡時回報一個 card_key 字串說「現在要顯示哪一張」
+// （見 app/routers/session.py session_warmup_progress），不會傳圖片本身。
+// key 要跟 Unity WarmupCardController.ActionCard.cardKey 保持一致（見
+// Unity/Rememo/Rememo/Assets/Scenes/WarmupGameScene.unity 的 cardPool），
+// 之後在 Unity 那邊新增/調整暖身卡時，這個表要跟著同步更新。
+const WARMUP_CARDS: Record<string, { label: string; image: string }> = {
+  arm_raise: { label: "手臂平舉 5 秒", image: "/image/warmup/arm_raise.png" },
+  leg_kick: { label: "踢腿 3 次", image: "/image/warmup/leg_kick.png" },
+  march_in_place: { label: "原地踏步 5 次", image: "/image/warmup/march_in_place.png" },
+  touch_knees: { label: "手摸膝蓋 5 次", image: "/image/warmup/touch_knees.png" },
+  arm_circle: { label: "手臂旋轉 5 次", image: "/image/warmup/arm_circle.png" },
+  waist_twist: { label: "扭腰 5 次", image: "/image/warmup/waist_twist.png" },
+  chest_expand: { label: "擴胸 5 次", image: "/image/warmup/chest_expand.png" },
+};
 
 function IconEdit() {
   return (
@@ -31,11 +36,15 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
   const caseId = searchParams.get("caseId") ?? "";
 
   const [caseName, setCaseName] = useState("使用者名稱");
-  const [stepIndex, setStepIndex] = useState(0);
-  // 動作示範圖：之後後端會透過某個 API／WebSocket 把目前這個動作的示範圖
-  // 網址傳過來，這裡拿到值再放進 <img>。先用一張本機測試圖佔位確認版面，
-  // 之後接上後端資料時要換成依 currentStep 動態切換。
-  const [poseImage] = useState<string | null>("/image/手臂5s平舉.png");
+  // 目前這張卡的 card_key／卡片序號／總卡數，全部由後端 polling 回來，
+  // 不再是前端自己模擬的假資料。cardIndex 是 1-based（跟 Unity 回報的一致）。
+  const [cardKey, setCardKey] = useState<string | null>(null);
+  const [cardIndex, setCardIndex] = useState(0);
+  const [totalCards, setTotalCards] = useState(0);
+  // 5 張卡是否都做完了（見 Unity WarmupCardController.ReportAllCardsCompleted）。
+  // 「進入活動」按鈕要等這個變 true 才能按，一開始（還沒收到任何回報）預設
+  // false，維持 disabled。
+  const [allCompleted, setAllCompleted] = useState(false);
 
   useEffect(() => {
     if (!caseId) return;
@@ -45,18 +54,50 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
       .catch(() => {});
   }, [caseId]);
 
-  const currentStep = WARMUP_STEPS[Math.min(stepIndex, WARMUP_STEPS.length - 1)];
+  // 每秒從後端 polling 目前暖身動作卡。暖身每張卡通常十幾秒就換過，比主活動
+  // LiveSessionView 的 2 秒 metrics polling 間隔更短，避免治療師端明顯慢半拍。
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/session/${sessionId}/warmup_progress`, {
+          credentials: "include",
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.card_key) setCardKey(data.card_key);
+        setCardIndex(data.card_index ?? 0);
+        setTotalCards(data.total_cards ?? 0);
+        setAllCompleted(Boolean(data.all_completed));
+      } catch {
+        // 網路暫時中斷時保留上次數值，不中斷顯示
+      }
+    };
 
-  function goToActivity() {
+    poll();
+    const timer = setInterval(poll, 1000);
+    return () => clearInterval(timer);
+  }, [sessionId]);
+
+  const currentCard = cardKey ? WARMUP_CARDS[cardKey] : undefined;
+
+  // 「手動標記完成」「跳過此動作」「進入活動」都是送控制指令給 Unity 端
+  // polling 消費（見 app/routers/session.py /warmup_control、Unity
+  // WarmupCardController.PollWarmupControl），這裡不做樂觀更新——實際換卡/
+  // 切場景要等 Unity 真的處理完、下一次 polling warmup_progress 才會反映。
+  const sendWarmupControl = (action: "complete" | "skip" | "enter_activity") =>
+    fetch(`${API_BASE}/session/${sessionId}/warmup_control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action }),
+    }).catch(() => {});
+
+  const handleMarkDone = () => sendWarmupControl("complete");
+  const handleSkip = () => sendWarmupControl("skip");
+
+  async function handleEnterActivity() {
+    await sendWarmupControl("enter_activity");
     router.push(`/activity/${sessionId}?caseId=${caseId}&live=1`);
-  }
-
-  function markDone() {
-    setStepIndex((i) => Math.min(i + 1, WARMUP_STEPS.length - 1));
-  }
-
-  function skipStep() {
-    setStepIndex((i) => Math.min(i + 1, WARMUP_STEPS.length - 1));
   }
 
   return (
@@ -72,11 +113,11 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
         {/* 左側：動作示範 */}
         <div className="flex flex-col items-center gap-6 w-[320px] shrink-0 ml-[4%]">
           <div className="w-full aspect-square rounded-2xl bg-[#f5f5f5] flex items-center justify-center">
-            {poseImage ? (
+            {currentCard ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={poseImage} alt={currentStep.label} className="max-w-full max-h-full object-contain" />
+              <img src={currentCard.image} alt={currentCard.label} className="max-w-full max-h-full object-contain" />
             ) : (
-              <span className="text-[13px] text-[#bbb]">動作示範圖放置位置</span>
+              <span className="text-[13px] text-[#bbb]">等待長者端開始暖身動作…</span>
             )}
           </div>
         </div>
@@ -88,16 +129,16 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
         <div className="flex-1 flex flex-col gap-6 pt-2">
           <div>
             <p className="text-[15px] text-[#888]">目前動作</p>
-            <p className="text-[22px] font-bold text-[#1a1a1a] mt-1">{currentStep.label}</p>
+            <p className="text-[22px] font-bold text-[#1a1a1a] mt-1">{currentCard?.label ?? "—"}</p>
           </div>
 
           {/* 進度條 */}
           <div className="flex items-center gap-2">
-            {WARMUP_STEPS.map((step, i) => (
+            {Array.from({ length: totalCards }, (_, i) => (
               <span
-                key={step.label}
+                key={i}
                 className="h-[3px] w-16 rounded-full"
-                style={{ backgroundColor: i <= stepIndex ? "#e09540" : "#d9d9d9" }}
+                style={{ backgroundColor: i < cardIndex ? "#e09540" : "#d9d9d9" }}
               />
             ))}
           </div>
@@ -106,22 +147,25 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
           <div className="flex gap-3 mt-[20vh]">
             <button
               type="button"
-              onClick={markDone}
-              className="flex items-center gap-2 border border-[#d0d0d0] rounded-xl px-5 py-3 text-[15px] font-medium text-[#1a1a1a] hover:bg-[#f5f5f5] transition-colors"
+              onClick={handleMarkDone}
+              disabled={allCompleted}
+              className="flex items-center gap-2 border border-[#d0d0d0] rounded-xl px-5 py-3 text-[15px] font-medium text-[#1a1a1a] hover:bg-[#f5f5f5] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <IconEdit /> 手動標記完成
             </button>
             <button
               type="button"
-              onClick={skipStep}
-              className="bg-[#b9cde8] text-[#2c4a73] rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#a9c0de] transition-colors"
+              onClick={handleSkip}
+              disabled={allCompleted}
+              className="bg-[#b9cde8] text-[#2c4a73] rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#a9c0de] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               跳過此動作
             </button>
             <button
               type="button"
-              onClick={goToActivity}
-              className="bg-[#1a1a1a] text-white rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#333] transition-colors"
+              onClick={handleEnterActivity}
+              disabled={!allCompleted}
+              className="bg-[#1a1a1a] text-white rounded-xl px-5 py-3 text-[15px] font-medium hover:bg-[#333] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               進入活動
             </button>

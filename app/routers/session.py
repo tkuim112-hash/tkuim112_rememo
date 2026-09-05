@@ -16,6 +16,7 @@ from db.deps import get_db
 from db.models import TherapySession, TherapyRound, RoundExchange
 from services.closing_templates import build_closing_invitation
 from services.audio_bank import lookup_audio_key
+from routers.sensor import _pct, ENGAGEMENT_RANGE, HAPPINESS_RANGE, AGITATION_RANGE
 import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -55,6 +56,13 @@ def _has_substantive_content(text: str | None) -> bool:
 def _to_int(val) -> int | None:
     try:
         return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(val) -> float | None:
+    try:
+        return float(val)
     except (TypeError, ValueError):
         return None
 
@@ -527,6 +535,57 @@ async def _finalize_round_emotion(
     await r.delete(key)
 
 
+async def _finalize_round_signals(
+    db: AsyncSession,
+    r,
+    session_id: str,
+    round_number: int,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """回合結束時，把 sensor.py _update_session_stats 依回合分桶累積的訊號
+    代碼出現頻率，取前幾名寫入 rounds.signal_codes；三維分數則是把這個回合
+    自己每一幀分數的總和（_sum_eng/_sum_hap/_sum_agi）除以幀數，算出這個
+    回合「自己的平均」寫入 rounds.*_pct——不是讀整場療程的 EMA 快照，跟
+    _finalize_round_emotion 的多數決一樣，是這個回合獨立算出來的，不會被
+    前一回合的殘留影響，供治療師端「判斷依據」顯示用。"""
+    signal_key = f"session:{session_id}:round:{round_number}:signals"
+    raw = await r.hgetall(signal_key)
+    frame_count = int(raw.get("_frame_count", 0))
+    if frame_count > 0:
+        rates = {
+            code: int(count) / frame_count
+            for code, count in raw.items()
+            if code not in ("_frame_count", "_sum_eng", "_sum_hap", "_sum_agi")
+        }
+        top_codes = sorted(
+            (code for code, rate in rates.items() if rate >= 0.15),
+            key=lambda code: rates[code],
+            reverse=True,
+        )[:4]
+
+        avg_eng = float(raw.get("_sum_eng", 0)) / frame_count
+        avg_hap = float(raw.get("_sum_hap", 0)) / frame_count
+        avg_agi = float(raw.get("_sum_agi", 0)) / frame_count
+        engagement_pct = _pct(avg_eng, *ENGAGEMENT_RANGE)
+        happiness_pct = _pct(avg_hap, *HAPPINESS_RANGE)
+        agitation_pct = _pct(avg_agi, *AGITATION_RANGE)
+
+        try:
+            round_row = await _get_or_create_round(db, session_id, round_number, patient_id, therapist_id)
+            if round_row is not None:
+                round_row.engagement_pct = engagement_pct
+                round_row.happiness_pct = happiness_pct
+                round_row.agitation_pct = agitation_pct
+                round_row.signal_codes = json.dumps(top_codes, ensure_ascii=False)
+                await db.commit()
+                print(f"[DB] rounds 判斷依據寫入成功: round={round_number} signals={top_codes}")
+        except Exception as e:
+            print(f"[DB] rounds 判斷依據寫入失敗（不影響主流程）: {e}")
+            await db.rollback()
+    await r.delete(signal_key)
+
+
 # ════════════ 評估分數計算輔助 ════════════════════════════════════════
 
 def _score_attention(looking_away_rate: float, eye_closed_rate: float) -> int:
@@ -566,11 +625,20 @@ def _score_emotion(emo: dict[str, int],
 
     high_pitch_rate 的計數門檻已在 sensor.py 個人化（baseline × 2），
     有基準時用 0.40；無基準時退守 0.55（計數仍用固定 50 Hz²，較不可靠）。
+
+    音高修正只在 dominant 本來就不是 sad 時才生效：這個修正原本要抓的是
+    「dominant 看起來還好（happy/excited），但音高起伏顯示可能有被蓋掉的
+    焦躁」，不該反過來蓋掉本來就已經是 sad 的結論——長者真正低落/哭泣時
+    講話聲音一樣會發抖、音高起伏大，不是只有焦躁的人才會這樣，若不排除
+    sad，會把「低落」（這張量表 1 分，最差）誤修成「焦躁」（2 分），還會跟
+    沒套用這個修正的 emotional_status 文字標籤（session_metrics 裡另外算的
+    dominant_emotion）兜不起來，同一份報告出現「文字說低落、分數卻是焦躁
+    的 2 分」這種矛盾。
     """
-    pitch_agitation_bar = 0.40 if pitch_baseline > 1.0 else 0.55
-    if high_pitch_rate > pitch_agitation_bar and emo.get("angry", 0) >= emo.get("happy", 0):
-        return 2
     dominant = max(emo, key=emo.get) if any(emo.values()) else "happy"
+    pitch_agitation_bar = 0.40 if pitch_baseline > 1.0 else 0.55
+    if dominant != "sad" and high_pitch_rate > pitch_agitation_bar and emo.get("angry", 0) >= emo.get("happy", 0):
+        return 2
     return {"sad": 1, "angry": 2, "excited": 3, "happy": 4}[dominant]
 
 
@@ -1033,6 +1101,122 @@ async def session_control(
     return {"ok": True, "delivered": delivered}
 
 
+class WarmupProgressPayload(BaseModel):
+    card_key: str
+    card_index: int
+    total_cards: int
+    progress_ratio: float = 0.0
+    all_completed: bool = False
+
+
+@router.post("/{session_id}/warmup_progress", summary="Unity 換暖身動作卡時回報目前卡片，供治療師網頁同步顯示")
+async def session_warmup_progress(
+    request: Request,
+    session_id: str,
+    body: WarmupProgressPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    暖身動作卡的圖片存在治療師網頁前端本機（見 therapist-dashboard 的
+    WARMUP_CARDS 對照表），這裡只轉發 card_key 這個穩定識別碼，不傳圖片本身。
+    同一個 poseType（例如原地踏步跟踢腿的偵測邏輯都是 CountLegLift）可能對應
+    不同卡片內容，所以用卡片自己的 cardKey 當識別碼，不能用 poseType
+    （見 WarmupCardController.ActionCard.cardKey 說明）。
+
+    progress_ratio：目前這張卡做到多少百分比（0~1），Unity 在卡片進行中會
+    節流持續回報（見 WarmupCardController.progressReportInterval）。網頁目前
+    只用 card_index 畫一跳一跳的進度條，還沒用到這個欄位，先存著留給之後
+    要做卡片內即時填色時直接用，不用再改一次 Unity/後端。
+
+    all_completed：5 張卡都做完時 Unity 會回報一次 true（見
+    WarmupCardController.ReportAllCardsCompleted），供治療師網頁把「進入
+    活動」按鈕從 disabled 改成可以按——Unity 這時停在原地等治療師端送出
+    enter_activity 控制指令才會真的切場景（見 /warmup_control）。
+
+    這支發生在 /session/start 之前（長者還在 WarmupGameScene，尚未進第一
+    回合），所以不依賴 session:{id}:meta 存在，直接寫獨立的 warmup hash。
+    """
+    r = request.app.state.redis
+    await r.hset(
+        f"session:{session_id}:warmup",
+        mapping={
+            "card_key": body.card_key,
+            "card_index": body.card_index,
+            "total_cards": body.total_cards,
+            "progress_ratio": body.progress_ratio,
+            "all_completed": "1" if body.all_completed else "",
+        },
+    )
+    await r.expire(f"session:{session_id}:warmup", 3600)
+    return {"ok": True}
+
+
+@router.get("/{session_id}/warmup_progress", summary="取得暖身動作目前卡片（供治療師網頁 polling）")
+async def session_warmup_progress_get(
+    request: Request,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    r = request.app.state.redis
+    data: dict = await r.hgetall(f"session:{session_id}:warmup")
+    return {
+        "card_key": data.get("card_key", ""),
+        "card_index": _to_int(data.get("card_index")) or 0,
+        "total_cards": _to_int(data.get("total_cards")) or 0,
+        "progress_ratio": _to_float(data.get("progress_ratio")) or 0.0,
+        "all_completed": bool(data.get("all_completed")),
+    }
+
+
+_WARMUP_CONTROL_ACTIONS = {"complete", "skip", "enter_activity"}
+
+
+class WarmupControlPayload(BaseModel):
+    action: str
+
+
+@router.post("/{session_id}/warmup_control", summary="治療師網頁暖身頁面控制（標記完成／跳過此動作／允許進入活動）")
+async def session_warmup_control(
+    request: Request,
+    session_id: str,
+    body: WarmupControlPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    Unity 在暖身階段沒有像主活動那樣常駐的 /ws/stt 連線可以即時轉發控制指令
+    （那條連線綁著 STT 音訊串流，是 GameScene 才建立的，暖身階段硬借來用
+    風險較高，見 ws_stt.py／ws_registry.py），改用輕量 polling：這裡把指令
+    推進一個 Redis list，WarmupCardController 每隔 controlPollInterval 秒
+    poll 一次 GET /warmup_control 取走最舊的一筆並清掉。
+
+    action：
+      complete       — 治療師手動標記目前這張卡完成，等同 Kinect 真的偵測到
+                        動作，Unity 會播放過關音效／徽章後換下一張卡
+      skip           — 跳過目前這張卡，不算數、不播音效／徽章，直接換下一張
+                        （這張卡不會在本次療程再出現，見 SkipCurrentCard 說明）
+      enter_activity — 5 張卡都做完後，Unity 會停在原地等這個訊號才切去
+                        InstructionScene（見 ReportAllCardsCompleted／
+                        WaitForEnterActivityThenLoadScene）
+    """
+    if body.action not in _WARMUP_CONTROL_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"不支援的暖身控制動作: {body.action}")
+    r = request.app.state.redis
+    await r.rpush(f"session:{session_id}:warmup_control_queue", body.action)
+    await r.expire(f"session:{session_id}:warmup_control_queue", 3600)
+    return {"ok": True}
+
+
+@router.get("/{session_id}/warmup_control", summary="Unity polling 是否有治療師下的暖身控制指令")
+async def session_warmup_control_get(
+    request: Request,
+    session_id: str,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    r = request.app.state.redis
+    action = await r.lpop(f"session:{session_id}:warmup_control_queue")
+    return {"action": action}
+
+
 @router.get("/{session_id}/metrics", summary="取得即時檢測回饋（供治療師頁面 polling）")
 async def session_metrics(
     request: Request,
@@ -1056,6 +1240,10 @@ async def session_metrics(
         suggestions = json.loads(data.get("ai_suggestions", "[]"))
     except json.JSONDecodeError:
         suggestions = []
+    try:
+        signal_codes = json.loads(data.get("signal_codes", "[]"))
+    except json.JSONDecodeError:
+        signal_codes = []
     return {
         "emotion": data.get("emotion", "適當"),
         "response_time": data.get("response_time", "--"),
@@ -1064,6 +1252,12 @@ async def session_metrics(
         "ai_suggestions": suggestions,
         "current_round": _to_int(data.get("current_round")) or 1,
         "total_rounds": _to_int(data.get("total_rounds")) or 3,
+        # 情緒判斷依據（供治療師端顯示三維量表+訊號標籤）：sensor.py
+        # receive_sensor 每幀寫入，值來自 Kinect 特徵換算，不是 LLM 生成。
+        "engagement_pct": _to_int(data.get("engagement_pct")) or 0,
+        "happiness_pct": _to_int(data.get("happiness_pct")) or 0,
+        "agitation_pct": _to_int(data.get("agitation_pct")) or 0,
+        "signal_codes": signal_codes,
         # 長者這一題/心得剛講完、還卡在等治療師審核時："" | "pending_round" | "pending_closing"，
         # 供治療師平板「長者的回應」分頁決定要不要顯示可編輯框（見 /{id}/review_request、
         # /{id}/closing/review_request）。elder_response_draft 是還沒被確認的草稿文字，
@@ -1615,6 +1809,10 @@ async def _finalize_elder_response(
                 patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
             await _finalize_round_emotion(
+                db, r, state.session_id, state.round,
+                patient_id=_to_int(state.user_id), therapist_id=therapist_id,
+            )
+            await _finalize_round_signals(
                 db, r, state.session_id, state.round,
                 patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )

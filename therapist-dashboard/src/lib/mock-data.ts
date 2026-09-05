@@ -166,4 +166,8 @@ export const mockActiveSession: ActiveSession = {
   tabooTopics: ["家人離世", "戰爭細節"],
   reviewStatus: "",
   elderResponseDraft: "",
+  engagementPct: 68,
+  happinessPct: 71,
+  agitationPct: 9,
+  signalCodes: ["face_smile", "body_lean_forward", "speaker_speaking"],
 };

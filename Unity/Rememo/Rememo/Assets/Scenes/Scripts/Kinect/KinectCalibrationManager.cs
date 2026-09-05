@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.UI;
 using WebSocketSharp;
 
@@ -39,6 +40,14 @@ public class KinectCalibrationManager : MonoBehaviour
     private List<float> lookingAwayBuffer = new List<float>();
     private List<float> mouthMovedBuffer = new List<float>();
     private List<float> _pitchVarBuffer  = new List<float>();
+
+    // 臉部訊號改由後端 face-service 分析（見 KinectSensorSender 類別開頭註解），
+    // 校正期間不再逐幀讀本地 Kinect Face API 值。這裡是在算 15 秒內的平均值，
+    // 樣本數直接決定基準值準不準，所以不用固定間隔的保守取樣（會白白浪費
+    // face-service 處理完的時間），改成「上一次請求做完立刻打下一次」的
+    // 自我節奏連續取樣（EmotionSamplingLoop），取樣速度自然貼齊 face-service
+    // 真正的往返時間，在 15 秒視窗內盡量多收樣本。
+    private Coroutine _emotionSamplingLoop = null;
 
     // ── 新增：骨架幾何緩衝 ─────────────────────────────
     private List<float> _spineYBuffer = new List<float>();
@@ -152,6 +161,7 @@ public class KinectCalibrationManager : MonoBehaviour
         Debug.Log("[Calibration] 使用者已就位，開始蒐集");
 
         Debug.Log("[Calibration] 開始蒐集基準值");
+        _emotionSamplingLoop = StartCoroutine(EmotionSamplingLoop());
 
         while (calibrationTimer < calibrationDuration)
         {
@@ -161,9 +171,15 @@ public class KinectCalibrationManager : MonoBehaviour
                 progressBar.value = calibrationTimer / calibrationDuration;
 
             CollectSkeletonData();
-            CollectEmotionData();
+            CollectPitchData();
 
             yield return null;
+        }
+
+        if (_emotionSamplingLoop != null)
+        {
+            StopCoroutine(_emotionSamplingLoop);
+            _emotionSamplingLoop = null;
         }
 
         // CheckStability 只看 SpineBase 這一點晃不晃，就算只有半個人在鏡頭裡、
@@ -259,6 +275,11 @@ public class KinectCalibrationManager : MonoBehaviour
         happyBuffer.Clear();
         lookingAwayBuffer.Clear();
         mouthMovedBuffer.Clear();
+        if (_emotionSamplingLoop != null)
+        {
+            StopCoroutine(_emotionSamplingLoop);
+            _emotionSamplingLoop = null;
+        }
         ClearGeometryBuffers(); // ── 新增
         _pendingCalibrationSend = false;
         _pendingCalibrationJson = null;
@@ -307,17 +328,78 @@ public class KinectCalibrationManager : MonoBehaviour
             skeletonBuffer.Add(joints);
     }
 
-    void CollectEmotionData()
+    void CollectPitchData()
     {
-        if (sensorSender == null) return;
-
-        happyBuffer.Add(sensorSender.LastHappy);
-        lookingAwayBuffer.Add(sensorSender.LastLookingAway);
-        mouthMovedBuffer.Add(sensorSender.LastMouthMoved);
-
         // 靜音期間的音高變異值不具代表性，僅在有聲音時蒐集
         if (audioSender != null && audioSender.CurrentAudioRms > 0.005f)
             _pitchVarBuffer.Add(audioSender.CurrentPitchVariance);
+    }
+
+    /// <summary>
+    /// 自我節奏連續取樣：上一次 CollectEmotionSample() 做完（不管成功或失敗）
+    /// 立刻開始下一次，不用固定計時器等待。取樣速度自然貼齊 face-service
+    /// 真正的往返時間，15 秒視窗內能收多少樣本就收多少，準確度優先。
+    /// 由 CalibrationRoutine 在開始蒐集時啟動、蒐集結束時 StopCoroutine 停止。
+    /// </summary>
+    IEnumerator EmotionSamplingLoop()
+    {
+        while (true)
+        {
+            yield return StartCoroutine(CollectEmotionSample());
+        }
+    }
+
+    /// <summary>
+    /// 拍一張 Kinect 彩色畫面，打後端 /sensor/face_calibration_sample 换算成
+    /// 跟舊版 Kinect DetectionResult 同尺度的分數，塞進 happy/lookingAway/
+    /// mouthMoved 三個 buffer。face-service 沒偵測到臉/請求失敗時直接跳過
+    /// 這次取樣，不影響其餘校正流程（骨架穩定度判斷不依賴這幾個 buffer）。
+    /// </summary>
+    IEnumerator CollectEmotionSample()
+    {
+        if (kinectManager == null) yield break;
+        Texture2D colorTex = kinectManager.GetUsersClrTex2D();
+        if (colorTex == null || colorTex.width == 0 || colorTex.height == 0) yield break;
+
+        byte[] jpeg;
+        try
+        {
+            jpeg = colorTex.EncodeToJPG(60);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[Calibration] 臉部畫面編碼失敗: {e.Message}");
+            yield break;
+        }
+
+        var form = new List<IMultipartFormSection>
+        {
+            new MultipartFormFileSection("frame", jpeg, "frame.jpg", "image/jpeg"),
+        };
+        string backendUrl = sensorSender != null ? sensorSender.backendUrl : "https://api.re-memo.com";
+        using var req = UnityWebRequest.Post($"{backendUrl}/sensor/face_calibration_sample", form);
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            Debug.LogWarning($"[Calibration] 臉部校正取樣失敗: {req.error}");
+            yield break;
+        }
+
+        FaceCalibrationSample sample;
+        try
+        {
+            sample = JsonUtility.FromJson<FaceCalibrationSample>(req.downloadHandler.text);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[Calibration] 臉部校正取樣回應解析失敗: {e.Message}");
+            yield break;
+        }
+
+        happyBuffer.Add(sample.happy);
+        lookingAwayBuffer.Add(sample.looking_away);
+        mouthMovedBuffer.Add(sample.mouth_moved);
     }
 
     bool CheckStability()
@@ -460,6 +542,8 @@ public class KinectCalibrationManager : MonoBehaviour
             };
         }
 
+        float pitchVarMean = Average(_pitchVarBuffer);
+
         var payload = new CalibrationPayload
         {
             type = "calibration",
@@ -467,7 +551,13 @@ public class KinectCalibrationManager : MonoBehaviour
             happyBaseline = Average(happyBuffer),
             lookingAwayBaseline = Average(lookingAwayBuffer),
             mouthMovedBaseline = Average(mouthMovedBuffer),
-            pitchVarianceBaseline = Average(_pitchVarBuffer),
+            pitchVarianceBaseline = pitchVarMean,
+            // 後端門檻公式用 baseline + k×標準差（見 app/routers/sensor.py
+            // _pitch_threshold），比單純乘固定倍數更能反映每個人音高變異本身的
+            // 離散程度——UpdatePitch() 的自相關法沒有正規化，對不同人可能有
+            // 系統性偏差，但這個偏差在校正基準跟即時量測上是同一套算法量出來的，
+            // 用「相對自己校正期間分布」設門檻，能大致抵消掉這個偏差。
+            pitchVarianceStdDev = StdDev(_pitchVarBuffer, pitchVarMean),
             jointKeys = new List<string>(baselineJoints.Keys).ToArray(),
             jointX = GetAxis(baselineJoints, 0),
             jointY = GetAxis(baselineJoints, 1),
@@ -501,6 +591,14 @@ public class KinectCalibrationManager : MonoBehaviour
         float sum = 0f;
         foreach (var v in list) sum += v;
         return sum / list.Count;
+    }
+
+    float StdDev(List<float> list, float mean)
+    {
+        if (list.Count == 0) return 0f;
+        float sumSq = 0f;
+        foreach (var v in list) sumSq += (v - mean) * (v - mean);
+        return Mathf.Sqrt(sumSq / list.Count);
     }
 
     float[] GetAxis(Dictionary<string, float[]> joints, int axis)
@@ -550,6 +648,7 @@ public class CalibrationPayload
     public float lookingAwayBaseline;
     public float mouthMovedBaseline;
     public float pitchVarianceBaseline;
+    public float pitchVarianceStdDev;
     public string[] jointKeys;
     public float[] jointX;
     public float[] jointY;
@@ -560,4 +659,12 @@ public class CalibrationPayload
 public class CalibrationAck
 {
     public bool ok;
+}
+
+[System.Serializable]
+class FaceCalibrationSample
+{
+    public float happy;
+    public float looking_away;
+    public float mouth_moved;
 }

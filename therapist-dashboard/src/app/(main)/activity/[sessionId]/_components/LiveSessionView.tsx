@@ -5,14 +5,8 @@ import { useState, Fragment, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { ActiveSession } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
-
-
-const EMOTION_COLORS: Record<string, string> = {
- 適當: "#34c759",
- 亢奮: "#f0c52c",
- 焦躁: "#fb2c36",
- 低落: "#888888",
-};
+import { EMOTION_COLORS, DIMENSION_COLORS, groupSignalsByDimension, reasonCaption } from "@/lib/emotionSignals";
+import { EmotionBar } from "@/components/EmotionBar";
 
 
 type View = "scene" | "response";
@@ -34,6 +28,10 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
    tabooTopics: [],
    reviewStatus: "",
    elderResponseDraft: "",
+   engagementPct: 0,
+   happinessPct: 0,
+   agitationPct: 0,
+   signalCodes: [],
  });
  const [currentRound, setCurrentRound] = useState(1);
  const [view, setView] = useState<View>("scene");
@@ -118,6 +116,10 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
          totalRounds: data.total_rounds ?? s.totalRounds,
          reviewStatus: data.review_status ?? s.reviewStatus,
          elderResponseDraft: data.elder_response_draft ?? s.elderResponseDraft,
+         engagementPct: data.engagement_pct ?? s.engagementPct,
+         happinessPct: data.happiness_pct ?? s.happinessPct,
+         agitationPct: data.agitation_pct ?? s.agitationPct,
+         signalCodes: data.signal_codes ?? s.signalCodes,
        }));
        if (data.current_round) setCurrentRound(data.current_round);
      } catch {
@@ -182,6 +184,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
    }
  };
 
+ const signalsByDimension = groupSignalsByDimension(session.signalCodes);
 
  return (
    <div className="min-h-screen lg:h-screen lg:overflow-hidden bg-[#f5e6d3] px-4 md:px-6 lg:px-8 xl:px-14 pt-3 md:pt-[3vh] lg:pt-[3vh] xl:pt-[4vh] 2xl:pt-[9vh] pb-4 flex flex-col gap-2 md:gap-2 lg:gap-4 xl:gap-5" >
@@ -287,21 +290,28 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
          </div>
 
 
-         {/* 操作建議 */}
+         {/* 情緒判斷依據（原本「操作建議」的外框位置/樣式不動，只換內容）。改回自然高度
+             不撐滿——訊號標籤是空的時候（療程剛開始、還沒收到Kinect資料）內容會比右欄
+             短很多，強行拉長對齊底部反而會留下一大塊空白，比高度沒對齊更難看。 */}
          <div className="bg-[#f9fafb] rounded-xl p-3 md:p-3 lg:p-6 xl:p-8 flex flex-col gap-2 md:gap-2 lg:gap-4 xl:gap-5">
-           <h3 className="text-[15px] md:text-[18px] lg:text-[20px] font-medium text-[#0a0a0a]">操作建議</h3>
-           <p className="text-[13px] md:text-[15px] lg:text-[17px] text-[#0a0a0a]">療程進行中可參考以下建議：</p>
-           <div className="flex flex-col gap-2 lg:gap-3 xl:gap-4">
-             <div className="bg-white border border-[#e5e7eb] rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 text-[13px] md:text-[14px] lg:text-[16px] font-medium text-[#0a0a0a]">
-               反應時間超過 8 秒，請把題目唸一次給長者聽，或口述說明題意
-             </div>
-             <div className="bg-white border border-[#e5e7eb] rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 text-[13px] md:text-[14px] lg:text-[16px] font-medium text-[#0a0a0a]">
-               若長者情緒出現波動，可按下「暫停」讓長者喘口氣
-             </div>
-             <div className="bg-white border border-[#e5e7eb] rounded-xl py-2 md:py-2 lg:py-4 xl:py-5 px-3 md:px-3 lg:px-5 xl:px-6 text-[13px] md:text-[14px] lg:text-[16px] font-medium text-[#0a0a0a]">
-               若對話卡住難以延續，可按「跳過此場景」轉換情境
-             </div>
+           <h3 className="text-[15px] md:text-[18px] lg:text-[20px] font-medium text-[#0a0a0a]">
+             Kinect 情緒判斷為{" "}
+             <span
+               className="text-[19px] md:text-[22px] lg:text-[26px] font-bold"
+               style={{ color: session.emotionState ? EMOTION_COLORS[session.emotionState] : undefined }}
+             >
+               {session.emotionState || "—"}
+             </span>
+           </h3>
+           <p className="text-[12px] text-[#9aa1ab]">{reasonCaption(session.happinessPct, session.agitationPct)}</p>
+           <div className="flex flex-col sm:flex-row gap-3 lg:gap-6 xl:gap-8">
+             <EmotionBar label="專注度" pct={session.engagementPct} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
+             <EmotionBar label="表情訊號" pct={session.happinessPct} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
+             <EmotionBar label="肢體與語調訊號" pct={session.agitationPct} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
            </div>
+           <p className="text-[11px] md:text-[12px] text-[#888] leading-relaxed">
+             Kinect 依臉部表情、姿勢與聲音特徵綜合判斷，僅供參考，仍以治療師實際觀察為主。
+           </p>
          </div>
        </div>
 

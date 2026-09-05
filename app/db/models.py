@@ -100,6 +100,15 @@ class TherapyRound(Base):
     # _generate_round_summary），給歷史療程列表快速瀏覽用，避免把長者
     # 原話整段堆在畫面上。
     summary: Mapped[str | None] = mapped_column(Text)
+    # 情緒判斷依據（見 app/routers/session.py _finalize_round_signals）：
+    # engagement/happiness/agitation_pct 是三維 EMA 分數換算成 0-100%，
+    # signal_codes 是 JSON 字串陣列（訊號代碼，中文文案在前端
+    # therapist-dashboard/src/lib/emotionSignals.ts），供治療師端顯示
+    # 「AI 為什麼這樣判斷」。
+    engagement_pct: Mapped[int | None] = mapped_column(Integer)
+    happiness_pct: Mapped[int | None] = mapped_column(Integer)
+    agitation_pct: Mapped[int | None] = mapped_column(Integer)
+    signal_codes: Mapped[str | None] = mapped_column(Text)
 
 
 class RoundExchange(Base):

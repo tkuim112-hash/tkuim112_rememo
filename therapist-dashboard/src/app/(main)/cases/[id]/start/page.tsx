@@ -285,7 +285,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled={isStarting}
               className="flex-1 bg-[#5b8ac5] text-white text-[17px] font-semibold rounded-2xl py-4 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {isStarting ? "啟動中…" : "啟動療程"}
+              {isStarting ? "啟動中…" : "啟動暖身活動"}
             </button>
           )}
           {status === "calibrating" && (
@@ -294,7 +294,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動療程（校正進行中，請稍候）
+              啟動暖身活動（校正進行中，請稍候）
             </button>
           )}
           {status === "disconnected" && (
@@ -303,7 +303,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動療程（需先解決連線問題）
+              啟動暖身活動（需先解決連線問題）
             </button>
           )}
           <Link

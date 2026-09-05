@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Text;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -23,6 +25,9 @@ public class WarmupCardController : MonoBehaviour
     [System.Serializable]
     public class ActionCard
     {
+        [Tooltip("卡片的穩定識別碼，回報給後端後治療師網頁會用這個字串去對照它自己本機存的動作圖片/文字，兩邊各自的圖檔不用一致，只有這個字串要跟前端的對照表一致。同一個 poseType（例如原地踏步跟踢腿都是 CountLegLift）可能對應不同卡片，不能拿 poseType 當識別碼")]
+        public string cardKey;
+
         public Sprite image;
 
         [Tooltip("只用在 poseType 是 None 的卡：顯示幾秒後自動換下一題。有設定 poseType 的卡一定要偵測到動作才會換，這個欄位不會生效")]
@@ -45,6 +50,16 @@ public class WarmupCardController : MonoBehaviour
 
     [Header("動作卡題庫，會從裡面隨機抽 5 張、不重複")]
     public ActionCard[] cardPool;
+
+    [Header("後端設定")]
+    [Tooltip("換卡時把目前 cardKey 回報給後端，供治療師網頁同步顯示同一張卡（本地圖片，見 ActionCard.cardKey 說明）")]
+    public string backendUrl = "https://api.re-memo.com";
+
+    [Tooltip("同一張卡進行中，隔多久回報一次目前做到幾次/幾秒給後端一次。網頁目前只用來畫一跳一跳的進度條（換卡才跳格），但這個即時進度資料先持續回報留著，之後要做卡片內即時填色可以直接用")]
+    public float progressReportInterval = 0.3f;
+
+    [Tooltip("隔多久 poll 一次治療師網頁下的暖身控制指令（手動標記完成／跳過此動作／允許進入活動）。治療師端沒有像主活動那樣常駐的 WebSocket 可以即時推送，改用輕量 polling")]
+    public float controlPollInterval = 0.5f;
 
     [Header("UI 元件")]
     public Image cardImage;
@@ -81,6 +96,13 @@ public class WarmupCardController : MonoBehaviour
 
     private List<ActionCard> selectedCards;
     private int currentIndex;
+    private string sessionId;
+    private float progressReportTimer;
+
+    // 5 張卡都做完後，NextCard() 會停在這裡等治療師網頁按下「進入活動」
+    // （見 WaitForEnterActivityThenLoadScene），這個旗標由 PollWarmupControl
+    // 收到 enter_activity 指令時設成 true。
+    private bool readyToEnterActivity;
 
     private float holdTimer;
     private float holdDropoutTimer;
@@ -114,6 +136,8 @@ public class WarmupCardController : MonoBehaviour
 
     void Start()
     {
+        sessionId = AuthSession.SessionId;
+
         if (detectionBadgeImage != null)
         {
             detectingBadgeSprite = detectionBadgeImage.sprite;
@@ -122,6 +146,7 @@ public class WarmupCardController : MonoBehaviour
         selectedCards = DrawRandomCards(cardPool, 5);
         currentIndex = 0;
         ShowCurrentCard();
+        StartCoroutine(PollWarmupControl());
 
         // KinectManager 是跨場景常駐的，它「自動把場景裡的 AvatarController 登記進
         // 追蹤名單」這個機制只在 App 剛啟動時跑一次。如果同一次 App 執行期間，第二位
@@ -171,6 +196,7 @@ public class WarmupCardController : MonoBehaviour
         armAngleInitLeft = false;
         armAngleInitRight = false;
         lastArmCircleRepTime = -999f;
+        progressReportTimer = 0f;
 
         CancelInvoke(nameof(NextCard));
         if (card.poseType == PoseType.None)
@@ -181,6 +207,123 @@ public class WarmupCardController : MonoBehaviour
         }
 
         UpdateProgressText();
+        ReportWarmupProgress(card);
+    }
+
+    static bool IsCountType(PoseType poseType) =>
+        poseType == PoseType.CountLegLift || poseType == PoseType.CountChestExpand ||
+        poseType == PoseType.CountTouchKnees || poseType == PoseType.CountWaistTwist ||
+        poseType == PoseType.CountArmCircle;
+
+    static bool IsHoldType(PoseType poseType) =>
+        poseType == PoseType.HoldArmsRaised || poseType == PoseType.HoldTouchKnees ||
+        poseType == PoseType.HoldArmStretch;
+
+    // 目前這張卡做到多少百分比（0~1）。網頁目前只用一跳一跳的進度條（換卡才
+    // 跳格，不吃這個值），但先把即時進度持續回報留著，供之後要做卡片內填色
+    // 時直接沿用。None 類型（沒有動作偵測）沒有進度可算，固定回 0。
+    float ComputeProgressRatio(ActionCard card)
+    {
+        if (IsCountType(card.poseType))
+            return card.requiredCount > 0 ? Mathf.Clamp01((float)repCount / card.requiredCount) : 0f;
+        if (IsHoldType(card.poseType))
+            return card.requiredHoldSeconds > 0 ? Mathf.Clamp01(holdTimer / card.requiredHoldSeconds) : 0f;
+        return 0f;
+    }
+
+    // 把目前這張卡的 cardKey／進度回報給後端，讓治療師網頁能同步顯示同一張卡
+    // （用它自己本機存的圖片，見 ActionCard.cardKey 說明）。sessionId 拿不到
+    // （離線 demo、換取 pending session 失敗）就不回報，不擋長者端的暖身
+    // 流程——這支只是給治療師看的旁路資訊，失敗也不影響長者實際做動作。
+    void ReportWarmupProgress(ActionCard card)
+    {
+        if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(card.cardKey)) return;
+        StartCoroutine(PostWarmupProgress(card.cardKey, currentIndex + 1, selectedCards.Count, ComputeProgressRatio(card)));
+    }
+
+    // 5 張卡都做完時呼叫一次，讓治療師網頁知道可以把「進入活動」按鈕從
+    // disabled 改成可以按（見 session_warmup_progress_get 的 all_completed）。
+    void ReportAllCardsCompleted()
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        string lastKey = selectedCards.Count > 0 ? selectedCards[selectedCards.Count - 1].cardKey : "";
+        StartCoroutine(PostWarmupProgress(lastKey, selectedCards.Count, selectedCards.Count, 1f, allCompleted: true));
+    }
+
+    IEnumerator PostWarmupProgress(string cardKey, int cardIndex, int totalCards, float progressRatio, bool allCompleted = false)
+    {
+        var payload = new WarmupProgressPayload
+        {
+            card_key = cardKey,
+            card_index = cardIndex,
+            total_cards = totalCards,
+            progress_ratio = progressRatio,
+            all_completed = allCompleted,
+        };
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
+        using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/warmup_progress", "POST");
+        req.uploadHandler = new UploadHandlerRaw(body);
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success)
+            Debug.LogWarning($"[Warmup] 回報進度失敗: {req.error}");
+    }
+
+    // 持續 poll 治療師網頁下的暖身控制指令。跟主活動的 /ws/stt 常駐連線不同
+    // （那條綁著 STT 音訊串流，暖身階段硬借來用風險較高），這裡用輕量
+    // polling：每隔 controlPollInterval 秒問一次後端有沒有新指令。
+    IEnumerator PollWarmupControl()
+    {
+        var wait = new WaitForSeconds(controlPollInterval);
+        while (true)
+        {
+            yield return wait;
+            yield return StartCoroutine(FetchWarmupControl());
+        }
+    }
+
+    IEnumerator FetchWarmupControl()
+    {
+        if (string.IsNullOrEmpty(sessionId)) yield break;
+
+        using var req = UnityWebRequest.Get($"{backendUrl}/session/{sessionId}/warmup_control");
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success) yield break;
+
+        WarmupControlResponse resp;
+        try { resp = JsonUtility.FromJson<WarmupControlResponse>(req.downloadHandler.text); }
+        catch { yield break; }
+        if (resp == null || string.IsNullOrEmpty(resp.action)) yield break;
+
+        switch (resp.action)
+        {
+            case "complete":
+                // 5 張卡都做完、正在等 enter_activity 時 currentIndex 已經
+                // 超出範圍，這裡沒有「目前這張卡」可以標記，忽略。
+                if (currentIndex < selectedCards.Count) CompleteCurrentCard();
+                break;
+            case "skip":
+                if (currentIndex < selectedCards.Count) SkipCurrentCard();
+                break;
+            case "enter_activity":
+                readyToEnterActivity = true;
+                break;
+        }
+    }
+
+    // 治療師網頁按「跳過此動作」：不算數（沒有真的偵測到動作），不播過關
+    // 音效、不換「已完成」徽章，直接換下一張卡。被跳過的這張卡不會再出現——
+    // selectedCards 是這場療程開始時抽好的固定 5 張列表，NextCard() 只會往
+    // 前進，不會回頭重抽。
+    void SkipCurrentCard()
+    {
+        if (cardCompleted) return;
+        cardCompleted = true;
+        CancelInvoke(nameof(NextCard));
+        NextCard();
     }
 
     // 顯示進度：CountXxx 類型顯示「做到第幾次／需要幾次」，HoldXxx 類型顯示
@@ -191,18 +334,13 @@ public class WarmupCardController : MonoBehaviour
         if (progressText == null) return;
 
         var card = selectedCards[currentIndex];
-        bool isCountType = card.poseType == PoseType.CountLegLift || card.poseType == PoseType.CountChestExpand ||
-            card.poseType == PoseType.CountTouchKnees || card.poseType == PoseType.CountWaistTwist ||
-            card.poseType == PoseType.CountArmCircle;
-        bool isHoldType = card.poseType == PoseType.HoldArmsRaised || card.poseType == PoseType.HoldTouchKnees ||
-            card.poseType == PoseType.HoldArmStretch;
 
-        if (isCountType)
+        if (IsCountType(card.poseType))
         {
             int divisor = Mathf.Max(1, card.displayCountDivisor);
             progressText.text = $"{repCount / divisor} / {card.requiredCount / divisor}";
         }
-        else if (isHoldType)
+        else if (IsHoldType(card.poseType))
         {
             progressText.text = $"{holdTimer:F1} / {card.requiredHoldSeconds:F0} 秒";
         }
@@ -266,6 +404,15 @@ public class WarmupCardController : MonoBehaviour
         }
 
         UpdateProgressText();
+
+        // 卡片進行中持續回報進度（節流，避免每一幀都打一次 API）。網頁目前
+        // 只用來畫一跳一跳的進度條，但先把即時進度資料留著回報。
+        progressReportTimer += Time.deltaTime;
+        if (progressReportTimer >= progressReportInterval)
+        {
+            progressReportTimer = 0f;
+            ReportWarmupProgress(card);
+        }
     }
 
     void UpdateHold(bool poseMatched, float requiredHoldSeconds)
@@ -430,6 +577,8 @@ public class WarmupCardController : MonoBehaviour
         // 回來又被重複觸發一次完成。
         if (cardCompleted) return;
         cardCompleted = true;
+        // 過關那一刻先送一次 100% 進度，確保最後一小段進度不會被跳過。
+        ReportWarmupProgress(selectedCards[currentIndex]);
 
         if (audioSource != null && successSound != null)
         {
@@ -503,12 +652,38 @@ public class WarmupCardController : MonoBehaviour
                 kinectManager.avatarControllers.Remove(avatarController);
             }
 
-            // 5 張暖身動作卡都做完了，接著跟 WarmupController.OnStart() 原本的行為
-            // 一樣直接切去 InstructionScene，不經過 LoadingScene，避免長者多等一段
-            // 讀取畫面。
-            SceneManager.LoadScene("InstructionScene");
+            // 5 張暖身動作卡都做完了。以前是直接切去 InstructionScene，現在改成
+            // 要等治療師網頁按下「進入活動」才能切（見 ReportAllCardsCompleted／
+            // WaitForEnterActivityThenLoadScene），讓治療師能先確認長者狀態沒問題
+            // 再放行，不會長者一做完動作馬上被推去下一關。
+            ReportAllCardsCompleted();
+            StartCoroutine(WaitForEnterActivityThenLoadScene());
             return;
         }
         ShowCurrentCard();
     }
+
+    IEnumerator WaitForEnterActivityThenLoadScene()
+    {
+        yield return new WaitUntil(() => readyToEnterActivity);
+        // 不經過 LoadingScene，避免長者多等一段讀取畫面（跟原本直接切場景時
+        // 的行為一致，只是多了等治療師放行這一步）。
+        SceneManager.LoadScene("InstructionScene");
+    }
+}
+
+[System.Serializable]
+public class WarmupProgressPayload
+{
+    public string card_key;
+    public int card_index;
+    public int total_cards;
+    public float progress_ratio;
+    public bool all_completed;
+}
+
+[System.Serializable]
+public class WarmupControlResponse
+{
+    public string action;
 }
