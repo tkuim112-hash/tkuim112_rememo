@@ -36,6 +36,7 @@ def _load_detector():
         au_model="xgb",
         emotion_model="resmasknet",
         facepose_model="img2pose",
+        device="cuda",
     )
     logger.info("py-feat Detector 載入完成")
     return detector

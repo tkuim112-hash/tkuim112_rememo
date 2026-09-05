@@ -6,7 +6,7 @@ services:
     build: .
     container_name: tku-care-app-1
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./app:/app
       - ./media:/media
@@ -137,7 +137,7 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     container_name: tku-care-frontend-1
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - DATABASE_URL=${FRONTEND_DATABASE_URL}
       - SESSION_SECRET=${SESSION_SECRET}

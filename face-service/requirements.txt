@@ -2,4 +2,8 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 Pillow>=10.0.0
-py-feat>=0.6.1
+# py-feat>=2.0 renamed Detector->Detectorv1/v2 and dropped detect_image()/facepose_model,
+# breaking server.py's API usage; pin to the last 0.6.x. It still imports scipy's removed
+# simps(), so scipy must stay below 1.14 too.
+py-feat==0.6.2
+scipy<1.14

@@ -3,7 +3,9 @@
 # 取代 Kinect 內建 Face API，供 app 服務的 /sensor/emotion 呼叫。
 # ============================================================
 
-FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+# RTX 50 系列/Blackwell (sm_120) 需要 2.6+/cuda12.8 起才有對應的 CUDA kernel，
+# 跟 bluemagpie/Dockerfile 用同一顆底層映像對齊。
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
