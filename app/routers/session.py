@@ -1107,6 +1107,7 @@ class WarmupProgressPayload(BaseModel):
     total_cards: int
     progress_ratio: float = 0.0
     all_completed: bool = False
+    report_seq: int = 0
 
 
 @router.post("/{session_id}/warmup_progress", summary="Unity 換暖身動作卡時回報目前卡片，供治療師網頁同步顯示")
@@ -1135,19 +1136,31 @@ async def session_warmup_progress(
 
     這支發生在 /session/start 之前（長者還在 WarmupGameScene，尚未進第一
     回合），所以不依賴 session:{id}:meta 存在，直接寫獨立的 warmup hash。
+
+    report_seq：Unity 每次呼叫這支 API（換卡或進度節流回報）都會帶一個遞增
+    序號（見 WarmupCardController.reportSeq）。這些請求是各自獨立、
+    fire-and-forget 送出的，中間可能經過 Cloudflare Tunnel 等會重排序的
+    路徑，網路較差時較舊的一筆有機率比較新的一筆晚到，若直接覆蓋會讓治療師
+    網頁的進度條「倒退」。這裡用序號擋掉比目前已存序號還舊的請求，只接受
+    嚴格遞增的回報，維持 last-writer-by-intent 而不是 last-arrived。
     """
     r = request.app.state.redis
+    key = f"session:{session_id}:warmup"
+    existing_seq = _to_int(await r.hget(key, "report_seq")) or 0
+    if body.report_seq < existing_seq:
+        return {"ok": True, "skipped": True}
     await r.hset(
-        f"session:{session_id}:warmup",
+        key,
         mapping={
             "card_key": body.card_key,
             "card_index": body.card_index,
             "total_cards": body.total_cards,
             "progress_ratio": body.progress_ratio,
             "all_completed": "1" if body.all_completed else "",
+            "report_seq": body.report_seq,
         },
     )
-    await r.expire(f"session:{session_id}:warmup", 3600)
+    await r.expire(key, 3600)
     return {"ok": True}
 
 

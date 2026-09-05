@@ -99,6 +99,12 @@ public class WarmupCardController : MonoBehaviour
     private string sessionId;
     private float progressReportTimer;
 
+    // 每次回報進度（換卡或節流回報）都遞增一次，隨 payload 一起送給後端。
+    // 這些回報是各自獨立的 fire-and-forget 請求，網路不穩時可能重排序，較
+    // 舊的一筆有機率比較新的一筆晚到——後端會用這個序號擋掉比目前已存序號
+    // 還舊的請求，避免治療師網頁的進度條被舊資料蓋回去而「倒退」。
+    private int reportSeq;
+
     // 5 張卡都做完後，NextCard() 會停在這裡等治療師網頁按下「進入活動」
     // （見 WaitForEnterActivityThenLoadScene），這個旗標由 PollWarmupControl
     // 收到 enter_activity 指令時設成 true。
@@ -238,7 +244,7 @@ public class WarmupCardController : MonoBehaviour
     void ReportWarmupProgress(ActionCard card)
     {
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(card.cardKey)) return;
-        StartCoroutine(PostWarmupProgress(card.cardKey, currentIndex + 1, selectedCards.Count, ComputeProgressRatio(card)));
+        StartCoroutine(PostWarmupProgress(card.cardKey, currentIndex + 1, selectedCards.Count, ComputeProgressRatio(card), ++reportSeq));
     }
 
     // 5 張卡都做完時呼叫一次，讓治療師網頁知道可以把「進入活動」按鈕從
@@ -247,10 +253,13 @@ public class WarmupCardController : MonoBehaviour
     {
         if (string.IsNullOrEmpty(sessionId)) return;
         string lastKey = selectedCards.Count > 0 ? selectedCards[selectedCards.Count - 1].cardKey : "";
-        StartCoroutine(PostWarmupProgress(lastKey, selectedCards.Count, selectedCards.Count, 1f, allCompleted: true));
+        StartCoroutine(PostWarmupProgress(lastKey, selectedCards.Count, selectedCards.Count, 1f, ++reportSeq, allCompleted: true));
     }
 
-    IEnumerator PostWarmupProgress(string cardKey, int cardIndex, int totalCards, float progressRatio, bool allCompleted = false)
+    // seq 要在呼叫當下（送出意圖的那一刻）就配好號碼，而不是等 request 真的
+    // 送出或收到回應才配——這樣即使這筆請求因網路延遲晚到，後端也能靠序號
+    // 判斷它比較舊，不會誤蓋掉後面已經送達的新狀態。
+    IEnumerator PostWarmupProgress(string cardKey, int cardIndex, int totalCards, float progressRatio, int seq, bool allCompleted = false)
     {
         var payload = new WarmupProgressPayload
         {
@@ -259,6 +268,7 @@ public class WarmupCardController : MonoBehaviour
             total_cards = totalCards,
             progress_ratio = progressRatio,
             all_completed = allCompleted,
+            report_seq = seq,
         };
         byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
         using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/warmup_progress", "POST");
@@ -680,6 +690,7 @@ public class WarmupProgressPayload
     public int total_cards;
     public float progress_ratio;
     public bool all_completed;
+    public int report_seq;
 }
 
 [System.Serializable]
