@@ -14,6 +14,7 @@ services:
     depends_on:
       - ollama
       - tts
+      - face-service
       - db
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
@@ -212,6 +213,31 @@ services:
       - redis
     restart: always
   
+  # M1b: 臉部情緒訊號分析 (py-feat, FACS Action Unit)，取代 Kinect 內建 Face API
+  face-service:
+    build:
+      context: ./face-service
+      dockerfile: Dockerfile
+    container_name: tku-care-face-service-1
+    volumes:
+      # py-feat 部分模型透過 huggingface_hub 下載，預設快取在 HF_HOME；掛 volume
+      # 避免每次重建容器都重下。注意：py-feat 也有一部分模型是存在套件安裝目錄
+      # 本身（不是使用者快取路徑），實際跑起來後如果發現還是每次重下，要另外
+      # 找到那個路徑再補一條 volume mount，這裡先掛最常見的 HF 快取位置。
+      - ./models/py_feat_cache:/root/.cache/huggingface
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
   # M1: 感知數據處理服務 (OpenAI Whisper STT)
   stt:
     image: fedirz/faster-whisper-server:latest-cuda

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # === TTS (BlueMagpie-TTS 本地語音合成) ===
     tts_host: str = "http://tts:8080"
 
+    # === Face Emotion (py-feat，取代 Kinect 內建 Face API) ===
+    face_service_host: str = "http://face-service:8000"
+
     # === Stability AI ===
     stability_api_key: str = ""
 

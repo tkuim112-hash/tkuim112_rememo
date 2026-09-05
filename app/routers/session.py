@@ -16,6 +16,7 @@ from db.deps import get_db
 from db.models import TherapySession, TherapyRound, RoundExchange
 from services.closing_templates import build_closing_invitation
 from services.audio_bank import lookup_audio_key
+from routers.sensor import _pct, ENGAGEMENT_RANGE, HAPPINESS_RANGE, AGITATION_RANGE
 import ws_registry
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -534,6 +535,57 @@ async def _finalize_round_emotion(
     await r.delete(key)
 
 
+async def _finalize_round_signals(
+    db: AsyncSession,
+    r,
+    session_id: str,
+    round_number: int,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+) -> None:
+    """回合結束時，把 sensor.py _update_session_stats 依回合分桶累積的訊號
+    代碼出現頻率，取前幾名寫入 rounds.signal_codes；三維分數則是把這個回合
+    自己每一幀分數的總和（_sum_eng/_sum_hap/_sum_agi）除以幀數，算出這個
+    回合「自己的平均」寫入 rounds.*_pct——不是讀整場療程的 EMA 快照，跟
+    _finalize_round_emotion 的多數決一樣，是這個回合獨立算出來的，不會被
+    前一回合的殘留影響，供治療師端「判斷依據」顯示用。"""
+    signal_key = f"session:{session_id}:round:{round_number}:signals"
+    raw = await r.hgetall(signal_key)
+    frame_count = int(raw.get("_frame_count", 0))
+    if frame_count > 0:
+        rates = {
+            code: int(count) / frame_count
+            for code, count in raw.items()
+            if code not in ("_frame_count", "_sum_eng", "_sum_hap", "_sum_agi")
+        }
+        top_codes = sorted(
+            (code for code, rate in rates.items() if rate >= 0.15),
+            key=lambda code: rates[code],
+            reverse=True,
+        )[:4]
+
+        avg_eng = float(raw.get("_sum_eng", 0)) / frame_count
+        avg_hap = float(raw.get("_sum_hap", 0)) / frame_count
+        avg_agi = float(raw.get("_sum_agi", 0)) / frame_count
+        engagement_pct = _pct(avg_eng, *ENGAGEMENT_RANGE)
+        happiness_pct = _pct(avg_hap, *HAPPINESS_RANGE)
+        agitation_pct = _pct(avg_agi, *AGITATION_RANGE)
+
+        try:
+            round_row = await _get_or_create_round(db, session_id, round_number, patient_id, therapist_id)
+            if round_row is not None:
+                round_row.engagement_pct = engagement_pct
+                round_row.happiness_pct = happiness_pct
+                round_row.agitation_pct = agitation_pct
+                round_row.signal_codes = json.dumps(top_codes, ensure_ascii=False)
+                await db.commit()
+                print(f"[DB] rounds 判斷依據寫入成功: round={round_number} signals={top_codes}")
+        except Exception as e:
+            print(f"[DB] rounds 判斷依據寫入失敗（不影響主流程）: {e}")
+            await db.rollback()
+    await r.delete(signal_key)
+
+
 # ════════════ 評估分數計算輔助 ════════════════════════════════════════
 
 def _score_attention(looking_away_rate: float, eye_closed_rate: float) -> int:
@@ -573,11 +625,20 @@ def _score_emotion(emo: dict[str, int],
 
     high_pitch_rate 的計數門檻已在 sensor.py 個人化（baseline × 2），
     有基準時用 0.40；無基準時退守 0.55（計數仍用固定 50 Hz²，較不可靠）。
+
+    音高修正只在 dominant 本來就不是 sad 時才生效：這個修正原本要抓的是
+    「dominant 看起來還好（happy/excited），但音高起伏顯示可能有被蓋掉的
+    焦躁」，不該反過來蓋掉本來就已經是 sad 的結論——長者真正低落/哭泣時
+    講話聲音一樣會發抖、音高起伏大，不是只有焦躁的人才會這樣，若不排除
+    sad，會把「低落」（這張量表 1 分，最差）誤修成「焦躁」（2 分），還會跟
+    沒套用這個修正的 emotional_status 文字標籤（session_metrics 裡另外算的
+    dominant_emotion）兜不起來，同一份報告出現「文字說低落、分數卻是焦躁
+    的 2 分」這種矛盾。
     """
-    pitch_agitation_bar = 0.40 if pitch_baseline > 1.0 else 0.55
-    if high_pitch_rate > pitch_agitation_bar and emo.get("angry", 0) >= emo.get("happy", 0):
-        return 2
     dominant = max(emo, key=emo.get) if any(emo.values()) else "happy"
+    pitch_agitation_bar = 0.40 if pitch_baseline > 1.0 else 0.55
+    if dominant != "sad" and high_pitch_rate > pitch_agitation_bar and emo.get("angry", 0) >= emo.get("happy", 0):
+        return 2
     return {"sad": 1, "angry": 2, "excited": 3, "happy": 4}[dominant]
 
 
@@ -1179,6 +1240,10 @@ async def session_metrics(
         suggestions = json.loads(data.get("ai_suggestions", "[]"))
     except json.JSONDecodeError:
         suggestions = []
+    try:
+        signal_codes = json.loads(data.get("signal_codes", "[]"))
+    except json.JSONDecodeError:
+        signal_codes = []
     return {
         "emotion": data.get("emotion", "適當"),
         "response_time": data.get("response_time", "--"),
@@ -1187,6 +1252,12 @@ async def session_metrics(
         "ai_suggestions": suggestions,
         "current_round": _to_int(data.get("current_round")) or 1,
         "total_rounds": _to_int(data.get("total_rounds")) or 3,
+        # 情緒判斷依據（供治療師端顯示三維量表+訊號標籤）：sensor.py
+        # receive_sensor 每幀寫入，值來自 Kinect 特徵換算，不是 LLM 生成。
+        "engagement_pct": _to_int(data.get("engagement_pct")) or 0,
+        "happiness_pct": _to_int(data.get("happiness_pct")) or 0,
+        "agitation_pct": _to_int(data.get("agitation_pct")) or 0,
+        "signal_codes": signal_codes,
         # 長者這一題/心得剛講完、還卡在等治療師審核時："" | "pending_round" | "pending_closing"，
         # 供治療師平板「長者的回應」分頁決定要不要顯示可編輯框（見 /{id}/review_request、
         # /{id}/closing/review_request）。elder_response_draft 是還沒被確認的草稿文字，
@@ -1738,6 +1809,10 @@ async def _finalize_elder_response(
                 patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
             await _finalize_round_emotion(
+                db, r, state.session_id, state.round,
+                patient_id=_to_int(state.user_id), therapist_id=therapist_id,
+            )
+            await _finalize_round_signals(
                 db, r, state.session_id, state.round,
                 patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )

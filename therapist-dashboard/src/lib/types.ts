@@ -64,6 +64,13 @@ export interface SessionRound {
   emotion: string;
   exchanges?: RoundExchange[];
   sceneImage?: string;
+  // 情緒判斷依據：三維分數（0-100%）+ 訊號代碼陣列，見
+  // therapist-dashboard/src/lib/emotionSignals.ts。舊資料（migration 前的
+  // 回合）沒有這幾個欄位，會是 null/undefined。
+  engagementPct?: number | null;
+  happinessPct?: number | null;
+  agitationPct?: number | null;
+  signalCodes?: string[];
 }
 
 export interface ActiveSession {
@@ -84,4 +91,10 @@ export interface ActiveSession {
   // 顯示可編輯的審核框，以及按下確認時要打哪一支 API。
   reviewStatus: "" | "pending_round" | "pending_closing";
   elderResponseDraft: string;
+  // 情緒判斷依據：三維分數（0-100%）+ 訊號代碼陣列，見
+  // therapist-dashboard/src/lib/emotionSignals.ts。
+  engagementPct: number;
+  happinessPct: number;
+  agitationPct: number;
+  signalCodes: string[];
 }
