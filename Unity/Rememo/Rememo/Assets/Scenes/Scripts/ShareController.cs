@@ -59,11 +59,9 @@ public class ShareController : MonoBehaviour
     private string displayedText = "";
     private string closingFullText = "";
     private List<string> closingAudioUris;
-    private Coroutine typingCoroutine;
     private Coroutine replayCoroutine;
     private bool isWaitingForStt = false;
     private bool isPaused = false;
-    private bool isTyping = false;
     private bool hasRecordedOnce = false;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
@@ -226,7 +224,7 @@ public class ShareController : MonoBehaviour
         byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
 
         // 跟 GameController.cs 的 RequestReview 同一種重試邏輯：這支打不通的話，
-        // 治療師平板永遠不會看到這句心得，長者就會永久卡在「等待治療師確認中」，
+        // 治療師平板永遠不會看到這句心得，長者就會永久卡在「等待輔導員確認中」，
         // 重試用盡後直接退回舊流程讓長者自己送出。
         const int maxAttempts = 3;
         bool success = false;
@@ -252,7 +250,7 @@ public class ShareController : MonoBehaviour
         {
             Debug.LogError("[Share ReviewRequest] 重試用盡，退回原本流程讓長者直接送出");
             isPendingTherapistReview = false;
-            // 退回舊流程時要把畫面從「等待治療師確認中」換回長者原本說的話，
+            // 退回舊流程時要把畫面從「等待輔導員確認中」換回長者原本說的話，
             // 不然畫面卡著審核中的文案、但送出鍵卻已經解鎖，長者會看不懂發生什麼事。
             inputText.text = displayedText;
             inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
@@ -324,9 +322,6 @@ public class ShareController : MonoBehaviour
     void StartRecording()
     {
         isRecording = true;
-
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-        isTyping = false;
         displayedText  = "";
         inputText.text = "錄音中...";
         inputText.color = new Color(1f, 0.4f, 0.4f, 1f);
@@ -359,10 +354,7 @@ public class ShareController : MonoBehaviour
     {
         isRecording = false;
         isWaitingForStt = true;
-        // 錄音中若已經收到中間辨識結果（逐字動畫已經把長者的原話打上去），
-        // 就不要蓋掉；只有完全還沒辨識到任何內容時才顯示「辨識中...」。
-        if (string.IsNullOrEmpty(displayedText))
-            inputText.text = "辨識中...";
+        inputText.text = "辨識中...";
         inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
         if (micButtonImage != null) micButtonImage.color = Color.white;
         RefreshSubmitButton();
@@ -487,8 +479,6 @@ public class ShareController : MonoBehaviour
             // ApplyFinalClosingResponse），這裡只是把確認後的文字顯示給長者看。
             isPendingTherapistReview = false;
             pendingConfirmedText = msg.elder_response;
-            if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-            isTyping = false;
             displayedText = msg.elder_response;
             inputText.text = msg.elder_response;
             inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
@@ -498,49 +488,34 @@ public class ShareController : MonoBehaviour
         }
 
         if (msg.type != "transcript") return;
-
-        if (msg.isFinal && !string.IsNullOrWhiteSpace(msg.text))
-        {
-            // 有辨識到文字：不再用逐字動畫把結果打在長者畫面上（治療師確認前
-            // 長者不該看到這句話），改成鎖畫面顯示「等待治療師確認中」，送治療師
-            // 平板審核。displayedText 背後還是要記住這句話，PostTranscript／
-            // RequestReview 才送得出去。
-            if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-            isTyping = false;
-            displayedText = msg.text;
-            isPendingTherapistReview = true;
-            inputText.text = "等待治療師確認中";
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            micButton.interactable = false;
-            RefreshSubmitButton();
-            StartCoroutine(PostTranscript(msg.text));   // 統計用途，維持不變
-            StartCoroutine(RequestReview(msg.text));
-            return;
-        }
-
-        // 沒辨識到文字，或還是 interim 結果：維持原本逐字動畫顯示行為
-        // （interim 結果本來就會反覆被更新的最終結果覆蓋，不受這次改動影響）。
-        if (typingCoroutine != null)
-            StopCoroutine(typingCoroutine);
-        typingCoroutine = StartCoroutine(TypeCharByChar(msg.text));
-
+        // 長者不會在畫面上看到辨識出的文字，只在背後記錄下來供送出時使用；
+        // inputText 維持 StartRecording/StopRecording 設的「錄音中...」「辨識中...」狀態，
+        // 直到 OnSttFinal 換成「辨識完成，請按送出」（跟 GameController.cs 行為一致）。
+        bool hasText = !string.IsNullOrWhiteSpace(msg.text);
+        if (hasText) displayedText = msg.text;
         if (msg.isFinal)
         {
-            // 沒說話：維持原本允許沉默直接送出空字串的行為，不需要治療師介入。
-            OnSttFinal();
+            if (hasText)
+            {
+                isPendingTherapistReview = true;
+                inputText.text = "等待輔導員確認中";
+                inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+                micButton.interactable = false;
+                RefreshSubmitButton();
+                StartCoroutine(PostTranscript(msg.text));   // 統計用途，維持不變
+                StartCoroutine(RequestReview(msg.text));
+            }
+            else
+            {
+                // 沒說話：維持原本允許沉默直接送出空字串的行為，不需要治療師介入。
+                OnSttFinal();
+            }
         }
     }
 
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
-        // 逾時仍沒收到真正的 isFinal，直接把 label 換成固定文案（比照
-        // GameController.cs 的 OnSttFinal 作法），避免畫面卡在「辨識中...」
-        // 但按鈕已經因為 hasRecordedOnce=true 打開的矛盾狀態。停掉還在跑的
-        // 逐字動畫，不然它之後恢復執行會把這行文案蓋掉。
-        if (typingCoroutine != null) StopCoroutine(typingCoroutine);
-        isTyping = false;
-        inputText.text = "辨識完成，請按送出";
         OnSttFinal();
     }
 
@@ -549,6 +524,7 @@ public class ShareController : MonoBehaviour
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
         hasRecordedOnce = true;
+        inputText.text = "辨識完成，請按送出";
         RefreshSubmitButton();
     }
 
@@ -556,45 +532,12 @@ public class ShareController : MonoBehaviour
     {
         // hasRecordedOnce：一定要錄過一次音、辨識完成過才能送出，避免長者一進畫面
         // 什麼都沒說就直接按下「送出故事」。
-        // isTyping：isFinal 一到就會 RefreshSubmitButton，但逐字動畫是非同步跑的，
-        // 沒有這個條件的話按鈕會在動畫還沒把最終結果完整打出來前就先亮起，
-        // 這時候按下送出，SubmitClosing 讀到的 displayedText 只會是動畫跑到一半的
-        // 半截文字，不是完整的最終辨識結果。
         // pendingConfirmedText != null：治療師已經確認（可能編輯過）心得回答，長者
         // 只需要看完內容按送出；isPendingTherapistReview 則整個鎖死，避免審核結果
         // 還沒回來時誤觸（理由同 GameController.cs 的 RefreshSubmitButton）。
-        submitButton.interactable = !isPaused && !isTyping && !isPendingTherapistReview &&
+        submitButton.interactable = !isPaused && !isPendingTherapistReview &&
             (pendingConfirmedText != null ||
              (hasRecordedOnce && !isRecording && !isWaitingForStt));
-    }
-
-    // ── 逐字打字動畫（像 Google 語音輸入） ──
-
-    IEnumerator TypeCharByChar(string target)
-    {
-        isTyping = true;
-        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-
-        // 若 target 是 displayedText 的延伸，只打出新增的部分
-        if (target.StartsWith(displayedText))
-        {
-            for (int i = displayedText.Length; i <= target.Length; i++)
-            {
-                string partial = target.Substring(0, i);
-                inputText.text = partial;
-                displayedText  = partial;
-                yield return new WaitForSeconds(charInterval);
-            }
-        }
-        else
-        {
-            // 文字差異較大（interim 結果改寫），直接替換
-            inputText.text = target;
-            displayedText  = target;
-        }
-
-        isTyping = false;
-        RefreshSubmitButton();
     }
 
     IEnumerator PostTranscript(string text)

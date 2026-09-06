@@ -55,6 +55,10 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
      setDraftText(session.elderResponseDraft);
      setConfirmError(false);
      setView("response");
+   } else if (session.reviewStatus === "" && prevReviewStatusRef.current !== "") {
+     // 長者按下「送出故事」後，後端把 review_status 清空、換下一個場景，
+     // 這裡自動切回場景分頁，治療師不用手動點回去看長者端目前畫面。
+     setView("scene");
    }
    prevReviewStatusRef.current = session.reviewStatus;
  }, [session.reviewStatus, session.elderResponseDraft]);
@@ -209,7 +213,7 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
        elderResponse: draftText,
      }));
    } catch {
-     // 這支失敗代表長者會一直卡在「等待治療師確認中」，不能像 sendControl
+     // 這支失敗代表長者會一直卡在「等待輔導員確認中」，不能像 sendControl
      // 那樣靜默吞掉，要讓治療師看到錯誤、可以重試。
      setConfirmError(true);
    } finally {

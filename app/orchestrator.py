@@ -83,10 +83,8 @@ start_round、_start_round2_free_followup、_start_round3_closing 的說明，
      → 依長者反應生成承接語（圖與記憶相符/有差異/情緒明顯-感動，見
        _generate_image_reveal_reaction；情緒明顯-不安已經被更前面的
        _detect_emotional_trigger 攔截走，不會走到這裡），再接 STEP1 開場
-       問題，回傳 action="scene_ready"（2026-08-18稽核：分類原本細分
-       「有差異但還沒具體講出哪裡不一樣」會先追問一次「哪裡不一樣」，
-       但這個分類跟「已具體講出差異」經常分不清楚，使用者決定合併成一個
-       「有差異」分類，不再追問，見 _generate_image_reveal_reaction 說明）
+       問題，回傳 action="scene_ready"（分類只分「一致／有差異／情緒明顯」
+       三類，見 _generate_image_reveal_reaction 說明）
      這整段實際執行位置是 _handle_image_reveal_answer，由 round 2 開場
      （_start_round2_free_followup）第一次呼叫，見該函式說明。
 
@@ -176,13 +174,8 @@ _W_HINT = {
     "Why":   "用 Why 角度問（為什麼、原因、動機）——僅在長者狀態良好時使用",
 }
 
-# 2026-08-18稽核（第十六次，使用者提案）：STEP1（_generate_image_reveal_
-# reaction／_regenerate_image_reveal_question）原本改成先算明確的
-# target_w／target_sense、直接告訴模型要問哪個方向（見git歷史，第三次
-# 稽核），但這套「先猜方向」機制本身跟commit版本不同——commit出去的版本
-# 完全沒有這個機制，STEP1問題就是開放式選角度、選錨點，跟STEP2/STEP3
-# 同一套流程規則。使用者比對commit版本後決定拿掉，這裡改回開放式選角度
-# 的固定指示文字，不再由呼叫端指定方向。
+# STEP1 開場問題比照 STEP2/STEP3，開放式選角度、選錨點，不由呼叫端指定
+# 明確的 target_w／target_sense 方向。
 _STEP1_OPEN_DIRECTION_HINT = (
     "依【STEP2自由追問／STEP3補問：生成流程】的選角度、選錨點方式"
     "生成（先依五個切入角度優先順序選方向，再從【眼前畫面元素】或"
@@ -193,12 +186,10 @@ _STEP1_OPEN_DIRECTION_HINT = (
 
 # 只剩 STEP1 用得到——STEP2（_generate_open_followup）、STEP3
 # （_generate_supplement_question）都是自己inline寫死【任務】/問題類型文字，
-# 沒有透過這兩個dict，原本放在這裡的 STEP2/STEP3 entry從沒被讀取過，是死碼，
-# 2026-08稽核拿掉。STEP1原本的「優先問 Where 或 What」也一併拿掉——這句跟
-# question_5w1h.txt STEP1流程步驟2的切入角度優先序（情感／意義→陪伴的人→
-# 感官記憶→敘事推進或今昔對比→過程步驟，完全沒有Where/What優先的概念）互相
-# 矛盾，混進【任務】欄位可能把模型導向字面地點/事物問法，跟系統prompt想要的
-# 「情感意義優先」精神打架。
+# 不透過這兩個dict。不寫「優先問 Where 或 What」：跟 question_5w1h.txt
+# STEP1流程步驟2的切入角度優先序（情感／意義→陪伴的人→感官記憶→敘事推進
+# 或今昔對比→過程步驟）互相矛盾，混進【任務】欄位會把模型導向字面地點/
+# 事物問法，跟系統prompt想要的「情感意義優先」精神打架。
 _STEP_TASKS = {
     "STEP1": "生成第一個【開場問題】，引導長者進入回憶",
 }
@@ -206,6 +197,15 @@ _STEP_TASKS = {
 _STEP_TYPE_LABEL = {
     "STEP1": "STEP1開場",
 }
+
+# STEP2/STEP3 共用：要求模型額外交代「問題」引用了哪個來源，讓 response_guard.py
+# 的 question_anchor_unsupported 能用引號逐字核對，攔截「開頭錨點合規、內容卻是
+# 憑空編造」的話題跳躍（例如長者在講三杯雞，問題卻問起沒人提過的滷豬腳）。
+_ANCHOR_FIELD_SPEC = (
+    "錨點：（用引號「」逐字標出「問題」引用的來源片段，出處只能是【長者剛才說的話】"
+    "／【長者生圖前分享的內容】／【眼前畫面元素】其中之一；若只是用「那個時候」這類"
+    "純時間回指、沒有具體引用任何一項，就寫「無」，不要硬套一組引號）"
+)
 
 # Kinect 即時偵測情緒（app/routers/sensor.py 的 emotion_raw）→ 給 LLM 的語氣指引
 _EMOTION_GUIDANCE = {
@@ -237,16 +237,12 @@ _MAX_QUESTIONS_PER_ROUND = 5
 _MAX_QUESTIONS_PER_ROUND_BY_ROUND = {2: 5}
 _MAX_SUPPLEMENT_PER_ROUND = 2
 
-# 2026-08-20新增（使用者提案）：round 2 最少問滿3題才能自然收尾——原本的
-# 早收尾捷徑（5W1H+感官全涵蓋、情緒happy且已補問過一次、補問名額用完）都
-# 只顧著避免「硬湊題數」，沒有下限，實測過round 2補完1個W就因為長者情緒好
-# 直接收尾、全程只問了2題的案例。改成這幾條早收尾判斷都額外檢查「這回合
-# 題數是否已經到最低要求」，沒到之前即使結構化的W／感官都問完了，也要
-# 再生一題開放式延續問題撐住（見 _ask_open_continuation），不會真的收在
-# 2題以內；到了最低要求之後，原本的節奏控制（成就感優先、補問上限）才會
-# 恢復生效。只設 round 2 的最低要求，其他回合預設1（等於沒有下限，維持
-# 原本行為）——round 1 有生圖前Q1/Q2跟STEP1撐場面，round 3 是單輪closing，
-# 都不適用同一套下限。
+# round 2 最少問滿3題才能自然收尾——早收尾捷徑（5W1H+感官全涵蓋、情緒happy
+# 且已補問過一次、補問名額用完）只顧著避免「硬湊題數」，沒有下限會出現補完
+# 1個W就因情緒好直接收尾、全程只問2題的情況。這幾條早收尾判斷都額外檢查
+# 「這回合題數是否已到最低要求」，沒到就再生一題開放式延續問題撐住（見
+# _ask_open_continuation）。只設 round 2 的下限，其他回合預設1（沒有下限）
+# ——round 1 有生圖前Q1/Q2跟STEP1撐場面，round 3 是單輪closing，都不適用。
 _MIN_QUESTIONS_PER_ROUND_BY_ROUND = {2: 3}
 
 
@@ -300,22 +296,18 @@ def _pre_image_q2_round_cap(covered_w: list[str]) -> int:
 # 承接語本來就不該有括號註解，清掉不會誤傷正常輸出。
 _LEAK_BRACKET_RE = re.compile(r"[（(][^）)]*[）)]")
 
-# 2026-08-19稽核（使用者實測後補）：上面 _LEAK_BRACKET_RE 要求開閉括號成對
-# 出現才會清掉，但本地模型偶爾會把輸出截斷在開括號之後、沒生成對應的閉括號
-# （實測案例：「你們在車庫烤肉時，都會準備哪些食材？（」），這種孤立的開括號
-# 逃過上面的配對正則，直接殘留在送給長者的問題裡。這裡補一條：清掉字串結尾
+# 上面 _LEAK_BRACKET_RE 要求開閉括號成對出現才會清掉，但本地模型偶爾會把
+# 輸出截斷在開括號之後、沒生成對應的閉括號（例如「...都會準備哪些食材？
+# （」），逃過配對正則、殘留在送給長者的問題裡。這裡補一條：清掉字串結尾
 # 找不到對應閉括號的開括號（含開括號後面到結尾的殘餘文字）。
 _UNMATCHED_LEAK_BRACKET_RE = re.compile(r"[（(][^）)]*$")
 
-# 2026-08-18稽核（使用者提案，實測後補）：本地弱模型偶爾會忘記在「問題：」
-# 那一行結尾換行，直接接著寫「本回合已涵蓋的W：...」，導致下面各支 parser
-# 逐行解析（raw.splitlines()）時，因為兩個欄位擠在同一行、沒有真正的換行
-# 可以切開，「本回合已涵蓋的W：」後面那段整個被當成問題文字的一部分吞進去
-# ——實測案例：長者聽到的問題變成「烤肉的時候，大家都喜歡吃哪一種肉？本
-# 回合已涵蓋的W：What」。「本回合已涵蓋的W：」在所有共用這份輸出格式的
-# prompt（STEP1/STEP2/STEP3/出示圖片系列）裡都設計成最後一個欄位，不管
-# 洩漏進哪個欄位、洩漏在同一行的什麼位置，把它跟後面的內容整段砍掉都是
-# 安全的，不會誤傷正常輸出。
+# 本地弱模型偶爾會忘記在「問題：」那一行結尾換行，直接接著寫「本回合已
+# 涵蓋的W：...」，導致逐行解析（raw.splitlines()）時兩個欄位擠在同一行、
+# 沒有換行可以切開，後面那段整個被當成問題文字吞進去（例如變成「烤肉的
+# 時候，大家都喜歡吃哪一種肉？本回合已涵蓋的W：What」）。「本回合已涵蓋
+# 的W：」在所有共用這份輸出格式的prompt裡都是最後一個欄位，不管洩漏進
+# 哪個欄位、在同一行什麼位置，把它跟後面內容整段砍掉都是安全的。
 _TRAILING_COVERED_W_LEAK_RE = re.compile(r"本回合已涵蓋的W：.*", re.DOTALL)
 
 
@@ -784,12 +776,9 @@ def get_scenario2_followup(
     Q1的核對，或後續每一輪 _detect_covered_w 對長者回答的更新），已涵蓋的
     欄位跳過不問。
     skipped_w：已經問過、但長者這輪沒答到的W維度（見 process_response 的
-    pre_image_q2 迴圈說明）——2026-08-17稽核：這裡原本沒有這個參數，只看
-    covered_w，代表長者已經被問過、卻沒答到的維度，下一輪還是會被
-    _PRE_IMAGE_PRIORITY_ORDER 選中再問一次（例如連續兩輪都問「什麼時候」），
-    長者答不出來或答非所問時會被同一個問題卡住。跟 covered_w 一樣跳過不問，
-    差別是 covered_w 代表「已經答對」，skipped_w 代表「問過但沒答到，不再
-    重問」，兩者都要排除。
+    pre_image_q2 迴圈說明）——跟 covered_w 一起排除不問，差別是 covered_w
+    代表「已經答對」，skipped_w 代表「問過但沒答到，不再重問」，避免同一個
+    問題被 _PRE_IMAGE_PRIORITY_ORDER 連續選中、卡住答不出來的長者。
 
     回傳值改成 (question, w, audio_key)：多回傳這次挑中的是哪個維度，讓
     呼叫端知道「這題在問哪個W」，下一輪核對長者答了沒有時才能對得上（否則
@@ -955,29 +944,20 @@ _TOPIC_SENSE_FALLBACK = {
     "自我成就感":       _SENSE_QUESTION["聽覺"],
 }
 
-# 2026-08-17稽核（使用者提案）：STEP2/3 目前只有一句籠統提示「如果情境合適，
-# 優先考慮用感官記憶切入」，模型要不要用、用哪一種感官全憑自己判斷，沒有
-# 像 covered_w 那樣追蹤「這回合已經問過哪個感官」——同一個感官可能被連問
-# 好幾次，其他相關感官卻一次都沒問到。
+# STEP2/3 沒有像 covered_w 那樣追蹤「這回合已經問過哪個感官」，同一個感官
+# 可能被連問好幾次，其他相關感官卻一次都沒問到。
 #
-# 2026-08-20稽核（使用者提案，實測後補）：原本這裡是一份依16大主題類別
-# 查表的 _TOPIC_RELEVANT_SENSES 靜態表，但16大類本身是粗分桶，同一類底下
-# 內容差異可能很大（例如「興趣」同時涵蓋唱歌→聽覺、種花→嗅覺/觸覺、看
-# 報紙→視覺），查表只能對到整桶共用的答案，對不到 today_topic 實際內容。
-# 實測案例：today_topic="聽音樂" 分類成「興趣」，查表只給 ["視覺"]，長者
-# 整輪都在聊聽覺相關的內容，_detect_covered_senses 只核對視覺、永遠核對
-# 不到證據，感官提問因此從未被觸發。改成直接對 today_topic 本身跑一次
-# LLM 分類（_classify_topic_senses，跟 _classify_topic_category 同一套
-# 「開場分類一次、存進 state、之後直接複用」模式），不再靠16大類這層轉手。
-# 拿掉 _TOPIC_RELEVANT_SENSES 後，這兩支函式改吃呼叫端已經算好的
-# topic_senses（state["topic_senses"]）list，不在這裡查表。
+# topic_senses 用 _classify_topic_senses 直接對 today_topic 本身跑一次LLM
+# 分類（跟 _classify_topic_category 同一套「開場分類一次、存進 state、之後
+# 直接複用」模式），不靠16大主題分類這層轉手查表——16大類是粗分桶，同一類
+# 底下內容差異可能很大（例如「興趣」同時涵蓋唱歌→聽覺、種花→嗅覺/觸覺、
+# 看報紙→視覺），查表只能對到整桶共用的答案，對不到 today_topic 實際內容。
 #
-# 哀傷之事／人生目標／生命中特殊的事件刻意不給感官仍然保留，但改成呼叫端
-# （start_round）用 topic_category 硬性覆寫成空list，不交給 LLM 自由判斷
-# ——理由跟 _TOPIC_SENSE_FALLBACK 的說明完全一致（哀傷之事怕把注意力拉回
-# 場景細節、人生目標是尚未發生的想像場景、特殊事件性質差異太大無法一概
-# 而論），這是刻意的安全考量，不是「這個主題內容剛好沒有感官」這種可以
-# 交給分類器自行判斷的情況。
+# 哀傷之事／人生目標／生命中特殊的事件刻意不給感官：由呼叫端（start_round）
+# 用 topic_category 硬性覆寫成空list，不交給 LLM 自由判斷——理由跟
+# _TOPIC_SENSE_FALLBACK 的說明一致（哀傷之事怕把注意力拉回場景細節、人生
+# 目標是尚未發生的想像場景、特殊事件性質差異太大無法一概而論），是刻意的
+# 安全考量。
 _SENSE_EXCLUDED_TOPIC_CATEGORIES = {"哀傷之事", "人生目標", "生命中特殊的事件"}
 
 
@@ -988,22 +968,16 @@ def _relevant_uncovered_senses(
 ) -> list[str]:
     """跟【今日主題】相關、但這回合還沒自然涵蓋過的感官，供 _generate_open_
     followup／_generate_supplement_question／_generate_image_reveal_
-    reaction 具體點名當切入選項，取代原本「依主題挑貼近的感官」這種要模型
-    自己臨時判斷的籠統講法（見相關函式 2026-08-17稽核，使用者提案）。
-    topic_senses 是呼叫端已經用 _classify_topic_senses 對 today_topic 分類
-    好、存進 state 的結果；空list（例如哀傷之事、人生目標，或分類失敗）
-    時回傳空list，呼叫端據此不提感官選項。
+    reaction 具體點名當切入選項，取代「依主題挑貼近的感官」這種要模型自己
+    臨時判斷的籠統講法。topic_senses 是呼叫端已用 _classify_topic_senses
+    對 today_topic 分類好、存進 state 的結果；空list（例如哀傷之事、人生
+    目標，或分類失敗）時回傳空list，呼叫端據此不提感官選項。
 
-    skipped_senses：2026-08-18稽核（使用者提案）——covered_senses 只記錄
-    「長者的回答有沒有自然涵蓋某個感官」，是事後偵測，跟 W 維度的
-    covered_w／skipped_w 不對稱：W 有 last_w_asked／skipped_w，不管長者
-    答得好不好都會記下「這題問了哪個W」，沒答到就排除、不再重問；感官
-    原本完全沒有對應機制——如果 target_sense 選了「聽覺」，但長者這題
-    答得很短或答非所問，_detect_covered_senses 抓不到聽覺相關證據，這個
-    感官就永遠不會進 covered_senses，下次又可能被選中重問一次。補上
-    skipped_senses（跟 skipped_w 同等規格，見 process_response 對
-    last_sense_asked／skipped_senses 的說明），跟 covered_senses 一起排除，
-    問過但沒答到的感官不會再被選中。"""
+    skipped_senses 跟 skipped_w 同等規格：covered_senses 只記錄「長者的
+    回答有沒有自然涵蓋某個感官」，長者這題答得很短或答非所問時
+    _detect_covered_senses 抓不到證據、感官不會進 covered_senses，若沒有
+    skipped_senses 記錄「問過但沒答到」，下次還是可能被同一個感官選中
+    重問一次，跟 covered_senses 一起排除才能真正避開。"""
     relevant = topic_senses or []
     excluded = set(covered_senses or []) | set(skipped_senses or [])
     return [s for s in relevant if s not in excluded]
@@ -1013,9 +987,9 @@ def _topic_relevant_covered_senses(
     topic_senses: list[str] | None, covered_senses: list[str] | None,
 ) -> list[str]:
     """跟【今日主題】相關、且這回合已經自然涵蓋過的感官——供 _sense_entry_
-    hint 明講「這幾個已經問過，不要再問」（見該函式 covered_senses 參數的
-    稽核筆記）。只列主題相關的，跟主題不相關、剛好在別的脈絡下被偵測到的
-    感官不用特別提醒模型避開（本來就不會被當選項端出來）。"""
+    hint 明講「這幾個已經問過，不要再問」。只列主題相關的，跟主題不相關、
+    剛好在別的脈絡下被偵測到的感官不用特別提醒模型避開（本來就不會被當
+    選項端出來）。"""
     relevant = topic_senses or []
     return [s for s in relevant if s in (covered_senses or [])]
 
@@ -1025,34 +999,20 @@ def _sense_entry_hint(
 ) -> str:
     """
     _generate_open_followup（STEP2）／_generate_supplement_question（STEP3）
-    共用的感官切入提示文字，抽成共用函式，避免兩處分開寫、之後改一邊忘改
-    另一邊——跟 round1_qa_log carryover 當初在 session.py／manual_test_
-    full_round.py 分開寫、漏同步的教訓同一種模式。
+    共用的感官切入提示文字，抽成共用函式避免兩處分開寫、之後改一邊忘改
+    另一邊。
 
-    2026-08-18稽核（第三次，使用者提案）：原本兩處各自的文字都寫「把問題
-    帶到某個W維度上時，優先考慮用感官記憶切入」／「這種問法常常同時就能
-    自然帶出上面這個W維度」——把感官切入講成「達成某個W維度目標的一種
-    手段」，這個框架本身就在暗示模型：感官問題最後還是要收斂回某個W維度
-    的慣用句型（尤其是How，「怎麼」）。_all_w_covered_fallback_hint 補了
-    _SENSE_QUESTION 範例句之後仍然實測踩到同一個問題（模型被要求感官
-    切入時選了「海浪聲」當錨點，卻硬套「怎麼聽」這種把感官動作本身當成
-    有「方法」可問的句型：「七星潭的海浪聲你都怎麼聽呢」），代表單靠補
-    範例不夠，根源是這句「切入某個W維度」的框架文字本身——感官跟W維度
-    沒有真正解耦。改成明講感官切入是完全獨立的第三種問法，不需要對應
-    任何W維度，也不用管輸出格式裡「本回合已涵蓋的W」欄位要填什麼（那個
-    欄位本來就不採信，見各呼叫端「自報W...不採信」的說明），直接比照
-    _SENSE_QUESTION 的自然句型，明文禁止「你/你們+怎麼+感官動詞」這種
-    句型。
+    感官切入是完全獨立的第三種問法，不對應任何W維度——曾經把它框成「達成
+    某個W維度目標的一種手段」，結果模型會把感官問題硬套進W維度的慣用句型
+    （例如選了「海浪聲」當錨點卻問「你都怎麼聽呢」，把感官動作本身當成有
+    「方法」可問的How句型）。明講感官切入不需要對應W維度，也不用管輸出
+    格式「本回合已涵蓋的W」欄位怎麼填，直接比照 _SENSE_QUESTION 的自然
+    句型，禁止「你/你們+怎麼+感官動詞」句型。
 
-    covered_senses：2026-08-18稽核（第四次，實測後補）——這份提示原本只用
-    「列出還能問的感官」這種正面表列方式暗示模型該問哪個，已經涵蓋過的
-    感官從清單裡拿掉、但從沒明講「這幾個已經問過、不要再問」。跨回合實測
-    案例：round 1 已經問過「七星潭的海水有沒有什麼味道」、長者也答了（嗅覺
-    已涵蓋），round 2 開場的remaining_senses雖然正確排除了嗅覺，但模型還是
-    自己選了嗅覺重問了幾乎一樣的問題——本地基底模型顯然不是靠「這個選項
-    沒被列出來」去推論「不能問這個」，需要明講的負面表列才擋得住，跟
-    _W_HINT 那邊「已涵蓋的W維度」也是明確列出來、不是只列「尚未涵蓋的W」
-    的作法一致，這裡補齊同一種寫法。
+    covered_senses 必須用負面表列明講「這幾個已經問過、不要再問」，只把
+    已涵蓋感官從候選清單拿掉還不夠——本地基底模型不會靠「這個選項沒被
+    列出來」推論「不能問這個」，需要跟 _W_HINT「已涵蓋的W維度」一樣明確
+    列出來才擋得住。
     """
     sense_examples = "、".join(f"「{q}」" for q in _SENSE_QUESTION.values())
     covered_note = (
@@ -1127,12 +1087,10 @@ def _image_reveal_fallback_question(scene_elements: list[str], pre_image_detail:
     """
     STEP1（出示圖片反應）專用保底問句：guarded_generate 重試多次仍違規時
     的最終保底值，優先延伸 pre_image_detail（長者生圖前 Q1/Q2 實際分享的
-    內容），不是隨手抓畫面元素當保底——保底句雖然是不呼叫LLM的固定字串，
-    選哪個當保底本身還是有優先順序，跟其他生成函式的錨點優先序（長者剛
-    提到的具體人事物→pre_image_detail→畫面元素）一致（2026-08-18稽核，
-    第十四次，使用者提案：實測案例，長者生圖前提過「喜歡跟家人在院子裡
-    烤肉」，保底句卻用畫面元素「院子」問「院子，讓你想到什麼？」，完全
-    沒有延伸Q1/Q2已經講過的具體內容，長者剛分享的故事等於被晾在一邊）。
+    內容），不是隨手抓畫面元素當保底——跟其他生成函式的錨點優先序（長者剛
+    提到的具體人事物→pre_image_detail→畫面元素）一致，避免長者剛分享的
+    具體故事被晾在一邊、保底句卻只問到泛泛的畫面元素。
+
     不直接引用 pre_image_detail 原文（那是自由文字，沒經過格式規則核對，
     直接塞進保底句有踩到taboo/格式違規的風險——保底句的價值就在於保證
     合規，不能為了貼合內容犧牲這個保證），改用通用但語意上承接同一段
@@ -1201,50 +1159,23 @@ def _is_real_evidence(evidence: str | None, source_text: str) -> bool:
     """
     判斷「逐項列證據」模式（見 _find_missing_memory_items）拿到的 evidence
     是不是「真的對應到具體內容」的證據，不是空字串、「找不到」、或隨手抓
-    的樣板字。
+    的樣板字。四道防線，各自對應下面一段檢查邏輯：
 
-    2026-08-14 實測發現：光是「evidence 非空、不等於找不到」還不夠嚴謹——
-    模型有時候會把每張圖固定都會有的畫風/色調樣板字（例如"no text"，見
-    _STYLE_ONLY_FRAGMENTS_RE／_strip_style_descriptors）直接當成不相關
-    項目（例如「哥哥剝柚子」「狗追逐」）的證據硬湊，這種evidence不是
-    「找不到」三個字，逃過原本的過濾，但明顯不是真的證據——樣板字每張
-    圖都會出現，不可能是任何特定項目的專屬視覺內容。這裡額外擋掉：
-    (1) evidence 整段剛好就是畫風/色調樣板字本身；(2) evidence 根本沒有
-    真的出現在 source_text 裡（防止純粹捏造的證據文字）。
-
-    2026-08-14（第二次）：測 _detect_pre_image_w_coverage 時發現本機模型
-    有時會把長者原話整句複製當證據，內容完全正確，卻只是把全形標點抄成
-    半形（例如長者原話句尾是「。」，模型抄成「.」）——逐字substring比對
-    因為這一個標點字元不同就整句判定「沒有真的出現在原文」，把一個對的
-    證據錯殺。substring 比對前先用 _normalize_punct_width 把兩邊的標點
-    寬度都正規化再比，只影響標點符號，不影響中文字本身的比對嚴謹度。
-
-    2026-08-14（第三次）：修完上面那條才發現本機模型對「Why（原因/意義）」
-    這種抽象、沒有固定詞類對應的維度，經常整句照抄長者原話當證據交差
-    （不管長者有沒有真的講出原因/意義都一樣）——跟地點/人物/活動這種有
-    明確詞類、抓不到就老實回「找不到」的具體維度行為不一樣。這種evidence
-    通過substring比對（畢竟真的是原文的一部分），卻不是prompt要求的
-    「具體片段」，是模型在「找不到適合的短語」時的偷懶策略。加一道長度
-    比例檢查：evidence長度佔source_text長度太高比例（>0.8）、且
-    source_text本身不算太短（>=8字，太短的原話本來就可能整句就是唯一
-    能圈出來的片段，不該被這條規則誤傷）時，視為「整句交差」不算真證據。
-
-    2026-08-15：長度門檻原本寫 >10（嚴格大於），實測發現長者一句10個字
-    整的短回答（例如「我會跟家人一起吃月餅」）剛好卡在邊界外，這道防呆
-    完全沒觸發，讓模型整句照抄當四個維度共用證據的偷懶案例直接放行——
-    10字左右的短句在長者回答裡很常見，不是稀有邊界情況。改成 >=8，
-    往下多收幾個字長度，縮小這個「剛好卡在門檻外」的縫隙。
-
-    2026-08-16：實測 _retry_short_phrase_evidence（要求2-4字單一關鍵詞）
-    發現本機模型遇到長者一句話裡其實有兩件真事（例如「吃月餅」跟「做
-    柚子帽」）時，不會照格式只挑一個，而是把兩個都塞進同一個evidence、
-    用頓號接起來回傳「吃月餅、做柚子帽」——這個頓號是模型自己加的連接
-    詞，不是原文本來就有的字元（長者的話是先經過STT轉出來的，口語斷句
-    本來就跟書面頓號對不太上），逐字整段比對找不到這個連接詞就整組判定
-    沒找到，把兩個其實都真實存在的內容一起錯殺。加一道退路：整段比對
-    失敗、但evidence裡有頓號/逗號這類分隔符時，拆開來看，只要拆出來的
-    每一段各自都是原文的逐字子字串，就算數——不要求連接詞本身也要在
-    原文裡找到對應，只驗證分隔符兩側的實質內容。
+    1. evidence 不能是畫風/色調樣板字本身（例如"no text"，見
+       _STYLE_ONLY_FRAGMENTS_RE）——這類字每張圖都會出現，不可能是任何
+       特定項目的專屬視覺內容。
+    2. substring 比對前用 _normalize_punct_width 正規化兩邊的標點寬度——
+       模型偶爾把長者原話的全形標點抄成半形，逐字比對會被這一個字元差異
+       誤判成「沒有真的出現在原文」。
+    3. evidence 長度佔 source_text 比例太高（>0.8，且 source_text 至少
+       8字）時，視為「整句交差」不算真證據——本機模型對「Why」這種抽象
+       維度常整句照抄長者原話充數，雖然真的是原文子字串，卻不是要求的
+       「具體片段」。門檻定在 8 字而非更高，是因為長者常見的短回答（例如
+       10字左右的句子）會卡在較高門檻外，讓這道防呆完全不觸發。
+    4. 整段比對失敗、但 evidence 裡有頓號/逗號等分隔符時，拆開來看——長者
+       一句話裡常有兩件真事，模型會用自己加的連接詞把兩個都塞進同一個
+       evidence，這個連接詞本身不在原文裡；只要求分隔符兩側的實質內容
+       各自是原文子字串就算數，不強求連接詞也要對得上。
     """
     evidence = (evidence or "").strip()
     if not evidence or evidence == "找不到":
@@ -1268,15 +1199,9 @@ def _is_whole_sentence_copy(evidence: str, source_text: str) -> bool:
     """
     _is_real_evidence 用的「整句交差」判斷本體。呼叫端必須先確認 evidence
     不是空字串/「找不到」/純樣板字/真的存在於原文，這裡只管長度比例本身。
-
-    2026-08-18稽核（使用者提案）：原本還有 _whole_sentence_copy_items／
-    _retry_short_phrase_evidence／_merge_retried_checks 三個輔助函式，
-    專門用來從逐項核對結果裡挑出「整句交差」的維度、單獨用短語格式重問
-    ——已經改成 _detect_dimension_evidence 一開始就一律用短語格式問，
-    不用事後偵測「整句交差」再重問，這三支函式已移除。這支函式（連同
-    _is_real_evidence 的呼叫）仍然保留，因為即使 prompt 已經限定2-4字，
-    模型偶爾還是可能不理會限制、繼續整句照抄，這裡是驗證最終 checks 時
-    的最後一道防線，不是重試觸發的判斷依據。
+    即使 prompt 已要求盡量精簡的短語格式，模型偶爾還是可能不理會、繼續
+    整句照抄，這裡是驗證最終 checks 時的最後一道防線，不是重試觸發的
+    判斷依據。
     """
     return len(source_text) >= 8 and len(evidence) / len(source_text) > 0.8
 
@@ -1356,19 +1281,11 @@ def _backstop_when_evidence(checks: list, elder_response: str) -> list:
     ]
 
 
-# 2026-08-18稽核（使用者提案，實測後補）：_detect_covered_senses 實測抓到
-# 長者說「孫女喜歡青椒」時，模型把「喜歡」這個純粹的主觀偏好詞同時標成
-# 「嗅覺」跟「味覺」兩種感官的證據（{"dimension": "嗅覺", "evidence": "喜歡"}、
-# {"dimension": "味覺", "evidence": "喜歡"}）——「喜歡」完全沒有描述任何
-# 具體的氣味或味道本身，只是在說「孫女對這樣東西的態度是喜歡」，跟
-# _SENSE_DESC 裡「聞到的氣味」「嚐到的味道」的定義對不上。因為兩個維度
-# 抄了同一段文字，_missing_from_checks 的重複證據去重邏輯剛好只放行了
-# 排序在前的「嗅覺」，但這不是修對了問題——「喜歡」對兩種感官來說都不是
-# 真證據，只是巧合被去重邏輯擋掉一個，另一個仍然誤判成功。跟
-# _void_pure_time_evidence_from_other_dims 同一套「拿掉已知的非實質內容
-# 詞彙後，如果什麼都不剩，代表證據本身沒有實質內容」的判準，這裡改成
-# 拿掉常見的主觀偏好/情緒詞彙，不限定哪個維度（跟時間詞誤標到「其他
-# 維度」方向相反，這裡是任何感官維度都可能被這類詞彙誤標）。
+# 純粹主觀偏好/情緒詞（例如「喜歡」）不描述任何具體氣味或味道，卻可能被
+# 模型同時標成「嗅覺」跟「味覺」的證據——跟 _void_pure_time_evidence_
+# from_other_dims 同一套「拿掉已知的非實質內容詞彙後，如果什麼都不剩，
+# 代表證據本身沒有實質內容」判準，這裡拿掉常見的主觀偏好/情緒詞彙，不
+# 限定哪個維度（任何感官維度都可能被這類詞彙誤標）。
 _NON_SENSORY_OPINION_RE = re.compile(
     r"喜歡|討厭|愛吃|不愛|覺得|認為|印象深刻|印象|記得|不錯|還好|很棒|"
     r"開心|難過|高興|滿意"
@@ -1379,7 +1296,7 @@ def _void_non_sensory_opinion_evidence(checks: list) -> list:
     """
     _detect_covered_senses 專用，跑在 _missing_from_checks 之前。把純粹
     主觀偏好/情緒詞（不描述任何具體感官內容本身）當成的感官證據清成
-    「找不到」，理由見上方 2026-08-18 稽核說明。
+    「找不到」，理由見上方說明。
     """
     result = []
     for c in checks:
@@ -1417,8 +1334,8 @@ def _mark_task_exception_retrieved(task: asyncio.Task) -> None:
 
 def _find_evidence_gap(evidence: str, source_text: str) -> str | None:
     """
-    2026-08-18稽核（使用者提案，實測後補）：見 _missing_from_checks 的
-    allow_cross_dimension_gap 說明。若 evidence 可以拆成「前段＋原文裡的
+    見 _missing_from_checks 的 allow_cross_dimension_gap 說明。若 evidence
+    可以拆成「前段＋原文裡的
     縫隙＋後段」，且前段、後段各自都是原文裡真實存在的片段（前段在縫隙
     前、後段在縫隙後），回傳縫隙文字；找不到這種拆法回傳 None。只嘗試
     「一個缺口」的情況（例如「一起烤肉」拆成「一起」＋缺口＋「烤肉」），
@@ -1444,41 +1361,20 @@ def _missing_from_checks(
 ) -> list[str]:
     """
     比對 items 清單跟 LLM 逐項核對回傳的 checks，判斷哪些項目算漏掉，給
-    _find_missing_memory_items 用。
+    _find_missing_memory_items 用。除了 _is_real_evidence 逐項驗證外，還抓
+    兩種漏網：(1) item 在 checks 裡完全沒有對應 entry——模型漏檢查、不是
+    給了無效證據；(2) evidence 文字整段跟前面某一項重複——模型偷懶複製
+    別項證據湊數，雖然通過 substring 檢查，但同一段證據不太可能同時是
+    兩個不同細節的專屬視覺內容，重複一律當漏掉。
 
-    2026-08-14 實測（10項清單一次核對）發現兩種 _is_real_evidence 單獨
-    擋不住的漏網：
-    (1) 有些 item 在 checks 陣列裡完全沒有對應的 entry——模型直接漏掉
-        沒檢查（10項只回9筆），不是給了無效證據，是連檢查都沒做，這種
-        「憑空消失」不會被任何 evidence 內容過濾攔到，只能靠比對 item
-        清單跟 checks 涵蓋的 item 是否一致才抓得到。
-    (2) evidence 文字整段跟前面某一項重複——模型偷懶把別項的證據複製
-        貼上湊數（例如「哥哥剝柚子」「姊姊削蘋果」分別被套用「小孩子
-        提燈籠」「打麻將」的證據句），這段文字確實真實存在於
-        source_text，能通過 _is_real_evidence 的substring檢查，但明顯
-        不是這個item專屬的證據。同一段證據不太可能同時是兩個不同細節
-        的專屬視覺內容，重複使用一律當作漏掉處理。
-
-    allow_cross_dimension_gap: 2026-08-18稽核（使用者提案，實測後補）：
-    _detect_dimension_evidence 系列呼叫端實測抓到長者說「一起在院子
-    烤肉」，模型把「活動」的證據寫成「一起烤肉」——這四個字在原文裡不是
-    連續的（中間隔著「在院子」），被 _is_real_evidence 正確判定不算數，
-    但這個案例的「活動」描述本身沒有錯，長者確實在講烤肉這件事，跳過的
-    「在院子」剛好是同一批次裡「地點」維度已經驗證過的證據，不是被
-    憑空編造出來的內容——比起無條件放寬「跳字」這種容易被拿來掩護真正
-    編造內容的規則，這裡只在跳過的缺口剛好是同一批次裡其他維度已經
-    驗證過的真實證據時才放行，兩個條件缺一不可：(1) evidence 前後兩段
-    各自都要是原文裡真實存在的片段（見 _find_evidence_gap），(2) 中間的
-    缺口要能在其他維度已驗證的證據裡找到（bool(gap) and gap in
-    accepted_evidence_texts，用「屬於」而非「完全相等」比對，因為缺口
-    可能只是別的維度證據的一部分，例如「在院子」是「在院子的烤肉架」
-    這個地點證據的子字串）。只有 _check_pre_image_basic_dims／
-    _detect_pre_image_w_coverage／_detect_covered_w／_detect_covered_
-    senses 這幾個「同一批次核對多個維度」的呼叫端適合開啟，
-    _decide_topic_continuation（核對的是「延伸方向」，不是同一句話裡的
-    不同維度切片）跟 _find_missing_memory_items（核對生圖prompt有沒有
-    涵蓋畫面元素，錯誤的代價是生出長者沒說過的畫面內容，風險層級不同）
-    維持預設 False，不套用這條放寬規則。
+    allow_cross_dimension_gap：evidence 前後兩段都是原文真實片段、但中間
+    有缺口（例如「一起烤肉」漏掉中間的「在院子」）時，只有這個缺口本身
+    能在同一批次裡「其他維度」已驗證的證據裡找到，才放行——不是無條件
+    放寬「跳字」，避免這條規則被拿來掩護真正編造的內容。只有
+    _check_pre_image_basic_dims／_detect_pre_image_w_coverage／
+    _detect_covered_w／_detect_covered_senses 這幾個「同一批次核對多個
+    維度」的呼叫端適合開啟；核對「延伸方向」或「生圖prompt有沒有涵蓋畫面
+    元素」（錯誤代價是生出長者沒說過的內容）的呼叫端維持預設 False。
     """
     checked: dict[str, str] = {}
     for c in checks:
@@ -1526,24 +1422,14 @@ def _map_basic_checks_to_w(checks: list, source_text: str) -> list[str]:
     把 _check_pre_image_basic_dims 查到的地點/活動/時間 checks 映射成
     Where/How/When，給 process_response 的 pre_image_q1 分支判斷情境1/2
     時優先沿用，不用另外對 _detect_pre_image_w_coverage 的四維度框架重新
-    問一次LLM。
+    問一次LLM——兩者是用不同措辭框架各自判斷同一句長者回答的獨立LLM呼叫，
+    判斷本身非決定性，直接丟掉前者已查到的證據重問可能得出矛盾答案，把
+    長者答過的內容誤判成沒答。
 
-    2026-08-16：稽核發現 _has_usable_detail（地點/活動/時間）跟
-    _detect_pre_image_w_coverage（Where/When/How/Why）是兩個完全獨立、
-    用不同措辭框架各自判斷的 LLM 呼叫——同一句長者回答，前者可能已經
-    查到「活動」的證據，後者卻可能判定對應的「How」找不到（LLM判斷本身
-    非決定性，換一套維度措辭問更容易得出不同答案）。process_response
-    原本在 _has_usable_detail 判定「不夠具體」後，一律另外呼叫
-    _detect_pre_image_w_coverage 決定情境1/2，等於把前者已經查到的證據
-    整個丟掉重問一次，遇到上述矛盾就會把長者剛剛答過的內容當作沒答，
-    錯把情境2（該直接問缺的維度）判成情境1（退回通用範例問法）。
-
-    只回傳「有真的查到證據」的維度（Why 沒有對應的基本維度，一律不在
-    這裡出現）；只要這裡回傳非空list，就代表已經有可信的證據可以直接
-    判定情境2，不需要再呼叫 _detect_pre_image_w_coverage。三項都沒查到
-    證據（回傳空list）時，才需要呼叫 _detect_pre_image_w_coverage 做完整
-    的四維度判斷（含 Why），因為這種情況代表 _check_pre_image_basic_dims
-    這套框架完全沒查到東西，換一套框架可能查得到，或是Q1真的什麼都沒答。
+    只回傳「有真的查到證據」的維度（Why 沒有對應的基本維度，一律不出現）；
+    回傳非空list就代表可信證據足以直接判定情境2；三項都沒查到（空list）
+    時，才需要呼叫 _detect_pre_image_w_coverage 做完整的四維度判斷
+    （含Why）。
     """
     covered = []
     for c in checks:
@@ -1618,19 +1504,14 @@ def _strip_people_clauses(image_prompt: str) -> str:
     _translate_detail_to_image_prompt 呼叫處）：把 image_prompt 裡提到
     人物的詞（含冠詞、所有格's、緊接的聚會動詞）刪掉，保留子句裡其餘的
     場景/動作內容；刪完變成懸空介系詞、或介系詞後面接著沒有主詞的動名詞
-    片語的子句，整段丟掉。保證送去生圖 API 的內容不會出現人物——不管模型
-    自己生成時有沒有偷偷加人、也不管事後有沒有判斷出「這裡有畫人」，直接
-    在組合階段用關鍵字比對處理，不依賴模型的判斷或聽話程度。
+    片語的子句，整段丟掉。保證送去生圖 API 的內容不會出現人物，不依賴
+    模型的判斷或聽話程度。
 
-    2026-08-15 實測發現：只刪人物詞本身，會留下三種讀起來破碎的殘留——
-    (1) 所有格「woman's birthday」刪掉「woman」剩「's birthday」，變成
-    「middle-aged 's birthday」這種孤兒所有格；(2)「surrounded by family
-    members eating」刪掉「family members」剩「surrounded by eating」，
-    介系詞後面接著沒有主詞的動名詞，讀起來像沒寫完的句子；(3)「backyard
-    barbecue with family」刪掉「family」剩「backyard barbecue with」，
-    句尾留下沒接受詞的孤兒介系詞。改成正則多吃掉緊接的's，對「介系詞+
-    動名詞」這種殘留整段子句丟掉，句尾孤兒介系詞則只刪掉介系詞本身、
-    保留前面的場景內容。
+    刪掉人物詞本身會留下三種破碎殘留，各自對應下面的清理規則：所有格
+    孤兒（"woman's birthday"→"'s birthday"，多吃掉緊接的's）、介系詞+
+    動名詞沒有主詞（"surrounded by family members eating"→"surrounded by
+    eating"，整段子句丟掉）、句尾孤兒介系詞（"backyard barbecue with
+    family"→"...with"，只刪介系詞本身，保留前面場景內容）。
     """
     if not image_prompt:
         return image_prompt
@@ -1652,23 +1533,19 @@ def _strip_people_clauses(image_prompt: str) -> str:
 def _add_no_people_directive(image_prompt: str, chinese: bool = False) -> str:
     """
     _start_scene_after_detail 呼叫處專用，緊接在 _strip_people_clauses
-    後面用：光是 prompt 文字裡沒有人物詞，實測發現生圖模型（gpt-image-2）
-    看到「grilling on a barbecue」這類本身就隱含「有人在做」的動作描述，
-    還是會自己腦補畫出人物——這已經不是prompt文字有沒有提到人的問題，是
-    生圖模型自己的推論/想像層級，不是拿掉人物詞就能擋住的。改成額外加
-    一句明確的排除指示（不是「沒提到人」，是「明講不要有人」），插在固定
-    的畫風/色調片語之前，讓它算進場景指示，不被 _strip_style_descriptors
-    濾掉。找不到這個標記時（理論上不會發生，image_prompt 格式是固定的，
-    這裡是防禦性寫法）就直接接在句尾。
+    後面用：光是 prompt 文字裡沒有人物詞不夠，生圖模型（gpt-image-2）看到
+    「grilling on a barbecue」這類本身就隱含「有人在做」的動作描述，還是
+    會自己腦補畫出人物——這是模型自己的推論層級，不是拿掉人物詞就能擋住
+    的。額外加一句明確排除指示（不是「沒提到人」，是「明講不要有人」），
+    插在固定的畫風/色調片語之前，讓它算進場景指示、不被
+    _strip_style_descriptors 濾掉；找不到標記時（理論上不會發生）就直接
+    接在句尾。
 
-    chinese: image_prompt 的語言。is_direct_detail（長者原話直接翻譯，見
-    _start_scene_after_detail 呼叫處）路徑的 image_prompt 是中文（見
-    _translate_detail_to_image_prompt 2026-08-15 全中文版說明），固定色調
-    片語是「懷舊溫暖色調」（在 prompt 開頭）；RAG／anchor 路徑
-    （_build_plan_image_prompt）仍然是英文，固定色調片語是"nostalgic warm
-    tones"（在 prompt 結尾）。原本這裡不分語言一律寫死英文指示，會在中文
-    路徑的整段中文 prompt 裡混進一句英文，兩種語言各自對應自己的指示文字
-    跟插入點 marker，不要混用。
+    chinese: image_prompt 的語言。is_direct_detail（長者原話直接翻譯）
+    路徑是中文，固定色調片語「懷舊溫暖色調」在開頭；RAG／anchor路徑
+    （_build_plan_image_prompt）是英文，固定色調片語"nostalgic warm
+    tones"在結尾。兩種語言各自對應自己的指示文字跟插入點 marker，不要
+    混用。
     """
     if chinese:
         directive = "不要出現任何人物、不要有人形，"
@@ -1811,8 +1688,7 @@ class TherapyOrchestrator:
                    療程）結束，交給既有 _end_action 的 current_round>=3 分支
                    （原本用來產生「心得」問題那段，這次改動刻意保留不動，
                    見該處說明），因此長者實際上會連續被問兩次「回縮期」風格
-                   的問題——這是目前刻意接受的行為，「心得」回合之後會再
-                   另外重新設計，不在這次改動範圍內。
+                   的問題——目前刻意接受，「心得」回合之後會再另外重新設計。
 
         round 2/3 開場都需要上一回合結束時的內容（round 2 需要 round 1 最後的
         畫面元素/話題與長者最後一句話；round 3 需要 round 2 最後一句話）才能
@@ -1823,16 +1699,15 @@ class TherapyOrchestrator:
         或缺欄位時（例如 Redis 過期、或不是正常三回合序列）都有保底處理，
         不會拋例外。
 
-        2026-08：原本這裡會立刻用 RAG 記憶＋長者資料規劃並生成場景圖，長者從頭
-        到尾沒機會在生圖前先說出這次真正想聊的細節，畫面內容完全跟長者這次的
-        回答無關。改成先問長者一句破冰問題 Q1（_build_pre_image_question：
-        「說到{today_topic}，」接依16大主題分類挑的邀請語，見該函式與檔案
-        開頭流程說明）。分類用 _classify_topic_category，這裡一開始就跑，
-        分類結果存進 state["topic_category"]，之後若長者答得不夠具體、需要
-        問 Q2 縮小範圍時直接複用，不用重複分類。長者回答後（process_response
-        收到 last_question_type=="pre_image_q1" 時）才判斷細節夠不夠具體，
-        最後才呼叫 _start_scene_after_detail 規劃並生成圖片——長者親口說的
-        細節優先當生圖元素來源，RAG 記憶只在長者沒給出可用細節時才當 fallback，
+        round 1 先問長者一句破冰問題 Q1（_build_pre_image_question：「說到
+        {today_topic}，」接依16大主題分類挑的邀請語，見該函式與檔案開頭流程
+        說明），讓生圖內容能跟長者這次真正想聊的細節有關，不是只憑RAG記憶
+        跟長者資料憑空規劃。分類用 _classify_topic_category，一開始就跑，
+        結果存進 state["topic_category"]，長者答得不夠具體、需要問 Q2 縮小
+        範圍時直接複用，不用重複分類。長者回答後（process_response 收到
+        last_question_type=="pre_image_q1" 時）才判斷細節夠不夠具體，最後
+        呼叫 _start_scene_after_detail 規劃並生成圖片——長者親口說的細節
+        優先當生圖元素來源，RAG 記憶只在長者沒給出可用細節時才當 fallback，
         見該函式說明。
 
         Args:
@@ -2145,12 +2020,9 @@ class TherapyOrchestrator:
         detail_is_usable: process_response 的 pre_image_q1 分支在呼叫這裡之前，
         往往已經用 _has_usable_detail 判斷過同一句 elder_detail（用來決定要不要
         追問Q2／要不要略過Q2直接生圖），呼叫端已經知道答案時直接把結果傳進來，
-        這裡就不用再對同一句話重新問一次LLM。2026-08稽核發現：不傳的話這裡會
-        用同一句話再呼叫一次 _has_usable_detail，因為是LLM判斷（非決定性），
-        兩次呼叫可能給出不同答案——外層判定「夠具體」才呼叫這裡，這裡卻判定
-        「不夠具體」，臨時又退回RAG記憶，跟呼叫端當下印出的log訊息自相矛盾，
-        也多浪費一次LLM往返延遲。留 None（預設）給還沒判斷過的呼叫端（例如
-        pre_image_q2 合併Q1+Q2的情況），維持原本行為。
+        避免同一句話因為LLM判斷非決定性、再問一次可能得出矛盾答案（外層判定
+        「夠具體」才呼叫這裡，這裡卻判定「不夠具體」）。留 None（預設）給還
+        沒判斷過的呼叫端（例如 pre_image_q2 合併Q1+Q2的情況），維持原本行為。
         """
         session_id = state["session_id"]
         round_number = state["round"]
@@ -2171,23 +2043,20 @@ class TherapyOrchestrator:
             # 誰、在哪裡、發生什麼事），不該生完圖就把這些內容丟掉、讓後面
             # 的5W1H流程從零開始重問一次——用跟 STEP2 背景追蹤同一套判斷
             # （_detect_covered_w），把這裡偵測到的W維度接續進 state，STEP1/
-            # STEP3 就會自動避開已經聊過的方向。
-            # 2026-08-26效能稽核（使用者提案）：這個結果一直到下面組
-            # new_state（"covered_w"）才會用到，中間還要做脫敏、規劃/生成
-            # 圖片這一長串工作，彼此互不依賴——用 create_task 先背景送出去，
-            # 讓它跟後面的脫敏/生圖同時進行，真正需要值的時候再 await，
-            # 省下這次LLM往返原本要排隊等待的時間，不影響任何邏輯。
+            # STEP3 就會自動避開已經聊過的方向。這個結果一直到下面組
+            # new_state 才會用到，中間還要做脫敏、規劃/生成圖片這一長串
+            # 工作，彼此互不依賴——用 create_task 先背景送出去，跟後面的
+            # 脫敏/生圖同時進行，真正需要值的時候再 await，省下這次LLM
+            # 往返原本要排隊等待的時間。
             pre_image_covered_w_task = asyncio.create_task(
                 self._detect_covered_w(elder_detail, [])
             )
-            # 2026-08-26稽核（code review 發現）：這個 task 一直到下面才會
-            # await，中間 _plan_image_from_detail／_plan_image（沒包
-            # try/except）如果先丟例外，函式會直接往外傳播、永遠不會走到
-            # 下面 await 這個 task 的那一行——如果 task 本身也剛好失敗，
-            # asyncio 會印出「Task exception was never retrieved」的警告。
-            # 掛一個 done_callback 把例外標記為已讀取，不管有沒有真的被
-            # await 到都不會再有這個警告；task 本身還是照常在背景跑完，
-            # 不影響任何邏輯。
+            # 這個 task 一直到下面才會 await，中間 _plan_image_from_detail／
+            # _plan_image（沒包 try/except）如果先丟例外，函式會直接往外
+            # 傳播、永遠不會走到下面 await 這個 task 的那一行——如果 task
+            # 本身也剛好失敗，asyncio 會印出「Task exception was never
+            # retrieved」的警告。掛一個 done_callback 把例外標記為已讀取，
+            # task 本身還是照常在背景跑完，不影響任何邏輯。
             pre_image_covered_w_task.add_done_callback(_mark_task_exception_retrieved)
         else:
             # 退回 RAG 記憶時，elder_detail 不是這次生圖真正的內容來源
@@ -2329,35 +2198,16 @@ class TherapyOrchestrator:
         """
         出示圖片問題答完後：依長者反應分類、生成承接語，再接上 STEP1 開場問題。
 
-        2026-08-18起改成回合2開場（_start_round2_free_followup）第一步觸發，
-        不再是回合1同一回合內接續處理——回合1問完「出示圖片」那句
-        （_IMAGE_REVEAL_SCENE_TEXT／_IMAGE_REVEAL_QUESTION）就直接結束（見
-        process_response 對 last_question_type=="image_reveal" 且
-        state["round"]==1 的短路處理），5W1H（STEP1）留到回合2才開始問。這支
-        函式原本是 process_response 裡 image_reveal 分支的本體，抽出來給兩處
-        共用：
-          1. round 2 開場：用 round 1 carryover 的長者回答（carryover[
-             "last_elder_response"]）當 elder_response 觸發，見
-             _start_round2_free_followup
-          2. 分類2（有差異但長者還沒具體講出哪裡不一樣）追問一次「哪裡不
-             一樣」後，長者下一句真正的回答——這時 state["round"] 已經是2，
-             process_response 會直接呼叫回這支函式，走完整的分類流程
+        由回合2開場（_start_round2_free_followup）第一步觸發——回合1問完
+        「出示圖片」那句（_IMAGE_REVEAL_SCENE_TEXT／_IMAGE_REVEAL_QUESTION）
+        就直接結束（見 process_response 對 last_question_type=="image_
+        reveal" 且 state["round"]==1 的短路處理），5W1H（STEP1）留到回合2
+        才開始問，用 round 1 carryover 的長者回答（carryover["last_elder_
+        response"]）當 elder_response 觸發。
 
-        「情緒明顯（不安）」這類已經被更前面的 _detect_emotional_trigger
-        攔截走了，不會走到這裡；這裡處理的是其餘2類（相符/有差異）＋
-        「情緒明顯（感動）」，見 _generate_image_reveal_reaction。
-
-        2026-08-18稽核（使用者提案）：這支函式原本的分類2（有差異但長者
-        還沒具體講出哪裡不一樣）會先追問一次「哪裡不一樣」，等長者回答後
-        才問STEP1——但實測分類2跟分類3（有差異且已具體講出哪裡不一樣）
-        經常分不清楚（見 _generate_image_reveal_reaction 舊版好幾次「分類2
-        誤判成3」「分類3誤判成2」的稽核筆記），這個追問子迴圈本身也連帶
-        出過「問完馬上道謝又問下一題，長者沒機會回答」這類bug。使用者決定
-        把分類2併入分類3，兩者都用同一種「誠實承認AI示意圖畫不出所有
-        細節」的方式回應，不再追問「哪裡不一樣」——不管長者有沒有具體講
-        出差異點，一律當作「有差異」處理一次到位，見 _generate_image_
-        reveal_reaction 新版分類說明。這裡對應拿掉整段 image_reveal_
-        deferred／was_deferred／_IMAGE_REVEAL_TRANSITION 機制。
+        「情緒明顯（不安）」已被更前面的 _detect_emotional_trigger 攔截走，
+        不會走到這裡；這裡處理的是其餘2類（相符/有差異）＋「情緒明顯
+        （感動）」，見 _generate_image_reveal_reaction。
         """
         covered_w = list(state["covered_w"])
         skipped_w = list(state["skipped_w"])
@@ -2407,13 +2257,11 @@ class TherapyOrchestrator:
                     "last_w_asked": "",
                     "question_count": 1,
                     "supplement_count": 0,
-                    # 2026-08-18稽核（實測後補）：STEP1開場問題先前沒有設
-                    # 這個欄位，round 1結束時state["last_question_text"]
-                    # 因此讀不到這一題，帶進round 2 carryover的
+                    # 沒設這個欄位的話，round 1結束時state["last_question_
+                    # text"]讀不到這一題，帶進round 2 carryover的
                     # round1_last_question（見_start_round2_free_followup）
-                    # 也會是空字串，round 2 開場完全不知道round 1最後一題
-                    # 實際問了什麼。補上這個欄位，讓STEP1這題也能正常被
-                    # round 2看見。
+                    # 會是空字串，round 2 開場完全不知道round 1最後一題
+                    # 實際問了什麼。
                     "last_question_text": result["question"],
                 }
                 return {
@@ -2484,29 +2332,19 @@ class TherapyOrchestrator:
         )
         print(f"  → 出示圖片反應分類: {result.get('classification', '')!r}"
               f"（依據: {result.get('judgment_evidence', '')!r}）")
-        # 2026-08-18稽核（第十三次，使用者提案）：這裡先前（2026-08-17
-        # 稽核）改成呼叫_detect_covered_w，把長者「看完圖的反應」也當
-        # 成W覆蓋的證據來源——但這個反應本質上是在評論AI示意圖畫得準不
-        # 準（像不像、哪裡不一樣），不是長者主動在敘述回憶本身，跟STEP2
-        # 自由對話裡長者真的在講故事時的回答性質不同。實測案例：長者看
-        # 完圖說「不太像我家院子的樣子，我家的院子更大」，被判成自然
-        # 涵蓋How／Why，但這句話講的是「AI畫的院子和我記憶中的不一樣」
-        # 這個評論本身，不是在回答「怎麼樣」或「為什麼」——把這種評論
-        # 內容硬套進5W1H覆蓋度，會讓後續的W追蹤失真。改回不呼叫
-        # _detect_covered_w，長者對圖片的反應維持不記錄進covered_w。
+        # 長者看完圖的反應是在評論AI示意圖畫得準不準（像不像、哪裡不一樣），
+        # 不是主動在敘述回憶本身，跟STEP2自由對話裡長者真的在講故事時性質
+        # 不同——不呼叫 _detect_covered_w，這種評論內容硬套進5W1H覆蓋度會
+        # 讓W追蹤失真。
         #
-        # 2026-08-16稽核：上面那層連續3次都違規（例如照抄範例、編造判斷
-        # 依據）會退回完全通用的固定保底句，跟長者剛才說的話完全無關——
-        # 但如果生圖前的Q1/Q2（pre_image_detail）其實有實質內容，不該就
-        # 這樣浪費掉。這裡改用跟上面 quick_end 分支同一支
-        # _generate_quick_end_recap 當第二層保底：那支函式任務更單純
-        # （只呼應pre_image_detail+問STEP1，不用再賭一次反應分類），成功
-        # 機率比再重試一次完整的分類任務高，退回的內容至少還貼著長者剛才
-        # 講過的東西，好過完全通用的「{畫面元素}，讓你想到什麼？」。
-        # reaction_text 判斷式空字串只有 guarded_generate 真的退回上面那組
-        # fallback 才會發生（_parse_image_reveal_response 保證正常解析出
-        # 的 reaction_text 一定非空，見該函式保底句說明），可以用來判斷
-        # 第一層是否真的落到保底。
+        # 若這一層連續違規（例如照抄範例、編造判斷依據）退回完全通用的固定
+        # 保底句，跟長者剛才說的話完全無關；生圖前的Q1/Q2（pre_image_
+        # detail）若有實質內容，改用 _generate_quick_end_recap 當第二層
+        # 保底——那支函式任務更單純（只呼應pre_image_detail+問STEP1，不用
+        # 再賭一次反應分類），成功機率比重試整個分類任務高，退回的內容也
+        # 還貼著長者剛才講過的東西。reaction_text 判斷式空字串只有
+        # guarded_generate 真的退回上面那組 fallback 才會發生，可以用來
+        # 判斷第一層是否真的落到保底。
         if not result["reaction_text"] and pre_image_detail:
             print("  → 出示圖片承接連續違規、已退回第一層保底，"
                   "改用pre_image_detail呼應當第二層保底")
@@ -2528,12 +2366,9 @@ class TherapyOrchestrator:
             # 完整的「呼應pre_image_detail＋STEP1問題」，不需要、也不該
             # 再疊一次下面的獨立問題生成呼叫。
         else:
-            # 2026-08-18稽核（第十七次，使用者提案）：STEP1問題改成獨立
-            # 呼叫_regenerate_image_reveal_question生成（見上面
-            # _generate_image_reveal_reaction docstring說明）——那支
-            # 函式的user_content本來就不放【長者看完圖後的第一反應】，
-            # 結構上讓模型看不到這段內容，比在同一次呼叫裡用文字規則
-            # 要求模型自己不要參考來得可靠。
+            # STEP1問題獨立呼叫 _regenerate_image_reveal_question 生成
+            # （該函式 user_content 故意不放【長者看完圖後的第一反應】，
+            # 見上面 _generate_image_reveal_reaction docstring）。
             q_result = await guarded_generate(
                 self._regenerate_image_reveal_question,
                 taboo_words=user["taboos"],
@@ -2636,15 +2471,13 @@ class TherapyOrchestrator:
         # 差了……」），如果先跑 quick_end，這類句子會被誤判成單純放棄話題，
         # 跳過情緒支持直接進下一題——正好是 Track B 的 ignore_emotion／rush_topic
         # 規則要懲罰的行為，所以這個判斷必須放在最前面。
-        # 2026-08-18稽核（實測後補）：原本只排除精確等於 _NO_RESPONSE_MARKER
-        # 的情況，長者真的沒開口、前端傳的是純空字串（不是這個固定marker）時
-        # 沒被排除，會把空字串原樣塞進 _detect_emotional_trigger 的 prompt
+        # 純空字串（長者真的沒開口，不是 _NO_RESPONSE_MARKER 這個固定
+        # marker）也要排除，不能塞進 _detect_emotional_trigger 的 prompt
         # 問LLM「這句話有沒有情緒訊號」——對空白內容問這種問題是未定義行為，
         # 量化基底模型不保證每次都答NO；一旦誤判YES，這題會直接不受
         # _MAX_QUESTIONS_PER_ROUND／_MAX_SUPPLEMENT_PER_ROUND限制（見下面
-        # is_emotional_trigger分支），實測案例：一個長者全程沉默的回合最後
-        # 問了8題才收尾，遠超過設計上限（5題／補問2次），改成空白字串同樣
-        # 短路成False，不再交給LLM判斷。
+        # is_emotional_trigger分支），可能導致長者全程沉默的回合遠超題數
+        # 上限才收尾。
         is_emotional_trigger = (
             False if (not elder_response.strip()) or elder_response.strip() == _NO_RESPONSE_MARKER
             else await self._detect_emotional_trigger(elder_response)
@@ -2919,22 +2752,19 @@ class TherapyOrchestrator:
             for w in newly_covered:
                 if w not in covered_w:
                     covered_w.append(w)
-            # 2026-08-17稽核：上一輪問的維度（pre_image_q2_last_w）如果這輪
-            # 還是沒被涵蓋，代表長者沒答到、或答非所問——記進 skipped_w，下面
-            # 傳給 get_scenario2_followup 排除，不要再挑同一個維度重問一次
-            # （之前的行為是只看 covered_w，沒答到的維度沒有排除機制，會被
-            # _PRE_IMAGE_PRIORITY_ORDER 選中、連續好幾輪問同一個問題）。
+            # 上一輪問的維度（pre_image_q2_last_w）如果這輪還是沒被涵蓋，
+            # 代表長者沒答到、或答非所問——記進 skipped_w，下面傳給
+            # get_scenario2_followup 排除，不要再被 _PRE_IMAGE_PRIORITY_
+            # ORDER 選中、連續好幾輪問同一個問題。
             skipped_w = list(state.get("skipped_w", []))
             last_w = state.get("pre_image_q2_last_w")
-            # 2026-08-26稽核（使用者提案）：這一題是 get_scenario2_followup
-            # 針對 last_w 直接追問的，長者只要不是拒答（q2_answer 已經在上面
-            # 用 _is_true_refusal 篩過、拒答會在前面就 return），不管回答
-            # 內容有沒有被 _detect_covered_w 抓到對應證據，都直接算已經
-            # 回答到這個維度——證據抽取本來就可能有雜訊（例如漏抄「，就」
-            # 這種連接詞，見 _GAP_FILLER_RE），與其一直修補抽取規則，不如
-            # 直接信任「問A答A」這個更可靠的事實來源，不讓通用的證據比對
-            # 反過來否定長者剛剛針對性回答過的內容，導致同一個維度反覆
-            # 被判定沒答到、卡住一直重問（跳針）。
+            # 這一題是 get_scenario2_followup 針對 last_w 直接追問的，長者
+            # 只要不是拒答（q2_answer 已經在上面用 _is_true_refusal 篩過），
+            # 不管回答內容有沒有被 _detect_covered_w 抓到對應證據，都直接
+            # 算已經回答到這個維度——證據抽取本來就可能有雜訊，與其一直
+            # 修補抽取規則，不如直接信任「問A答A」這個更可靠的事實來源，
+            # 不讓通用的證據比對反過來否定長者剛剛針對性回答過的內容，導致
+            # 同一個維度反覆被判定沒答到、卡住一直重問（跳針）。
             if last_w and last_w not in covered_w:
                 covered_w.append(last_w)
             round_count = state.get("pre_image_q2_round", 1)
@@ -2985,8 +2815,8 @@ class TherapyOrchestrator:
         if last_type == "image_reveal":
             return await self._end_action(state, user, elder_response, emotion)
 
-        # ── 感官追蹤（2026-08-17稽核，使用者提案）：跟 covered_w 同等規格，
-        # 記錄這回合長者的回答裡已經自然帶到哪些感官描述，避免STEP2/3選感官
+        # ── 感官追蹤：跟 covered_w 同等規格，記錄這回合長者的回答裡已經
+        # 自然帶到哪些感官描述，避免STEP2/3選感官
         # 當切入角度時，一直挑同一種、或挑主題本來就不相關的感官。只在這裡
         # （STEP1之後的延續流程）追蹤。同樣直接mutate state，讓下游函式透過
         # {**state, ...} 自然帶到最新版本。
@@ -3012,11 +2842,10 @@ class TherapyOrchestrator:
 
         # ── STEP2：自由對話中背景追蹤 W 覆蓋 ────────────────────
         if not quick_end:
-            # 2026-08-26效能稽核（使用者提案）：_detect_covered_w／
-            # _detect_covered_senses 都只吃 elder_response 當輸入，各自寫入
-            # 互不相干的 covered_w／covered_senses，彼此不需要對方的結果，
-            # 原本卻依序 await，等於白白多等一次LLM往返。改成 asyncio.gather
-            # 平行送出，省下其中一次呼叫的時間，不影響任何邏輯或結果。
+            # _detect_covered_w／_detect_covered_senses 都只吃 elder_response
+            # 當輸入，各自寫入互不相干的 covered_w／covered_senses，彼此不
+            # 需要對方的結果，用 asyncio.gather 平行送出，省下依序 await的
+            # 一次LLM往返時間，不影響任何邏輯或結果。
             newly_covered, newly_covered_senses = await asyncio.gather(
                 self._detect_covered_w(elder_response, covered_w),
                 self._detect_covered_senses(
@@ -3036,26 +2865,19 @@ class TherapyOrchestrator:
                 print(f"  → 自然涵蓋感官: {newly_covered_senses}，covered_senses={covered_senses}")
         state["covered_senses"] = covered_senses
 
-        # 2026-08-18稽核（使用者提案）：跟上面 supplement_w／covered_w 對稱
-        # ——上一題如果是感官提問（_next_step_or_end 的感官補問分支選了
-        # target_sense，見該處 _classify_question_sense 說明），這裡
-        # 核對長者這句有沒有真的答到那個感官：答到了會出現在上面剛更新的
-        # covered_senses裡；答不到（含quick_end——長者沒真的回答，上面偵測
-        # 整段被跳過，covered_senses維持舊值，一樣視為沒答到）就記進
-        # skipped_senses，避免下次又選中同一個感官重問，跟skipped_w同等
-        # 規格（原本感官只有covered_senses這種事後偵測，沒有「問過但沒答到」
-        # 的排除機制，跟W維度的追蹤方式不對稱，見_relevant_uncovered_senses
-        # 稽核筆記）。
+        # 跟上面 supplement_w／covered_w 對稱——上一題如果是感官提問
+        # （_next_step_or_end 的感官補問分支選了 target_sense），這裡核對
+        # 長者這句有沒有真的答到那個感官：答到了會出現在上面剛更新的
+        # covered_senses裡；答不到就記進 skipped_senses，避免下次又選中
+        # 同一個感官重問，跟skipped_w同等規格。
         if last_sense_asked and last_sense_asked not in covered_senses:
-            # 2026-08-26稽核（使用者提案）：跟 pre_image_q2 那邊 covered_w／
-            # last_w 同一套邏輯——上一題就是針對 last_sense_asked 直接追問
-            # 的（見上面 3503 行 last_sense_asked 的設定說明），長者只要不是
-            # quick_end（真的沒答/拒答，見 _is_quick_end），不管
-            # _detect_covered_senses 的證據抽取有沒有剛好抓到對應片段，都
-            # 直接算已經回答到這個感官，不讓證據抽取本來就有的雜訊（跟
-            # covered_w 是同一種風險）反過來否定長者剛剛針對性回答過的
-            # 內容，導致同一個感官反覆被判定沒答到、卡住一直重問。只有
-            # quick_end（真的沒有實質回答）才記進 skipped_senses。
+            # 跟 pre_image_q2 那邊 covered_w／last_w 同一套邏輯——上一題就
+            # 是針對 last_sense_asked 直接追問的，長者只要不是quick_end
+            # （真的沒答/拒答，見 _is_quick_end），不管 _detect_covered_
+            # senses 的證據抽取有沒有剛好抓到對應片段，都直接算已經回答到
+            # 這個感官，不讓證據抽取本來就有的雜訊反過來否定長者剛剛針對性
+            # 回答過的內容，導致同一個感官反覆被判定沒答到、卡住一直重問。
+            # 只有quick_end（真的沒有實質回答）才記進 skipped_senses。
             if quick_end:
                 if last_sense_asked not in skipped_senses:
                     skipped_senses.append(last_sense_asked)
@@ -3068,14 +2890,10 @@ class TherapyOrchestrator:
         state["skipped_senses"] = skipped_senses
 
         # ── 5W1H 全部自然涵蓋 → 結束回合（順其自然的好結局，不是硬湊出來的）──
-        # 2026-08-18稽核（使用者提案，實測後補）：這裡原本只檢查W有沒有
-        # 全部涵蓋，完全沒管感官——跟 _next_step_or_end 的「uncovered跟
-        # remaining_senses都是空的才真的結束」（見該函式2026-08-17稽核）
-        # 是同一個問題，只是這裡是更早、更常先被打到的那個出口：5W1H一
-        # 全部涵蓋就直接在這裡結束回合，根本輪不到 _next_step_or_end 的
-        # 感官判斷，即使主題相關的感官（例如嗅覺/味覺）一次都還沒問過。
-        # 改成也要相關感官都問過（或這個主題本來就沒有相關感官）才真的
-        # 結束，跟 _next_step_or_end 的判準一致。
+        # 這裡是比 _next_step_or_end 更早、更常先被打到的收尾出口，判準要
+        # 跟它一致：也要主題相關感官都問過（或這個主題本來就沒有相關感官）
+        # 才真的結束，不能只看W有沒有全部涵蓋——否則5W1H一全部涵蓋就直接
+        # 在這裡結束回合，根本輪不到後面的感官判斷。
         remaining_senses = _relevant_uncovered_senses(
             state.get("topic_senses"), covered_senses, skipped_senses,
         )
@@ -3215,26 +3033,24 @@ class TherapyOrchestrator:
         # _classify_question_dimension 說明），核對這題實際問的是哪個維度，
         # 分類不出來才退回原本指定的 target_w。
         actual_w = await self._classify_question_dimension(result["question"]) or target_w
-        # 2026-08-20稽核（使用者實測回報）：Why 是六個W裡唯一要先通過
-        # _check_elder_state_good 才輪得到問的維度（見 _next_step_or_end），
-        # 得來不易，若模型問偏到別的維度卻沒被攔下，這輪的Why名額就白白
-        # 浪費掉、且長者根本沒被問到原因/動機類問題。原本「actual_w in
-        # covered_w 才重打」的條件只顧到「有沒有白問已涵蓋的維度」，沒顧到
-        # 「target_w明明是Why、結果問成別的」這種情況——實測抓到補問Why時
-        # 生成「那個時候，你都點什麼料？」這種明顯是What角度的問題，因為
-        # 「What」還沒被涵蓋過，沒有觸發原本的重打條件，就這樣問出去了。
-        # Why 額外加一條：只要target_w是Why、實際分類不是Why，不論
-        # actual_w有沒有被涵蓋過都重打，其他W維度不受影響、仍維持原本
-        # 「只有問到已涵蓋維度才重打」的設計（放行自然延伸）。
+        # Why 是六個W裡唯一要先通過 _check_elder_state_good 才輪得到問的
+        # 維度（見 _next_step_or_end），得來不易，若模型問偏到別的維度卻
+        # 沒被攔下，這輪的Why名額就白白浪費掉。「actual_w in covered_w 才
+        # 重打」只顧到「有沒有白問已涵蓋的維度」，顧不到「target_w明明是
+        # Why、結果問成別的（例如問成What）」這種情況，因為那個維度可能
+        # 還沒被涵蓋過，不會觸發重打。Why 額外加一條：只要target_w是Why、
+        # 實際分類不是Why，不論actual_w有沒有被涵蓋過都重打，其他W維度
+        # 不受影響、仍維持原本「只有問到已涵蓋維度才重打」的設計（放行
+        # 自然延伸）。
         why_drifted = target_w == "Why" and actual_w != "Why"
         if actual_w != target_w and (actual_w in covered_w or why_drifted):
-            # 2026-08-17稽核（實測後補）：不只是「問偏了」，是問偏到一個長者
-            # 這回合已經答過的維度——等於白問，浪費本回合有限的補問名額（見
-            # _MAX_SUPPLEMENT_PER_ROUND），該補的 target_w 反而從沒被真的問過。
-            # 這種情況才值得多花一次LLM呼叫重打；單純問偏到「還沒問過的其他
-            # 維度」不算浪費，不需要重打（那是刻意允許的自然延伸，見
-            # _classify_question_dimension docstring）——Why見上方2026-08-20
-            # 稽核說明，是唯一的例外。
+            # 不只是「問偏了」，是問偏到一個長者這回合已經答過的維度——
+            # 等於白問，浪費本回合有限的補問名額（見
+            # _MAX_SUPPLEMENT_PER_ROUND），該補的 target_w 反而從沒被真的
+            # 問過。這種情況才值得多花一次LLM呼叫重打；單純問偏到「還沒
+            # 問過的其他維度」不算浪費，不需要重打（那是刻意允許的自然
+            # 延伸，見 _classify_question_dimension docstring）——Why見
+            # 上方說明，是唯一的例外。
             reason = (
                 "這個維度長者已經回答過了，這次問等於白問"
                 if actual_w in covered_w
@@ -3356,13 +3172,11 @@ class TherapyOrchestrator:
             w for w in _W_ORDER
             if w not in covered_w and w not in skipped_w and w not in known_facts_w
         ]
-        # 2026-08-17稽核（實測後補）：原本只檢查uncovered（W維度）就決定要不要
-        # 結束回合，完全沒考慮感官追蹤——round 1 通常會把六個W維度全部自然
-        # 涵蓋掉，round 2 開場known_facts_w一次就吃光所有候選，uncovered
-        # 永遠是空的，這個函式會在round 2第一次呼叫就直接收尾，感官相關的
-        # supplement機制（_ask_supplement／_generate_supplement_question的
-        # sense_hint）根本沒機會被觸發到，即使這個主題明明還有相關感官
-        # 一次都沒問過。改成uncovered跟remaining_senses都是空的才真的結束。
+        # 結束回合判準要同時看uncovered跟感官——round 1 通常會把六個W維度
+        # 全部自然涵蓋掉，round 2 開場known_facts_w一次就吃光所有候選，
+        # uncovered永遠是空的，若只檢查uncovered，這個函式會在round 2第一
+        # 次呼叫就直接收尾，即使這個主題明明還有相關感官一次都沒問過，
+        # 感官相關的supplement機制也根本沒機會被觸發到。
         remaining_senses = _relevant_uncovered_senses(
             state.get("topic_senses"), state.get("covered_senses"),
             state.get("skipped_senses"),
@@ -3392,17 +3206,10 @@ class TherapyOrchestrator:
             return await self._end_action(state, user, elder_response, emotion)
 
         # 決定下一個要補問的W維度：非Why優先隨機挑，Why最低優先序且需要
-        # 長者狀態良好才問。2026-08-18稽核（使用者提案，實測後補）：這裡
-        # 先前的結構是「uncovered清空才檢查感官，否則走W補問；Why被狀態
-        # 檢查排除就直接收尾」——但「唯一剩下Why、且Why因狀態不佳被排除」
-        # 這個情境沒有落入uncovered清空的分支，直接收尾，完全沒檢查
-        # remaining_senses，即使主題相關的感官（例如嗅覺/味覺）一次都還
-        # 沒問過也不會被拿來補問。跟上面「改成uncovered跟remaining_senses
-        # 都是空的才真的結束」那次稽核想解決的問題其實是同一種漏洞，只是
-        # 那次的修法只在函式最上方做了一次性檢查，沒有覆蓋到這裡。改成
-        # next_w 選不出來時（不管是uncovered本來就空、還是只剩Why但問不
-        # 了）都統一落到下面「還有沒問過的感官就補問感官，否則才真的收尾」
-        # 這條路徑，兩種情境共用同一套判斷。
+        # 長者狀態良好才問。next_w 選不出來時（不管是uncovered本來就空、
+        # 還是唯一剩下Why但因狀態不佳被排除）都統一落到下面「還有沒問過
+        # 的感官就補問感官，否則才真的收尾」這條路徑，兩種情境共用同一套
+        # 判斷——不能讓「唯一剩下Why且被排除」直接收尾，跳過感官檢查。
         next_w = None
         non_why = [w for w in uncovered if w != "Why"]
         if non_why:
@@ -3460,15 +3267,12 @@ class TherapyOrchestrator:
             skipped_senses=state.get("skipped_senses"),
             topic_senses=state.get("topic_senses"),
         )
-        # 2026-08-18稽核（第十一次，使用者提案）：_sense_entry_hint 只是
-        # prompt裡的軟提示，模型可能整段無視（實測案例：target_sense=
-        # 味覺，生出的問題卻是「七星潭那邊有什麼好聊的呢」，完全沒問到
-        # 感官）。比照_ask_supplement對target_w的做法（_classify_
-        # question_dimension核對），這裡用_classify_question_sense核對
-        # 一次「這題實際問的是哪個感官」，不在還缺的感官清單裡（含完全
-        # 沒問到感官的NONE）就帶retry_feedback重打一次——只重打一次、
-        # 不論結果都接受，不套用已經拿掉的_regenerate_while_flawed那套
-        # 迴圈式核對（那套疊加太多層LLM呼叫，實測反而拖累品質）。
+        # _sense_entry_hint 只是prompt裡的軟提示，模型可能整段無視。比照
+        # _ask_supplement對target_w的做法（_classify_question_dimension
+        # 核對），這裡用_classify_question_sense核對一次「這題實際問的是
+        # 哪個感官」，不在還缺的感官清單裡（含完全沒問到感官的NONE）就帶
+        # retry_feedback重打一次——只重打一次、不論結果都接受，不套用疊加
+        # 太多層LLM呼叫、拖累品質的迴圈式核對。
         actual_sense = await self._classify_question_sense(result["question"])
         if actual_sense not in remaining_senses:
             print(f"  → 補問感官(目標{target_sense})但問題實際感官是"
@@ -3563,16 +3367,13 @@ class TherapyOrchestrator:
         """
         判斷長者的回應是否值得繼續順著深入。
 
-        2026-08-14：原本一次性問 LLM「值得繼續深入嗎」直接吐 YES/NO——跟
-        _has_usable_detail 稽核前的舊寫法同一種毛病：8B量化基底模型對這種
-        整體判斷會穩定漏判/誤判，容易被「有講到具體人物」這種表面訊號
-        帶走判成YES，即使長者這句話其實已經是一個完整、帶著情緒收尾感的
-        小結局（實測案例：長者說「都是奶奶跟媽媽在準備的哈哈哈」，內容
-        雖然有人物，但語氣是笑著收尾，被舊寫法誤判成還要追問）。改成
         逐項列證據，模式同 _has_usable_detail：要求模型明確指出「如果要
         繼續深入，可以往哪個方向延伸」，並附上支撐這個延伸方向的原文
-        證據，找不到具體證據就必須明講「找不到」——比「這句話有內容就
-        隨口判YES」更難含糊帶過。
+        證據，找不到具體證據就必須明講「找不到」——比一次性問LLM「值得
+        繼續深入嗎」直接吐YES/NO更難含糊帶過，本地量化基底模型對整體
+        判斷容易被「有講到具體人物」這種表面訊號帶走判成YES，即使長者
+        這句話其實已經是一個帶著情緒收尾感的小結局（例如笑著說完就結束
+        的回答）。
         """
         directions = ["情感／意義", "陪伴的人的互動", "感官細節", "接下來發生的事"]
         prompt = (
@@ -3616,32 +3417,17 @@ class TherapyOrchestrator:
         """
         共用的「逐項列證據」偵測本體——一律用短語格式直接問，
         _check_pre_image_basic_dims／_detect_pre_image_w_coverage／
-        _detect_covered_w／_detect_covered_senses 四支呼叫端共用。
+        _detect_covered_w／_detect_covered_senses 四支呼叫端共用，取代
+        各自維護的「先問完整版格式、疑似整句照抄才用短語格式重問」兩階段
+        流程——短語格式本來就是為了逼模型不能整句照抄設計的，一開始就用
+        短語格式問，省下「先答壞、偵測、重問」這一整趟往返。
 
-        2026-08-18稽核（使用者提案，實測後補）：這四支函式原本各自維護
-        一份幾乎一樣的「先問完整版格式（不限長度），疑似整句照抄（偷懶
-        交差，見 _is_whole_sentence_copy）才用短語格式（限定2-4字關鍵詞）
-        單獨重問」兩階段流程（_whole_sentence_copy_items／
-        _retry_short_phrase_evidence／_merge_retried_checks 三個輔助函式，
-        現已隨這次改動移除）。但短語格式本來就是專門為了逼模型不能整句
-        照抄設計的（限定字數，模型沒有空間偷懶複製整句），與其等第一輪
-        先答出整句照抄的爛答案、再判斷、再重打第二輪，不如一開始就直接
-        用短語格式問——省下「先答壞、偵測、重問」這一整趟往返，這正是
-        使用者實測回報「中間的重試太久了」想解決的問題。改成四支呼叫端
-        統一走這支共用函式，只在一次呼叫內完成，不再有條件式的第二輪。
-
-        2026-08-18稽核（第二次，實測後補）：原本字數限定死「2-4個字」，
-        實測抓到長者說「因為我孫女非常喜歡青椒」，模型把「孫女非常喜歡」
-        這6個字硬壓縮成4字的「孫女喜歡」（拿掉中間的「非常」）——結果
-        「孫女喜歡」在原文裡根本不是連續存在的片段（原文是「孫女」接
-        「非常」再接「喜歡」，中間被跳過），逐字substring比對真的比不到，
-        白白把長者已經明確答過的Why證據判定成「找不到」，觸發不必要的
-        補問。根本原因是字數上限卡得太死，長者原話裡有意義的片語常常
-        超過4個字，模型為了符合字數限制被迫跳字硬縮，反而弄丟「必須是
-        原文連續存在的片段」這個更重要的要求。改成不限定死板的字數，只
-        要求「盡量精簡、但必須是連續存在於原文的完整片段，不能跳字
-        拼湊」，讓模型優先保留片段的連續性，不要為了縮短而犧牲這一點；
-        「不能整句照抄」的防呆改用具體反例說明，不再靠字數上限硬擋。
+        字數限制是「盡量精簡、但必須是連續存在於原文的完整片段，不能跳字
+        拼湊」，不死板卡「2-4個字」：卡死字數上限會逼模型為了塞進字數把
+        「孫女非常喜歡」硬壓縮成「孫女喜歡」（跳過中間的「非常」），結果
+        這段文字在原文裡不是連續片段，substring比對真的比不到，反而把
+        長者已經答過的證據誤判成「找不到」；「不能整句照抄」改用具體反例
+        說明防呆，不靠字數上限硬擋。
         """
         if not unchecked:
             return []
@@ -3695,19 +3481,14 @@ class TherapyOrchestrator:
         _detect_pre_image_w_coverage 的 Where/When/How/Why 四維度框架重新
         問一次 LLM。
 
-        2026-08-14：原本是一次性問 LLM「有沒有任兩項同時出現」直接吐
-        YES/NO——這正是這次稽核（見 _find_missing_memory_items 說明）
-        反覆踩到的不可靠模式，8B量化
-        基底模型對這種整體判斷會穩定漏判，不是溫度問題。改成逐一核對
-        「地點」「活動」「時間」三個維度，每項都要求標出對應的原文
-        具體片段當證據，找不到就必須明講「找不到」，再用共用的
+        逐一核對「地點」「活動」「時間」三個維度，每項都要求標出對應的
+        原文具體片段當證據，找不到就必須明講「找不到」，再用共用的
         _missing_from_checks／_is_real_evidence 判斷哪些維度真的有覆蓋
-        （擋掉樣板字硬套、證據重複挪用、整項憑空消失這幾種已知漏洞），
-        比直接問「有沒有任兩項」更難含糊帶過。
-
-        2026-08-18稽核（使用者提案）：改用共用的 _detect_dimension_
-        evidence，一律用短語格式（盡量精簡但必須逐字連續存在於原文）直接問，不再分兩階段，
-        見該函式說明。
+        （擋掉樣板字硬套、證據重複挪用、整項憑空消失這幾種已知漏洞）——
+        比一次性問LLM「有沒有任兩項同時出現」直接吐YES/NO更難含糊帶過，
+        本地量化基底模型對整體判斷容易穩定漏判。改用共用的
+        _detect_dimension_evidence，一律用短語格式（盡量精簡但必須逐字
+        連續存在於原文）直接問，見該函式說明。
         """
         checks = await self._detect_dimension_evidence(
             elder_response, ["地點", "活動", "時間"], "dimension",
@@ -3725,25 +3506,15 @@ class TherapyOrchestrator:
         """
         判斷長者回答生圖前引導問題時，內容裡有沒有同時包含「地點＋活動＋
         時間」三項，足夠當這次生圖的記憶來源（見 _start_scene_after_
-        detail）。
+        detail）。三項缺一都不算夠具體，跟 _PRE_IMAGE_PRIORITY_ORDER／
+        _FIVE_W1H_BANK 用的 Where/When/How/Why 對齊，缺任何一項就退回讓
+        process_response 走情境1/2那套精準補維度的流程，用 _FIVE_W1H_BANK
+        問缺的那個維度，不是直接退回RAG記憶——只有 _is_true_refusal 判定
+        的真拒答才會退回RAG記憶fallback，見 process_response 的
+        pre_image_q1 分支。
 
         跟 _is_quick_end 不一樣：_is_quick_end 只看字數/放棄關鍵字，抓不到
-        「有講話、字數也夠，但內容不足以撐出一個場景」這種回答——這裡要求
-        三個維度都要有（不是任一項單一維度、也不是兩項任選就算數）。
-
-        2026-08：原本只承認「地點＋活動」「人物＋地點」這兩種組合，一度
-        放寬成「地點/活動/人物」三項任兩項同時出現就算YES。
-
-        2026-08-14（第一次）：改回只認「地點＋活動」「人物＋地點」——一定
-        要有地點，另外搭配活動或人物任一項才算數。
-
-        2026-08-14（第二次）：改成「地點＋活動＋時間」三項都要有才算數，
-        不再收「人物」這個維度——跟 _PRE_IMAGE_PRIORITY_ORDER／
-        _FIVE_W1H_BANK 同步改成 Where/When/How/Why 之後，這裡也一併對齊，
-        缺任何一項（地點、活動、或時間）都不算夠具體，退回讓 process_
-        response 走情境1/2那套精準補維度的流程，用 _FIVE_W1H_BANK 問缺的
-        那個維度，不是直接退回RAG記憶——只有 _is_true_refusal 判定的真拒答
-        才會退回RAG記憶fallback，見 process_response 的 pre_image_q1 分支。
+        「有講話、字數也夠，但內容不足以撐出一個場景」這種回答。
 
         checks: process_response 若已經呼叫過 _check_pre_image_basic_dims
         （例如要接著判斷情境1/2、需要重用同一份 checks 給
@@ -3766,30 +3537,25 @@ class TherapyOrchestrator:
     async def _detect_pre_image_w_coverage(self, elder_response: str) -> list[str]:
         """
         判斷生圖前 Q1（_has_usable_detail 已經判定「不夠具體」時才會呼叫）
-        要走情境1還是情境2：逐一核對 Where/When/How/Why 四個維度，在長者這
-        句話裡找出對應的原文證據，跟 _has_usable_detail 判斷「地點/活動/
-        時間」用同一套「逐項列證據」模式（見該函式說明的2026-08-14稽核
-        紀錄）——yes/no整體判斷本地小模型會穩定漏判，逐項列證據更難含糊
-        帶過。
+        要走情境1還是情境2：逐一核對 Where/When/How/Why 四個維度，在長者
+        這句話裡找出對應的原文證據，跟 _has_usable_detail 判斷「地點/活動/
+        時間」用同一套「逐項列證據」模式，改用共用的 _detect_dimension_
+        evidence，一律用短語格式（盡量精簡但必須逐字連續存在於原文）直接
+        問——yes/no整體判斷本地小模型會穩定漏判，逐項列證據更難含糊帶過。
 
         全部找不到證據（回傳空list）→ process_response 判定為情境1（完全
         答不出來），問域縮小範例；至少一個維度有證據 → 情境2（有內容但缺
         維度），回傳的清單直接當 get_scenario2_followup() 的起始 covered_w，
         不用另外再核對一次同一句話。
 
-        2026-08-15：Where／How／Why 三項維持嚴格逐字比對，When（時間）
-        這一項放寬成允許「合理推斷」——例如「在稻田裡工作」沒有明講
-        「白天」，但這個線索能合理推斷出大概是白天，也算涵蓋，不用再
-        追問一次「白天還是晚上」。放寬的只有「evidence可以是隱含時間的
-        線索、不必是時間詞本身」，不是放寬「evidence可以亂猜」——
-        evidence 仍然要求是原話裡逐字存在的片段，讓模型「找一個能推斷
-        出時間的具體線索」而不是「宣稱有推斷出時間」，跟其他維度一樣
-        靠 _missing_from_checks／_is_real_evidence 驗證這個線索是不是
-        真的存在於原文，避免模型亂編一個原話沒有的線索當證據。
-
-        2026-08-18稽核（使用者提案）：改用共用的 _detect_dimension_
-        evidence，一律用短語格式（盡量精簡但必須逐字連續存在於原文）直接問，不再分兩階段，
-        見該函式說明。When 的合理推斷放寬規則改用 extra_note 帶入。
+        Where／How／Why 三項維持嚴格逐字比對，When（時間）這一項放寬成
+        允許「合理推斷」（透過 extra_note 帶入）——例如「在稻田裡工作」
+        沒有明講「白天」，但這個線索能合理推斷出大概是白天，也算涵蓋，
+        不用再追問一次「白天還是晚上」。放寬的只有「evidence可以是隱含
+        時間的線索、不必是時間詞本身」，不是放寬「evidence可以亂猜」——
+        evidence 仍然要求是原話裡逐字存在的片段，一樣靠
+        _missing_from_checks／_is_real_evidence 驗證這個線索是不是真的
+        存在於原文，避免模型亂編一個原話沒有的線索當證據。
         """
         dimensions = _PRE_IMAGE_PRIORITY_ORDER
         checks = await self._detect_dimension_evidence(
@@ -3879,14 +3645,11 @@ class TherapyOrchestrator:
     async def _classify_topic_senses(self, today_topic: str) -> list[str]:
         """
         判斷 today_topic（治療師輸入的自由文字，例如「聽音樂」「中秋節」）
-        本身適合用哪些感官記憶切入——取代原本先把 today_topic 分類成16大類
-        再查 _TOPIC_RELEVANT_SENSES 靜態表的做法（見該常數上方2026-08-20
-        稽核說明）：16大類是粗分桶，同一類底下內容差異可能很大（「興趣」
-        同時涵蓋唱歌→聽覺、種花→嗅覺/觸覺），查表拿到的是整桶共用答案，
-        對不到 today_topic 實際內容，實測過至少一次因此完全問不到感官的
-        案例。這裡直接對 today_topic 本身分類，跟 _classify_topic_category
-        同一套「start_round 一開始就跑一次、存進 state、之後直接複用」模式
-        （見該函式 docstring），不是每次要用感官清單時才臨時分類。
+        本身適合用哪些感官記憶切入，直接對 today_topic 本身分類，不靠16大
+        主題分類這層粗分桶轉手查表（見 _SENSE_EXCLUDED_TOPIC_CATEGORIES
+        上方說明）。跟 _classify_topic_category 同一套「start_round 一開始
+        就跑一次、存進 state、之後直接複用」模式，不是每次要用感官清單時
+        才臨時分類。
 
         回傳值是 _SENSE_DESC 裡 0 到多個感官名稱組成的 list（可以是空
         list——這個主題內容本身就不適合用感官記憶切入時，不用勉強選一個）；
@@ -3926,21 +3689,16 @@ class TherapyOrchestrator:
         問題後用來核對「這題實際上問的是哪個維度」，不能盲目相信生成前指定
         的 target_w。
 
-        2026-08-17稽核（實測後補）：_generate_supplement_question 的 prompt
-        雖然帶了 target_w 的角度提示，但同時也要求「順著長者剛才的話...自然
-        地深入問下去，不是在核對清單」——這是刻意的設計（見該函式呼叫端，
-        使用者要求允許自然延伸話題，不強制鎖死角度），但兩個指示衝突時，
-        模型常常選擇順著長者的話延伸、放棄target_w的角度（實測案例：
-        target_w=Where，長者剛講完食材，模型改問「你們都怎麼搭配食材呢」，
-        完全是How的角度）。如果照樣把這題記成「問了Where」，會造成兩個問題：
-        (1) 長者這輪如果沒答到Where（因為問題根本沒問Where），Where會被
-        錯誤記進skipped_w、永久跳過，但其實從沒被真的問過；
-        (2) 下一輪選還沒問過的維度時，可能又選到跟這題角度雷同的其他維度
-        （例如這次選到How），問出跟上一題幾乎重複的問題。
-        改成問題生成後另外核對一次「這題實際上是哪個角度」，用這個核對過的
-        結果取代target_w記進state，讓後續的「有沒有答到」判斷跟「還有哪些
-        維度沒問過」的追蹤，都是根據長者實際被問到的角度，不是原本打算問
-        但模型沒照做的角度。
+        _generate_supplement_question 的 prompt 雖然帶了 target_w 的角度
+        提示，但同時也刻意要求「順著長者剛才的話自然地深入問下去，不是在
+        核對清單」（允許自然延伸話題，不強制鎖死角度），兩個指示衝突時，
+        模型常常選擇順著長者的話延伸、放棄target_w的角度（例如target_w=
+        Where，卻改問「你們都怎麼搭配食材呢」這種How角度的問題）。若照樣
+        把這題記成「問了Where」，會讓Where被錯誤記進skipped_w、永久跳過
+        （其實從沒被真的問過），下一輪還可能選到跟這題角度雷同的其他維度，
+        問出重複的問題。改成問題生成後另外核對一次「這題實際上是哪個
+        角度」，用這個核對過的結果取代target_w記進state，讓後續的追蹤都
+        根據長者實際被問到的角度，不是原本打算問但模型沒照做的角度。
 
         回傳 _W_ORDER 其中一個維度名稱，或 None（問題內容判斷不出明確對應
         哪個維度，呼叫端此時應該退回原本指定的 target_w，不強求一定要分類
@@ -3962,15 +3720,10 @@ class TherapyOrchestrator:
         判斷一個問題主要是在問哪個感官（視覺/聽覺/嗅覺/味覺/觸覺），跟
         _classify_question_dimension 同一套模式，供 _next_step_or_end
         「還有相關感官未問過，補問一題」這條分支核對——不能盲目相信生成前
-        指定的 target_sense 真的被問到了（2026-08-18稽核，第十一次，使用者
-        提案：實測抓到target_sense='味覺'，生成的問題卻是「七星潭那邊有
-        什麼好聊的呢」，完全沒問到味覺，_sense_entry_hint 只是prompt裡的
-        軟提示，模型可能整段無視；跟W維度同一種「先猜再查」不夠可靠的
-        結論，需要生成後核對，只是這次刻意做成跟_ask_supplement一樣的
-        「核對一次、不對就重打一次、重打後不論結果都接受」輕量版，不套用
-        _regenerate_while_flawed那套「查完再查」的迴圈——那套機制疊加
-        太多層LLM呼叫反而拖累品質，已經整批拿掉，這裡刻意只保留最小的
-        單次核對＋單次重打，比照_ask_supplement對target_w的做法）。
+        指定的 target_sense 真的被問到了，_sense_entry_hint 只是prompt裡
+        的軟提示，模型可能整段無視。刻意做成跟_ask_supplement對target_w
+        一樣的「核對一次、不對就重打一次、重打後不論結果都接受」輕量版，
+        不套用疊加太多層LLM呼叫、反而拖累品質的迴圈式核對。
 
         回傳感官名稱，或 None（問題內容判斷不出明確對應哪個感官，呼叫端
         此時應該退回原本指定的 target_sense，不強求一定要分類出新答案）。
@@ -4024,19 +3777,13 @@ class TherapyOrchestrator:
         偵測長者回應中自然涵蓋了哪些尚未記錄的 W 維度（STEP2 背景追蹤／生圖前
         訪談／情境2續問共用，見三個呼叫點）。
 
-        2026-08-16稽核：原本一次性問LLM「這段話有沒有涵蓋以下W維度」直接吐
-        結論，是跟 _has_usable_detail 稽核前同一種不可靠模式——本地8B量化
-        基底模型對這種整體判斷會穩定漏判，短答案（例如「晚上」「晚上7點」）
-        尤其容易被漏掉，導致 covered_w 卡住不動、長者已經答過的W維度被重複
-        追問（實測案例：情境2連續兩輪都問「時段」，即使長者已經回答「晚上」
-        「晚上7點」）。改成逐一核對每個未涵蓋維度、要求標出原文證據，跟
-        _check_pre_image_basic_dims／_detect_pre_image_w_coverage 同一套
-        「逐項列證據」模式，共用 _missing_from_checks／_is_real_evidence
-        這幾個已驗證過的輔助函式。
-
-        2026-08-18稽核（使用者提案）：改用共用的 _detect_dimension_
-        evidence，一律用短語格式（盡量精簡但必須逐字連續存在於原文）直接問，不再分兩階段，
-        見該函式說明。
+        逐一核對每個未涵蓋維度、要求標出原文證據，跟 _check_pre_image_
+        basic_dims／_detect_pre_image_w_coverage 同一套「逐項列證據」模式，
+        共用 _missing_from_checks／_is_real_evidence 這幾個輔助函式，改用
+        _detect_dimension_evidence 一律用短語格式直接問——比一次性問LLM
+        「這段話有沒有涵蓋以下W維度」直接吐結論可靠，本地基底模型對整體
+        判斷容易穩定漏判，短答案（例如「晚上」）尤其容易被漏掉，導致
+        covered_w 卡住不動、長者已經答過的維度被重複追問。
         """
         unchecked = [w for w in _W_ORDER if w not in already_covered]
         checks = await self._detect_dimension_evidence(
@@ -4061,34 +3808,26 @@ class TherapyOrchestrator:
     ) -> list[str]:
         """
         偵測長者回應中自然涵蓋了哪些尚未記錄的感官（視覺/聽覺/嗅覺/味覺/
-        觸覺）——2026-08-17稽核（使用者提案）：跟 _detect_covered_w 同一套
-        「逐項列證據」模式，理由相同（本地量化基底模型對整體判斷不穩定，
-        逐項要求原文證據才穩定，見 _detect_covered_w 2026-08-16稽核筆記）。
+        觸覺）——跟 _detect_covered_w 同一套「逐項列證據」模式，理由相同
+        （本地量化基底模型對整體判斷不穩定，逐項要求原文證據才穩定）。
 
         不套用 _void_pure_time_evidence_from_other_dims／_backstop_when_
         evidence 這兩個後處理——那兩個是 _detect_covered_w 專門修「時間詞
         被誤標到其他W維度」的問題，跟感官偵測無關，感官之間沒有類似的
         已知混淆模式，硬套反而可能誤刪正常證據。
 
-        topic_senses：2026-08-18稽核（使用者提案）——原本這裡不分主題，
-        每次都把五種感官全部拿去核對，但每個主題本來就只有幾種真正相關的
-        感官，跟主題無關的感官從一開始就不會被 _relevant_uncovered_senses
-        當成選項端出來，核對再多也用不到，純粹是白工——多花LLM呼叫、多一次
-        本地弱模型誤判（false positive）的機會，偵測結果卻永遠不會被消費
-        （例如節慶主題只適合嗅覺/味覺，卻還在核對視覺/聽覺/觸覺）。改成
-        只核對主題相關的感官；topic_senses 是空list時（哀傷之事／人生目標
-        等，見 _SENSE_EXCLUDED_TOPIC_CATEGORIES 說明，本來就不用感官切入，
-        或 _classify_topic_senses 判斷這個主題內容不適合任何感官）relevant
-        是空list，直接跳過整次核對，理由一致——這些主題本來就不會用到感官
-        偵測結果。
+        topic_senses：只核對主題相關的感官，不是每次都把五種感官全部拿去
+        核對——跟主題無關的感官從一開始就不會被 _relevant_uncovered_senses
+        當成選項端出來，核對再多也用不到，純粹是多花LLM呼叫、多一次誤判
+        機會的白工。topic_senses 是空list時（哀傷之事／人生目標等，見
+        _SENSE_EXCLUDED_TOPIC_CATEGORIES 說明，或 _classify_topic_senses
+        判斷這個主題內容不適合任何感官）relevant 也是空list，直接跳過
+        整次核對。
 
-        2026-08-18稽核（使用者提案）：改用共用的 _detect_dimension_
-        evidence，一律用短語格式（盡量精簡但必須逐字連續存在於原文）直接問，不再分兩階段，
-        見該函式說明。
-
-        2026-08-18稽核（第二次，實測後補）：補上 _void_non_sensory_
-        opinion_evidence 後處理——實測抓到「喜歡」這種純主觀偏好詞被
-        誤標成嗅覺／味覺的證據，見該函式說明。
+        改用共用的 _detect_dimension_evidence，一律用短語格式（盡量精簡但
+        必須逐字連續存在於原文）直接問，見該函式說明；另外用
+        _void_non_sensory_opinion_evidence 後處理排除「喜歡」這種純主觀
+        偏好詞被誤標成嗅覺／味覺證據的情況，見該函式說明。
         """
         relevant = topic_senses or []
         unchecked = [s for s in relevant if s not in already_covered]
@@ -4176,12 +3915,11 @@ class TherapyOrchestrator:
     def _parse_closing_response(self, raw: str) -> dict:
         """解析收尾引導的輸出。"""
         result: dict = {"closing_text": "", "question": ""}
-        # 2026-08-18稽核：這支parser原本沒有current_field追蹤，本地模型若把
-        # 「收尾語：」單獨放一行、內容接在下一行（其他parser都有處理過的已知
-        # 格式變體，見 _parse_question_response docstring），這裡會直接漏接，
-        # closing_text整個變空字串——雖然下面已經有保底句、不至於崩潰，但
-        # 長者聽到的會是通用保底語，不是模型真正生成的內容。補上跟其他parser
-        # 一致的續行處理。
+        # current_field 追蹤續行：本地模型若把「收尾語：」單獨放一行、內容
+        # 接在下一行（其他parser都有處理過的已知格式變體，見
+        # _parse_question_response docstring），沒有這個追蹤會直接漏接，
+        # closing_text整個變空字串，長者聽到的會是通用保底語而非模型真正
+        # 生成的內容。
         current_field: str | None = None
         for line in raw.splitlines():
             line = line.strip()
@@ -4558,15 +4296,12 @@ class TherapyOrchestrator:
         image_prompt內容——兩者都只從同一段 elder_detail 延伸，但彼此不
         互相依賴。
 
-        2026-08-15：曾經一度把這條路徑整個併回 _plan_image（理由是「只要
-        生出一個場景，不用逐一涵蓋細節」，見那次改動的說明），後來發現
-        併回去之後畫面明顯變差、空間關係常常錯亂或消失，才又拆回這條
-        獨立路徑——但吸收了那次簡化的教訓：不再對動作/人物做checklist+
-        重試核對（見舊版 _translate_detail_to_image_prompt 的稽核紀錄），
-        單次生成即可，不強求逐一涵蓋每個動作/人物，只要求忠實翻譯、保留
-        空間關係；畫面裡不出現任何人物的保證，交給 _start_scene_after_
-        detail 統一呼叫的 _strip_people_clauses／_add_no_people_directive
-        確定性處理，不需要在這裡另外驗證。
+        這條路徑刻意保持獨立、不併回 _plan_image——併回去會弄丟空間關係，
+        使畫面品質變差。也不對動作/人物做checklist+重試核對，單次生成
+        即可，不強求逐一涵蓋每個動作/人物，只要求忠實翻譯、保留空間關係；
+        畫面裡不出現任何人物的保證，交給 _start_scene_after_detail 統一
+        呼叫的 _strip_people_clauses／_add_no_people_directive 確定性處理，
+        不需要在這裡另外驗證。
         """
         image_prompt = await self._translate_detail_to_image_prompt(user, elder_detail)
         elements = await self._extract_elements_from_detail(elder_detail)
@@ -4574,50 +4309,24 @@ class TherapyOrchestrator:
 
     async def _translate_detail_to_image_prompt(self, user: dict, elder_detail: str) -> str:
         """
-        組給AI生圖模型用的prompt，見 _plan_image_from_detail 說明。
+        組給AI生圖模型用的prompt，見 _plan_image_from_detail 說明。用確定性
+        字串組合、不再是LLM生成：固定風格/技術指令＋今日主題＋長者原話本身
+        完整保留（動作/地點/相對位置/時間都在同一段話裡）。跳過LLM生成也就
+        跳過了「先把中文原話翻成英文」這個有損步驟的失真問題（例如「車庫」
+        曾被翻成backyard、carport這類語意相關但構造不同的詞）——生圖模型
+        本身中文理解力足夠好，直接送中文原話即可正確畫出構造細節；風格
+        指令也改用中文，效果一樣好、甚至更貼近節慶氛圍。
 
-        2026-08-15（中文直接送出版）：原本這裡是把長者原話（中文）整段
-        翻譯成英文場景描述，一直踩到「翻譯失真」的問題——「車庫」被翻成
-        backyard、carport這類語意相關但構造不同的英文詞，加了地點/活動
-        主動抽取+明講、事後核對+重試都只能治標。實測改成把中文原話直接
-        送給生圖模型（gpt-image-2 本身建立在多模態語言模型上，中文理解
-        力足夠好）之後，鐵捲門這種構造細節第一次就正確畫出來，不需要
-        「先壓縮成一個精準英文詞」這個有損步驟——問題根源本來就是翻譯
-        這一步，跳過它就跳過了整個問題，不是靠更多提示詞技巧修得好的。
+        防幻覺指示只禁止「有敘事意義、代表長者記得某個具體細節」的物件
+        （例如長者沒提到燈籠卻畫出來，等於暗示長者記得有燈籠，這才是真的
+        失真）；純粹讓畫面有生活感的環境陳設（家具、植栽、雜物、光線氛圍）
+        不受限制，可以自然補充——完全禁止添加任何東西會讓畫面像空舞台，
+        缺少一般生活場景該有的環境雜物。
 
-        改成確定性組合，不再是一次LLM生成：固定的風格/技術指令（畫風、
-        年代、色調、物件擺放要合理、光線要跟時間符合現實邏輯、不要文字）
-        + 今日主題（明講帶入，不靠核對+重試補救）+ 長者原話本身（完整
-        保留，動作/地點/相對位置/時間都在同一段話裡，不用再拆開個別
-        抽取核對）。不需要LLM生成，也就不會有生成不穩定、漏翻、格式跑掉
-        這些問題。
-
-        2026-08-15（全中文版）：風格指令原本用英文，實測發現改成中文
-        效果一樣好、甚至更貼近節慶氛圍（見這次改動前的手動測試：中秋節
-        主題配中文prompt，正確畫出滿月+鐵捲門車庫）。但同一次測試也
-        發現一個問題：燈光規則原本用「例如提燈籠、賞月配月光」當範例
-        說明「光線要跟活動時間符合邏輯」這個抽象規則，結果模型把範例
-        本身當成真的要畫的內容，畫面裡憑空多出長者根本沒提過的燈籠——
-        這違反懷舊治療最基本的原則（畫面只能反映長者真正的記憶，不能
-        自己聯想加東西）。改成兩處修正：(1) 燈光規則不再用具體活動當
-        範例，只講抽象邏輯本身；(2) 額外加一句防幻覺指示。
-
-        2026-08-15（第二次）：第一版防幻覺指示寫成「只能畫畫面內容裡
-        實際提到的東西」，矯枉過正了——長者原話通常很短（例如只提到
-        車庫、家人、烤肉），逼模型只畫這幾樣，畫面變得像空舞台，缺少
-        一般生活場景該有的環境雜物，反而不像「長者記憶中的真實場景」。
-        問題出在沒有區分兩種「添加」：(a) 有敘事意義、代表長者記得某個
-        具體細節的物件（例如燈籠——沒提到卻畫出來，等於暗示長者記得
-        有燈籠，這才是真的失真）；(b) 純粹讓畫面有生活感的環境陳設
-        （家具、植栽、雜物、光線氛圍——不代表任何「長者記得的具體
-        事情」，只是場景本身合理該有的背景）。改成只禁止(a)，明講(b)
-        可以自然補充，不用畫得過度乾淨/空曠。
-
-        「不要人物」這句沒有寫死在這裡——呼叫端（_start_scene_after_
-        detail）統一會套用 _strip_people_clauses／_add_no_people_
-        directive，這裡如果自己也寫一次會被 _strip_people_clauses 的
-        關鍵字咬到自己這句話，變成殘缺片段又被後面補一次完整版，兩段
-        撞在一起。只在下游統一加一次，這裡不重複。
+        「不要人物」沒有寫死在這裡：呼叫端（_start_scene_after_detail）
+        統一套用 _strip_people_clauses／_add_no_people_directive，這裡若
+        重複寫一次會被 _strip_people_clauses 的關鍵字咬到自己這句話、變成
+        殘缺片段又被補一次完整版，兩段撞在一起。只在下游統一加一次。
         """
         return (
             "水彩畫風格，1980年代台灣，懷舊溫暖色調，"
@@ -4679,13 +4388,11 @@ class TherapyOrchestrator:
         漏了就重新生成一次（只重試一次）。這個重試分支只在有記憶時觸發，
         跟上面「沒記憶時」的職業/興趣重試分支條件互斥，不會疊加。
 
-        2026-08-14 實測發現：核對基準一開始用 elements+image_prompt 合併
-        文字，出現過假陽性——elements只是短物件名詞清單，從來不會送去
-        Stability AI（只有image_prompt會），曾經出現elements裡列了「剝
-        柚子」「削蘋果」但image_prompt完全沒展開這兩件事的情況，卻因為
-        字詞出現在elements裡就被判定「有涵蓋」，實際生出來的圖根本不會
-        畫這兩個動作。改成只核對 image_prompt 本身，才是真正決定生圖
-        內容的依據。
+        核對基準只用 image_prompt 本身，不合併 elements 一起核對——elements
+        只是短物件名詞清單，從來不會送去 Stability AI（只有image_prompt
+        會），若elements裡列了某個動作但image_prompt完全沒展開，只因字詞
+        出現在elements裡就判定「有涵蓋」會是假陽性，實際生出來的圖根本
+        不會畫那個動作。
         """
         anchor = "hometown"  # 有記憶時錨點不影響結果，memory_section 優先權更高，這裡給預設值即可
         if not memories:
@@ -4745,23 +4452,16 @@ class TherapyOrchestrator:
         從【長者相關回憶】內容獨立抽出「有畫面感的具體細節」清單，只在
         _plan_image 有記憶分支當checklist生成/驗證用。
 
-        2026-08-14 實測發現：清單第一版切得太細——把同一組人物+動作拆成
-        好幾個獨立單詞（例如「阿公在門口泡茶」拆成「門口」「泡茶」兩項，
-        「小孩子提著燈籠到處跑」拆成「小孩子」「提著燈籠」「到處跑」三
-        項），項目數暴增到單場記憶10幾個人共20項，遠超過一張圖能畫的
-        份量，重試一次也補不齊。改成要求每項都合併成一個完整的「人物+
-        動作」或「地點+活動」短語（不能再拆），項目數才會貼近實際能塞進
-        一張圖的量。
+        每項都要求合併成一個完整的「人物+動作」或「地點+活動」短語，不能
+        再拆成獨立單詞（例如「阿公在門口泡茶」不能拆成「門口」「泡茶」
+        兩項）——拆太細會讓項目數暴增，遠超過一張圖能畫的份量，重試一次
+        也補不齊。
 
-        2026-08-14 討論後拿掉「排除主題名稱本身」這條規則——原本是照抄
-        _extract_elements_from_detail 第2點，但那條規則的理由是「主題
-        名稱不適合當5W1H追問錨點」，只對該函式的下游用途（生成追問問題）
-        成立，對這裡的下游用途（image_prompt覆蓋率checklist）不適用。
-        _build_plan_image_prompt 的 anchor 分支本來就明講「【今日主題】
-        本身如果是像節慶這種有清楚視覺意象的詞，可以直接當一個元素
-        使用」，這裡排除反而不一致；而且長者回憶原文常常就直接提到主題
-        本身（例如回憶原文寫「以前中秋節,全家人...」），排除掉等於漏記
-        了長者原話真的提到的內容。
+        不排除主題名稱本身：_build_plan_image_prompt 的 anchor 分支明講
+        「【今日主題】本身如果是像節慶這種有清楚視覺意象的詞，可以直接
+        當一個元素使用」，若這裡排除反而不一致；長者回憶原文也常常直接
+        提到主題本身（例如「以前中秋節，全家人...」），排除掉等於漏記
+        長者原話真的提到的內容。
         """
         memory_text = "\n".join(
             m.get("summary", m.get("text", "")) for m in memories
@@ -4935,8 +4635,7 @@ class TherapyOrchestrator:
                 # 這欄不儲存，但要停止把後面的行接到問題——STEP1格式裡「問題類型：」
                 # 緊接在「問題：」後面，沒有這行會被上面「問題：」設下的 current_field
                 # 一路吃下去，變成「問題類型：STEP1開場」整句被接到問題文字後面，
-                # 汙染送給長者的內容（同 _parse_question_response 既有的防線，這裡原本
-                # 漏掉了，2026-08稽核補上）。
+                # 汙染送給長者的內容（同 _parse_question_response 既有的防線）。
                 current_field = None
             elif current_field == "question":
                 result["question"] = f"{result['question']} {line}".strip()
@@ -4960,208 +4659,52 @@ class TherapyOrchestrator:
         retry_feedback: str = "",
     ) -> dict:
         """
-        target_w／target_sense（2026-08-18稽核，第十六次，使用者提案，已
-        移除）：原本呼叫端（process_response）先用
-        _next_uncovered_w／_relevant_uncovered_senses算好、擇一傳入，直接
-        指定這題要問哪個方向；比對commit版本後發現commit出去的版本沒有
-        這個機制，已改回開放式選角度（見 _STEP1_OPEN_DIRECTION_HINT）。
+        長者看完剛生成的圖、說出第一反應後，依反應類型生成承接語——不在這裡
+        順便生成STEP1開場問題（那由 _regenerate_image_reveal_question 另外
+        呼叫，其 prompt 故意不放【長者看完圖後的第一反應】）：實測發現同一次
+        呼叫會讓問題被反應內容帶偏（例如長者說「院子更大」，問題就問「院子
+        多大」），即使明文禁止也擋不住，讓模型從一開始看不到這段內容比事後
+        靠規則要求更可靠。
 
-        2026-08-18稽核（第十七次，使用者提案，實測後補）：這支函式原本
-        同一次呼叫裡連 STEP1 開場問題一起生成，但實測反覆抓到問題內容
-        被【長者看完圖後的第一反應】帶偏——即使明文禁止把反應內容當
-        錨點/素材（見git歷史），模型還是會在語意上呼應反應內容（例如
-        長者說「我家的院子更大」，問題問「你們家院子多大呢」；或反應
-        完全沒提到植物，問題卻無中生有問「院子裡有哪些植物」），narrative
-        instruction對這顆本地模型不夠可靠。改成結構性拆開：這支函式只
-        負責「判斷依據／分類／承接語」，不再生成問題；STEP1問題改由
-        _regenerate_image_reveal_question 另外呼叫生成——那支函式的
-        user_content本來就不放【長者看完圖後的第一反應】，讓模型從一開始
-        就看不到這段內容，不是靠指令要求它自己不要用，比prompt裡講規則
-        更可靠。呼叫端見 process_response 的 image_reveal 分支說明。
-
-        長者看完剛生成的圖、說出第一反應（回答 _IMAGE_REVEAL_QUESTION）後：
-        依反應類型生成承接語——這一步取代原本 _start_scene_after_detail
-        生圖後立刻問 STEP1 的做法，中間插入「出示圖片＋留白＋依反應承接」
-        這一輪（見本檔頂部流程說明、_start_scene_after_detail）。
-
-        承接語分3類，只有前2類＋「情緒明顯（感動）」會走到這裡——「情緒明顯
-        （不安）」這類已經被 process_response 最前面的 _detect_emotional_
-        trigger／Track B 攔截走了（那條規則本來就是為了先於一切分支處理
-        需要優先安撫的情緒訊號），不會進到這支函式：
+        承接語分3類，只有前兩類＋「情緒明顯（感動）」會走到這裡（「情緒明顯
+        不安」已被 process_response 最前面的 _detect_emotional_trigger 攔截）：
           1. 圖跟長者記得的一致 → 肯定
-          2. 有差異（不管長者有沒有具體講出哪裡不一樣）→ 誠實承認AI示意圖
-             本來就有畫不出來的限制，不說「沒關係」「不重要」這種輕描淡寫
-             的話
-          3. 長者明顯被觸動、感動 → 直接承接這份情緒，不急著轉開話題
+          2. 有差異（不論長者講得籠統或具體）→ 誠實承認AI示意圖畫不出所有
+             細節，不說「沒關係」「不重要」這種輕描淡寫的話
+          3. 長者明顯被觸動、感動 → 直接承接這份情緒，不急著轉開話題；緊接
+             的問題必須延續同一份情緒/同一個人/同一件事，不能跳去中性的
+             事務性細節
 
-        2026-08-18稽核（使用者提案）：分類2原本細分成「還沒具體講出哪裡
-        不一樣（先追問一次）」跟「已經具體講出哪裡不一樣（直接誠實承認
-        限制）」兩類，但實測這兩類經常分不清楚（本函式下面保留的稽核筆記
-        記錄了好幾次「分類2誤判成3」「分類3誤判成2」的具體案例），追問
-        子迴圈本身也連帶出過「問完馬上道謝又問下一題，長者沒機會回答」
-        這類bug（見 process_response 舊版對 image_reveal_deferred 的處理，
-        已移除）。使用者決定把這兩類併成一個「有差異」分類，不管長者講得
-        籠統還是具體，一律用「誠實承認AI示意圖畫不出所有細節」的方式一次
-        回應，不再追問「哪裡不一樣」——問題設計上「少猜一步」比「猜得更
-        準」更可靠。原本的分類3（情緒觸動）改編號為分類3的位置不變，只是
-        少了一個分類，數字順位往前遞補一位（原分類4→新分類3）。
+        分類判斷本地量化基底模型不穩定，改成先列「判斷依據」再輸出「分類」
+        數字、最後才寫「承接語」（跟 _has_usable_detail、_decide_topic_
+        continuation 同一種「證據式核對」取代直接下整體判斷的模式）。
+        「判斷依據」「分類」只用來記錄／除錯，不影響後續流程（承接語才是
+        真正念給長者聽的內容），parser 見 _parse_image_reveal_response。
 
-        承接語之後接的 STEP1 開場問題由呼叫端另外呼叫 _regenerate_image_
-        reveal_question 生成（見上面第十七次稽核說明），不是這支函式的
-        輸出。
+        分類1（肯定/相似）跟分類2（差異）的邊界：判斷要看整句語意，不是
+        逐字比對固定詞表——長者的話是STT轉出來的文字，同音字/漏字隨時可能
+        讓真實輸入沒對到清單裡任何一個詞。比較級講法（更大/更小/比較高/
+        比較矮/沒有那麼X）跟「像/很像/差不多/蠻像/滿像」都算分類1的相似
+        訊號，但同一句話後段若接了具體差異，以差異（分類2）為準。
 
         故意不用 scene_text 當 key（沿用 closing_text/emotional_text 的既有
-        模式）：承接語本來就要直接對長者說話、會用到「你」，用專屬 key 名稱
-        天然繞開只檢查 "scene_text" 這個 key 的「不能用你」誤判。
+        模式）：承接語要直接對長者說話、會用到「你」，用專屬 key 名稱天然
+        繞開只檢查 "scene_text" 的「不能用你」誤判。
 
-        covered_w: 生圖前訪談（Q1/Q2）已經自然涵蓋的W維度（見 _start_scene_
-            after_detail 的 _detect_covered_w 呼叫），純粹當分類任務的
-            背景資訊傳入。2026-08-18稽核（第十七次）：STEP1問題已經拆到
-            _regenerate_image_reveal_question 另外生成，「避開已涵蓋W」
-            這件事現在是那支函式的責任，不是這裡。
+        covered_w／pre_image_detail 只當承接語判斷任務的背景，不影響 STEP1
+        問題生成（已拆到 _regenerate_image_reveal_question）；長者對圖片的
+        反應本身是在評論AI示意圖畫得準不準，不是回憶敘述，不拿去跑
+        _detect_covered_w，避免讓5W1H追蹤失真。
 
-        pre_image_detail: 長者生圖前Q1/Q2訪談的原話。這裡的「承接語」欄位
-            職責仍然是回應長者「對圖片」的反應，不重複去呼應這段訪談內容
-            （那是 _generate_quick_end_recap 專門處理的情境，長者已經在
-            這裡的反應裡表達過意見了，不用疊兩次呼應）。2026-08-18稽核
-            （第十三次，使用者提案）：長者對圖片的反應不再拿去跑
-            _detect_covered_w（見process_response該分支說明）——那句反應
-            是在評論AI示意圖畫得準不準，不是回憶敘述，硬套進5W1H覆蓋度會
-            讓W追蹤失真。第十七次（使用者提案，實測後補）：STEP1問題選
-            錨點/切入角度這件事也拆出去了（見上方説明），這裡的
-            pre_image_detail只用來給承接語判斷任務當背景，不影響問題
-            生成。
+        system_content 跟 _generate_supplement_question（STEP3）一樣載入
+        整份 question_5w1h.txt，任務細節（反應分類）放在 user_content 的
+        【任務】欄位覆蓋——檔案描述的是STEP1/STEP2/STEP3格式，跟這裡實際
+        產出格式不完全一樣沒關係，user_content 自己的【輸出格式】會蓋過去。
 
+        emotion: Kinect 即時偵測的情緒（見 process_response 同名參數），
+            讓分類措辭也能參考長者當下情緒，跟STEP1/STEP2/STEP3/收尾語
+            一致都會注入 _emotion_guidance()。
         retry_feedback: 見 _generate_question 的同名參數說明。
-
-        emotion: Kinect 即時偵測的情緒（見 process_response 的同名參數）。
-            2026-08稽核發現：這支函式先前完全沒有這個參數，長者剛看完AI畫出來
-            的回憶圖說出第一反應，正是全流程裡最需要情緒敏感度的時刻之一（見
-            上面第3類「明顯被圖片觸動、感動」），但語氣指引完全沒用上Kinect
-            訊號，跟STEP1/STEP2/STEP3/收尾語都會注入 _emotion_guidance() 不
-            一致，這裡補上，讓分類的措辭也能參考長者當下的即時情緒。
-
-        2026-08稽核：這裡原本用完全獨立的手寫system_content，沒有載入
-        question_5w1h.txt——代表這裡生成的STEP1開場問題完全沒套用到檔案裡
-        「先選角度、後選錨點」的五步驟流程、五個切入角度優先順序、避免
-        過程步驟陷阱的邏輯。改成跟 _generate_supplement_question（STEP3）
-        一樣載入整份檔案當system_content，任務本身的細節（反應分類）
-        移到user_content的【任務】欄位——這個組合方式STEP3已經驗證過
-        可行：檔案本身描述的是STEP1/STEP2/STEP3各自的格式，跟這裡實際要
-        產出的格式不完全一樣沒關係，user_content自己的【輸出格式】欄位
-        會蓋過去，跟STEP3同一個模式。
-
-        2026-08-16稽核：分類判斷不準，改成先列「判斷依據」再輸出「分類」
-        數字、最後才寫「承接語」（跟本檔其他地方用「證據式核對」取代小模型
-        直接下整體判斷的模式一致，見 _has_usable_detail、_decide_topic_
-        continuation 稽核筆記——8B量化基底模型對整體判斷穩定漏判/誤判，
-        改成逐項列證據後才穩定下來）。
-        原本分類完全隱含在承接語的措辭裡，沒有獨立欄位，出錯時無從得知
-        模型是分類錯還是措辭沒依照分類寫；現在拆出可解析、可記錄的欄位，
-        且強迫模型先講出線索再下結論，同一次呼叫內完成，不額外增加一次
-        LLM 呼叫延遲。「判斷依據」「分類」目前只用來記錄／除錯，不影響
-        後續流程（承接語才是真正念給長者聽的內容），parser 見
-        _parse_image_reveal_response。
-
-        2026-08-16稽核（第二次，實測後補）：本機基底模型（未經DPO）實測
-        6例，只有1例真的輸出「判斷依據／分類」這兩個新欄位，其餘5例都
-        跳過、改用模型自己習慣的「思考：」自由格式開頭——代表它有先推理
-        的傾向，但沒對齊我們要的欄位名稱；還有一例把範例的例句整句原封
-        不動照抄，違反下面的「不可照抄」規則。补上一組完整的【範例】區塊
-        （用跟本次任務無關的情境示範判斷依據/分類/承接語/問題四欄位一起
-        長什麼樣子），具體示範通常比純文字規則更能提高本地小模型的格式
-        遵循度；範例情境刻意跟任何真實場景不同，降低被照抄整句的風險。
-
-        2026-08-16稽核（第三次，實測後補）：長者說「還好」這種簡短/籠統的
-        反應時，模型會生成「喔，『還好』是嗎，你記得的畫面跟這張有點不同，
-        可以多說說看嗎。」這種把長者原話用引號複述、後面接反問語尾的句子
-        ——中文語境下這樣講聽起來像是在調侃/質疑長者，不是溫暖承接。追查
-        後發現源頭是【範例】1原本示範的承接語就是「喔，是嗎，...」這個
-        開頭，模型照樣套用、把長者的原話填進引號裡。改掉範例1的措辭，並
-        在【範例】區塊後面明文加一條規則禁止這種「引號複述＋反問語尾」的
-        寫法。
-
-        2026-08-16稽核（第四次，實測後補）：長者說「我覺得滿像當時的場景
-        的」（明確的正面相似訊號）被誤判成「有差異」，模型自己寫的「判斷
-        依據」卻是「沒有提到具體差異或情緒線索」——推理本身是對的，結論卻
-        選錯。追查發現分類1原本的線索範例只列了「對/沒錯/就是這樣」，完全
-        沒有「像/很像/差不多」這類同樣是肯定訊號的詞，容易被誤歸進「有
-        差異」那類。補上「像/很像/差不多」到分類1的線索範例跟例句，並明文
-        加一句話區分「像」（肯定，分類1）跟「不像」（差異，分類2）意思
-        完全相反，不要只靠字面出現「像」這個字就聯想到分類2。
-
-        2026-08-16稽核（第五次）：分類1補上的例句原本開頭是「對，就是這種
-        感覺」，這句話等於把長者剛才自己講的肯定詞（「對」「就是這樣」）
-        原句複述回去，聽起來像鸚鵡學舌，不是真的在往下接話——長者都已經
-        自己確認過了，不需要AI再附和一次同樣的話。改成不開頭複述肯定詞，
-        直接用自己的話表達溫暖呼應。
-
-        2026-08-17稽核（第六次，實測後補）：長者說「我覺得蠻像我印象中的
-        樣子」（明確肯定訊號）連續發生兩種錯誤：(1) 第一次呼叫被 ResponseGuard
-        攔下，「判斷依據」欄位引用了長者沒說過的話「這個好像跟我印象不太
-        一樣」——這句話跟【範例】1原本示範的長者反應文字一字不差，本地
-        模型很可能是被範例裡也出現「印象」兩個字錨定、直接把範例內容當這次
-        長者說的話照抄，即使規則已經明講不可以照抄範例。把範例1的措辭改掉
-        （拿掉「印象」，改用「咦，好像不太一樣耶」），降低跟真實輸入撞詞的
-        機率。(2) 重生成後正確引用了原話，卻還是判成「有差異」，判斷依據寫
-        「沒有講出是哪裡不同」——上面第四次稽核補的清單只列了「像/很像/差
-        不多」，沒有「蠻像」「滿像」，模型沒把這兩個詞跟已知的肯定詞歸為同
-        一類。補上「蠻像」「滿像」到清單跟分類1說明裡。
-
-        但只補列舉的詞治標不治本——長者的話是STT轉出來的文字，不保證
-        百分百正確，同音字誤植/漏字隨時可能讓真實輸入剛好沒對到清單上任何
-        一個詞（例如這次「蠻像」剛好沒列到），照這種模式每次都得等實測抓到
-        新詞才補一個，補不完。額外加一條通用規則：明講清單只是舉例、不是
-        窮舉，要求模型看整句語意（肯定/相似 vs 差異/不同）判斷，不要求
-        逐字比對到清單上的詞才算數，同時提醒STT可能有同音錯字，觀念上更
-        貼近之後遇到清單沒列到的新詞或錯字時也不該誤判。
-
-        2026-08-17稽核（第七次，實測後補）：長者說「很有當時烤肉的氛圍」，
-        正確判成分類3（情緒觸動），承接語也寫得很好「聽你這樣說，感覺你跟
-        家人一起烤肉的回憶真的很溫暖」——但緊接著的STEP1問題卻是「你們通常
-        在烤什麼肉呢」，從溫暖的情感語氣突然掉回中性的事務性細節，聽起來
-        兩句像在講不同的事，跟分類3「不急著轉開話題」的原則自相矛盾。追查
-        發現問題出在範例本身：【範例】2（阿嬤想念情境）的問題原本就是「阿嬤
-        常聽的收音機節目是什麼」，也是同一種「情緒承接→突然問中性細節」的
-        落差，模型等於是照著範例的模式走。補上明文規則（分類3的問題不能跳去
-        中性事務性細節，要順著同一份情緒/同一個人/同一件事繼續問），並把
-        範例2的問題改成延續情緒的版本，源頭示範對了，才不會一直讓模型有
-        「反正範例都這樣寫」的藉口。
-
-        2026-08-17稽核（第九次，實測後補）：長者說「很像當時的場景，但以前
-        我們家不會有那麼多人一起烤肉」——同一句話裡「像」（分類1線索）跟
-        具體差異「人數不對」（分類2線索）同時出現，模型只吃到開頭的「像」，
-        判成分類1，完全沒接住後半句的具體修正，長者這句話等於白說。追查
-        發現這是「兩類線索混在同一句話裡該以哪個為準」這個情境目前完全沒
-        規則涵蓋——不是清單漏詞，是根本沒教過模型「開頭有肯定詞、後面接
-        具體差異」時該怎麼判。補上一條規則，要求完整讀完整句再判斷，且
-        明講「先肯定後接具體差異」時以後半段的具體差異（分類2）為準。
-
-        2026-08-18稽核（第十次，使用者提案）：上面第八次稽核（已移除，原本
-        在講「分類3判斷依據沒抓到桌椅家具這類物品/擺設款式的差異線索」）
-        本質上是「分類2跟分類3該用哪個」的細節調校——這類分類2/3的邊界
-        案例反覆出現（本函式改版前光是這份docstring就累積了好幾次類似的
-        來回修正），使用者最後判斷：與其持續調校模型分不清楚的兩個分類，
-        不如直接把分類2、3合併成一個「有差異」分類，見上方2026-08-18稽核
-        說明。舊版分類3的線索範例（位置、桌椅家具、物品款式等）併入下面
-        新版分類2的說明裡，不再區分「有沒有具體講出哪裡不一樣」。
-
-        2026-08-18稽核（第十一次，使用者實測回報）：合併後實測案例——長者
-        說「我家的院子更大」，正確答案是分類2（拿AI畫的院子跟自己記得的
-        比大小，明確在講差異），卻被判成分類1，判斷依據寫「沒有提到圖片
-        跟記憶有何明顯差異或落差」。追查發現這句話沒有踩到「不像/不一樣」
-        任何一個字面詞，而上面所有分類2線索的說明跟例句都只圍繞「不X」
-        這種否定句型（不像、不一樣、有點不同），完全沒有教過模型「更大/
-        更小」這類比較級講法本身就是在指出落差，即使沒有「不」這個字。
-        這跟第四次稽核（漏列「蠻像」到分類1）、第八次稽核（漏列桌椅家具
-        到分類3）是同一種模式——清單只列了目前想到的詞，模型過度依賴
-        字面比對、沒有真的類推到同一類別的其他講法。補上比較級差異詞
-        （更大/更小/更多/更少/比較高/比較矮/沒有那麼X）到線索清單跟分類2
-        說明裡，並明講這類講法不需要出現「不」字就成立。這個bug跟
-        response_guard.py 的 classification_lacks_discrepancy_evidence
-        會漏掉的情況是同一個根源（只認 _RESEMBLANCE_NEGATION_RE 那組
-        窄範圍否定詞）——但那支函式已經retired（見該檔案2026-08-18稽核
-        說明），這裡只需要處理prompt本身教得不夠全這一層。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -5304,23 +4847,15 @@ class TherapyOrchestrator:
         """
         STEP1 開場問題的生成函式，_handle_image_reveal_answer 拿到
         _generate_image_reveal_reaction 的承接語／分類後，另外呼叫這支
-        函式生成接下來要問的問題（見該函式 docstring 第十七次稽核說明）。
-
-        2026-08-18稽核（第十七次，使用者提案，實測後補）：這支函式原本只
-        是 guarded_generate 的 question_only_retry_fn，專門處理「問題那半
-        段違規、但承接語已經通過所有檢查」時只重生問題本身的情境；現在
-        改成 process_response 直接呼叫它當 STEP1 問題的正式生成函式——
-        關鍵理由是這支函式的 user_content 本來就不放【長者看完圖後的第
-        一反應】，模型從一開始就看不到這段內容，結構上保證問題不會被
-        長者對圖片的評論帶偏（實測案例：長者說「我家的院子更大」，問題
-        問「你們家院子多大呢」；或反應完全沒提到植物，問題卻無中生有問
-        「院子裡有哪些植物」）——這比在 _generate_image_reveal_reaction
-        同一次呼叫裡用文字規則要求模型自己不要參考來得可靠，跟這份檔案
-        其他好幾處「結構性防呆優於narrative instruction」的結論一致。
+        函式生成接下來要問的問題。這支函式的 user_content 故意不放【長者
+        看完圖後的第一反應】，模型從一開始就看不到這段內容，結構上保證
+        問題不會被長者對圖片的評論帶偏（例如長者說「我家的院子更大」，
+        問題卻問「你們家院子多大呢」）——比在同一次呼叫裡用文字規則要求
+        模型自己不要參考來得可靠。
 
         elder_response 參數仍保留（呼叫端傳的是跟 _generate_image_reveal_
-        reaction 相同的一組參數，方便呼叫端維護），但這支函式的
-        user_content 故意不使用它——這正是這次修法的重點，不是疏漏。
+        reaction 相同的一組參數，方便維護），但這支函式的 user_content
+        故意不使用它——這是刻意設計，不是疏漏。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -5385,12 +4920,10 @@ class TherapyOrchestrator:
                 current_field = None
             elif line.startswith("問題類型："):
                 # 這欄不儲存，但要停止把後面的行接到問題——這支函式的prompt
-                # 根本沒有要求輸出這個欄位，但本地模型仍會從其他prompt格式
-                # （STEP1/STEP3都有「問題類型：」欄位）沿用這個習慣自己加一行，
-                # 沒有這個guard會被上面「問題：」設下的current_field一路吃下去，
-                # 變成「問題本文 問題類型：STEP3補問」整句被接到問題文字後面、
-                # 送去給長者聽（2026-08-17稽核，第五次，實測後補，跟
-                # _parse_step1_response 已修過的同一種洩漏）。
+                # 沒有要求輸出這個欄位，但本地模型仍會沿用其他prompt格式
+                # （STEP1/STEP3都有「問題類型：」欄位）的習慣自己加一行，
+                # 沒有這個guard會被「問題：」設下的current_field一路吃下去，
+                # 把「問題類型：」也送去給長者聽。
                 current_field = None
             elif current_field == "question":
                 result["question"] = f"{result['question']} {line}".strip()
@@ -5430,16 +4963,13 @@ class TherapyOrchestrator:
         covered_w: 同 _generate_image_reveal_reaction 的用途，避免STEP1
         問題跟Q1/Q2已經自然涵蓋的W維度重複。
 
-        emotion: 見 _generate_image_reveal_reaction 的同名參數說明——2026-08
-        稽核發現這裡原本也完全沒有這個參數，一併補上，跟其他生成函式一致。
+        emotion: 見 _generate_image_reveal_reaction 的同名參數說明，跟其他
+        生成函式一致都會注入 _emotion_guidance()。
 
         輸出格式跟 _generate_image_reveal_reaction 相同（承接語／問題／
-        本回合已涵蓋的W），沿用同一支 parser。
-
-        2026-08稽核：理由同 _generate_image_reveal_reaction 那份稽核筆記——
-        原本這裡也是完全獨立的手寫system_content，沒套用question_5w1h.txt
-        裡「先選角度、後選錨點」的邏輯，改成一致的做法：載入整份檔案當
-        system_content，任務細節移到user_content的【任務】欄位。
+        本回合已涵蓋的W），沿用同一支 parser；system_content 同樣載入整份
+        question_5w1h.txt，任務細節移到user_content的【任務】欄位，套用
+        檔案裡「先選角度、後選錨點」的邏輯。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -5501,30 +5031,24 @@ class TherapyOrchestrator:
         解析 _generate_image_reveal_reaction／_generate_quick_end_recap 的
         輸出（判斷依據＋分類＋承接語＋問題＋涵蓋的W）。
 
-        judgment_evidence/classification 是2026-08-16新增的除錯／記錄欄位
-        （見 _generate_image_reveal_reaction 該次稽核說明），只有前者的輸出
-        會有這兩個欄位；_generate_quick_end_recap 沒有分類任務、不會產生
-        這兩個欄位，共用這支 parser 時保持空字串即可，不影響它原本的行為。
+        judgment_evidence/classification 是除錯／記錄欄位，只有
+        _generate_image_reveal_reaction 的輸出會有這兩個欄位；
+        _generate_quick_end_recap 沒有分類任務、不會產生這兩個欄位，共用
+        這支 parser 時保持空字串即可，不影響它原本的行為。
         classification 只取開頭的1個數字字元，LLM若多寫了說明文字一併丟棄，
         找不到數字就保留原始字串以便從log看出是哪裡解析失敗。
 
-        expects_question: 2026-08-18稽核（實測後補，使用者回報）：
-        _generate_image_reveal_reaction 自從第十七次稽核（STEP1問題拆到
-        _regenerate_image_reveal_question 另外生成）之後，輸出格式就只剩
-        判斷依據／分類／承接語，prompt根本沒有要求「問題：」這個欄位——但
-        下面「找不到問題欄位就把整段raw文字塞進question」這條保底邏輯是
-        給 _generate_quick_end_recap（輸出格式真的有「問題：」）設計的，
-        對 _generate_image_reveal_reaction 來說這個保底條件每次都成立，
-        等於每次呼叫都把「判斷依據＋分類＋承接語」三行全部當成一句問題，
-        送進 guarded_generate 的 check_format_rules 幾乎必然觸發too_long，
-        3次重試全部失敗、永遠退回空白 reaction_text，讓分類機制實際上從沒
-        真正生效過（呼叫端 _handle_image_reveal_answer 會誤以為連續3次
-        違規、改用第二層 pre_image_detail 保底，長者對圖片的真實反應被
-        整個忽略）。呼叫端已經不讀這裡的 question（STEP1問題另外呼叫
-        _regenerate_image_reveal_question 生成），這裡改成 expects_question
-        =False 時直接讓 question 保持空字串，不觸發這條保底、也不會被
-        guarded_generate 誤判成過長的問題。_generate_quick_end_recap 呼叫
-        時仍傳 True，維持原本行為不變。
+        expects_question: _generate_image_reveal_reaction 的輸出格式只剩
+        判斷依據／分類／承接語，prompt沒有要求「問題：」欄位——但下面「找
+        不到問題欄位就把整段raw文字塞進question」這條保底邏輯是給
+        _generate_quick_end_recap（輸出格式真的有「問題：」）設計的，對
+        _generate_image_reveal_reaction 來說這個保底條件每次都成立，會把
+        「判斷依據＋分類＋承接語」三行全部當成一句問題，送進
+        guarded_generate 幾乎必然觸發too_long，讓分類機制實際上從沒真正
+        生效過。呼叫端已經不讀這裡的 question（STEP1問題另外呼叫
+        _regenerate_image_reveal_question 生成），expects_question=False
+        時直接讓 question 保持空字串，不觸發這條保底；
+        _generate_quick_end_recap 呼叫時仍傳 True，維持原本行為。
         """
         result: dict = {
             "judgment_evidence": "", "classification": "",
@@ -5612,56 +5136,24 @@ class TherapyOrchestrator:
         Returns: {"scene_text": str, "question": str}
 
         retry_feedback: 見 _generate_question 的同名參數說明。
+        pre_image_detail: 長者生圖前Q1/Q2訪談的原話，錨點優先序次於「長者
+            這一輪剛提到的人事物」、高於畫面元素——長者自己說過的話都比AI
+            選的畫面元素更貼近他真正想聊的東西。
 
-        pre_image_detail: 長者生圖前Q1/Q2訪談的原話。2026-08新增：question_5w1h.txt
-        【STEP2自由追問／STEP3補問：生成流程】步驟3的錨點優先順序已經把這個
-        列為次於「長者這一輪剛提到的人事物」的第二選擇（比畫面元素優先）——
-        長者自己說過的話，不管是這一輪還是稍早，都比AI選的畫面元素更貼近長者
-        真正想聊的東西。這裡把它傳進去，才有東西可以套用那條規則。
+        【任務】除了「把問題帶到某個W維度」，也要明講可以用感官記憶切入、
+        依主題挑貼近的感官（否則本地模型幾乎不會主動用五感角度提問），並
+        傳入 covered_senses／topic_senses（這回合已涵蓋 vs 主題相關但還沒
+        問過的感官）具體點名給模型選，避免同一個感官被重複問、其他相關
+        感官卻一次都沒問到。附一個具體範例示範素材很薄時（例如「就是豆沙
+        餡」）承接語要寫直述句、問題才能用「後來呢？」這種延續句——不能靠
+        一句提醒就要求模型自己分清楚兩個欄位的語感。
 
-        2026-08-16稽核：實測發現感官記憶（question_5w1h.txt 五個切入角度裡的
-        第③種）幾乎從沒被問到過——問題出在這裡的【任務】只講「把問題帶到某個
-        W維度」，完全沒提到感官記憶這個選項；question_5w1h.txt 雖然整份當
-        system_content 載入、裡面確實有五感的詳細規則，但埋在一大份規則庫裡，
-        跟每次呼叫都會直接看到、具體可照做的 user_content 任務指示相比分量
-        差很多，本地基底模型幾乎不會自己回頭套用。補上一句明講可以用感官記憶
-        切入、依主題挑貼近的感官，讓這個選項具體出現在任務指示裡。
-
-        covered_senses／topic_senses: 2026-08-17稽核（使用者提案）：上面
-        那條只解決「模型會不會想到用感官切入」，沒解決「用哪個感官」——沒有
-        追蹤的話，同一個感官可能被連問好幾次，主題其實還有其他相關感官卻
-        一次都沒問到，跟 covered_w 沒有追蹤時「同一個W被重複問」是同一種
-        問題。這裡傳進這回合已經自然涵蓋的感官清單，跟 topic_senses（round
-        開場用 _classify_topic_senses 對 today_topic 分類好、存進 state 的
-        結果，見該函式說明）對照，算出「這個主題相關、但這回合還沒問過」的
-        感官，具體點名給模型當選項，取代原本「依主題挑貼近的感官」這種要
-        模型自己臨時判斷的籠統講法。
-
-        2026-08-17稽核（實測後補）：長者這輪答得很薄（例如「就是豆沙餡」）時，
-        模型把承接語寫成了問句（「吃月餅的時候，大家都在聊些什麼？」），連續
-        4次重試都生出同一句、最後退回保底句。追查發現「問題」欄位允許在長者
-        滔滔不絕時改用「後來呢？」這種延續句，緊接著才提醒一句「承接語不受
-        這條影響」——這句提醒太單薄，加上這支函式完全沒有範例可以模仿（跟
-        _generate_image_reveal_reaction 那邊「承接語不能是問句」有具體範例
-        撐著不一樣），素材薄的時候模型容易把兩個欄位的語感混在一起。補上一個
-        具體例子，示範素材很薄時承接語（直述句）跟問題（可以是延續句）該怎麼
-        分別寫。
-
-        round_qa_log（2026-08-18稽核，第四次，使用者提案，已移除）：這裡
-        原本會傳入「這場療程目前為止已經聊過的內容」整份Q&A摘要，出發點是
-        擋跨輪內容重複（見2026-08-17那三次稽核筆記，git歷史可查），但實測
-        使用者回報加了之後承接語／問題品質明顯變差——這份摘要會隨對話一路
-        累積，把user_content撐得越來越長，本地量化基底模型對長prompt的
-        指令遵循本來就不穩定，摘要越長越稀釋掉其他更重要的規則（例如
-        「承接語要具體呼應長者剛才說的話」這條）。改成完全不傳這份累積
-        摘要，只靠 elder_response（長者剛才這一句，本來就有傳）當生成材料。
-
-        2026-08-18稽核（第十次，使用者提案）：拿掉round_qa_log之後一度改成
-        生成後事後核對＋重打（_question_repeats_previous等函式，比對新
-        問題跟 state["last_question_text"] 這一題），但比對 commit 版本後
-        發現：commit 出去的版本沒有任何生成後核對／重打，這幾輪加上去的
-        機制反而疊出品質變差、答非所問、重打後結果原地打轉等副作用，已經
-        整批拿掉，回到commit版本「生成一次就直接用」的簡單做法。
+        round_qa_log（已移除）：曾經傳入整場療程目前為止的Q&A摘要來擋跨輪
+        內容重複，但摘要隨對話累積、把user_content越撐越長，稀釋掉更重要
+        的規則（例如「承接語要具體呼應長者剛才說的話」），實測承接語／問題
+        品質反而變差，已拿掉，只靠 elder_response（長者剛才這一句）當生成
+        材料；後續嘗試的生成後核對＋重打機制也一併移除，回到「生成一次就
+        直接用」。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -5686,16 +5178,13 @@ class TherapyOrchestrator:
         uncovered = [w for w in _W_ORDER if w not in covered_w and w not in skipped_w]
         uncovered_str = "、".join(uncovered) if uncovered else "無（已全部涵蓋）"
 
-        # 2026-08-17稽核（實測後補）：elder_response 是空字串或_NO_RESPONSE_
-        # MARKER時（長者沉默沒回應，最常見是round2開場沿用round1收尾時的
-        # 最後一句話，但那句話剛好長者沒回答；manual_test_full_round.py按
-        # Enter沒輸入時傳的是_NO_RESPONSE_MARKER這個字串，不是真的空字串，
-        # 兩種都要當沉默處理），原本直接印「長者剛才說：「」」或「長者剛才
-        # 說：「（長者未回應）」」，模型看到沒東西可回應、但下面【長者生圖前
-        # 分享的內容】還是照常列出，就把那段稍早已經聊過的內容包裝成「原來
-        # 是跟家人一起烤肉，真懷念」這種好像剛才才提到的新鮮反應——長者會
-        # 覺得AI在複誦已經講過的舊內容，等於沒真的在聽。改成明確告訴模型這
-        # 是沉默、不能假裝在回應一句沒被說出口的話。
+        # elder_response 是空字串或_NO_RESPONSE_MARKER時代表長者沉默沒回應
+        # （manual_test_full_round.py 按 Enter 沒輸入時傳的是_NO_RESPONSE_
+        # MARKER這個字串，不是真的空字串，兩種都要當沉默處理）——若直接印
+        # 「長者剛才說：「」」，模型看到沒東西可回應、但下面【長者生圖前
+        # 分享的內容】還是照常列出，就會把那段稍早已經聊過的內容包裝成
+        # 好像剛才才提到的新鮮反應，長者會覺得AI在複誦舊內容、沒真的在
+        # 聽。明確告訴模型這是沉默、不能假裝在回應一句沒被說出口的話。
         _elder_said_something = (
             bool(elder_response.strip())
             and elder_response.strip() != _NO_RESPONSE_MARKER
@@ -5780,7 +5269,8 @@ class TherapyOrchestrator:
             f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
             f"承接語：（1-2句，30字以內）\n"
-            f"問題：（≤25字）"
+            f"問題：（≤25字）\n"
+            f"{_ANCHOR_FIELD_SPEC}"
         )
 
         messages = [
@@ -5812,66 +5302,23 @@ class TherapyOrchestrator:
         retry_feedback: 見 _generate_question 的同名參數說明。
         elder_response: 長者最近說的話——STEP3觸發時（can_continue=False，見
             _decide_topic_continuation／_is_quick_end）長者的回應通常很短或
-            話題已經自然結束，這一步的工作是「收一下、換方向」，不是「順著
-            聊下去」，跟STEP2的自由追問性質不同（2026-08稽核，問題設計規則.pdf
-            原始設計STEP3是「結合圖片元素，從還沒涵蓋的W切入」，不是接話續聊）。
-            2026-08改版把這裡的輸出欄位從「場景文字」改成「承接語」，因為它
-            實際要做的事更接近Track C的承接語（呼應長者剛才的話、自然轉場），
-            不是STEP1那種單純描述畫面的場景文字；若不知道長者剛才說了什麼，
-            退回單純自然轉場，不用憑空硬描述畫面（2026-07 使用者回饋發現這裡
-            漏了 elder_response，_next_step_or_end 手上明明有這個值卻沒往下傳，
-            當時的修法還在用「場景文字」框架，這次改版一併調整措辭）。
-            預設空字串是為了兼容沒有對應到單一長者回應、本來就沒有值可傳的呼叫端。
-        pre_image_detail: 見 _generate_open_followup 的同名參數說明——理由相同。
-        round_qa_log（已移除）：見 _generate_open_followup 的同名參數說明——
-            理由相同，一併拿掉。
+            話題已經自然結束，這一步要做的是「收一下、換方向」，不是「順著
+            聊下去」，跟STEP2的自由追問性質不同。輸出欄位用「承接語」而非
+            「場景文字」，因為實際要做的事更接近Track C的承接語（呼應長者
+            剛才的話、自然轉場）；若不知道長者剛才說了什麼，退回單純自然
+            轉場，不用憑空硬描述畫面。
+        pre_image_detail／covered_senses／topic_senses: 見 _generate_open_
+            followup 的同名參數說明，理由相同。
 
-        2026-08-16稽核：跟 _generate_open_followup 同一個問題——原本【任務】
-        只丟 _W_HINT[target_w] 這種字面事實提示（哪裡/誰/什麼事），完全沒
-        提到感官記憶這個切入角度，實測感官細節的問題幾乎從沒被問出來過。
-        補上一句明講可以用感官記憶切入，說明見 _generate_open_followup 的
-        同一則稽核筆記。
+        【任務】除了 _W_HINT[target_w] 的字面提示，也要提到可以用感官記憶
+        切入（否則感官細節幾乎不會被問到），並附上「承接語必須是直述句、
+        不能寫成問句」的具體範例（素材薄時模型容易把承接語跟問題的語感
+        混在一起），同時禁止問【已涵蓋的W維度】清單裡的方向。
 
-        covered_senses／topic_senses: 見 _generate_open_followup 的同名
-        參數說明——理由相同，2026-08-17（第二次）一併接上。
-
-        2026-08-18稽核（使用者提案，實測後補）：實測發現這裡連續3次重試
-        都被 ResponseGuard 判定「承接語被寫成問句」（例如「那時候，烤肉的
-        時候，大家都在聊些什麼呢？」），退回保底句還不夠、又因為問到已
-        涵蓋的W觸發了另一輪重打——使用者反映「重試太久了」，追查發現這裡
-        跟 _generate_open_followup 2026-08-17稽核筆記記錄的是同一個根本
-        原因：這支函式的【任務】只用一句話交代承接語要求，完全沒有範例
-        可以模仿，本地弱模型在素材薄、不知道該怎麼收的時候，容易把承接語
-        寫成跟「問題」欄位語感混在一起的問句。補上跟 _generate_open_
-        followup 同一組「承接語必須是直述句，不能因為問題可以用延續句就
-        跟著寫成問句」的具體範例，從源頭降低命中 scene_text_is_a_question
-        規則的機率，而不是每次都靠多重試幾次硬過。同時補上「不能問【已
-        涵蓋的W維度】清單裡的方向」這條明文規則，降低問到已涵蓋維度、
-        觸發 _ask_supplement 第二輪重打的機率——單純問偏到「還沒問過的
-        其他維度」仍然不算浪費、不受這條規則影響（見 _ask_supplement
-        docstring 的區分），這裡只針對「問到已涵蓋」這個真正浪費補問
-        名額的情況。
-
-        2026-08-18稽核（第二次，使用者提案，實測後補）：同一次實測還抓到
-        兩個問題，追根究柢是同一個原因。(1) 使用者問「思考有納入長者上個
-        問題的回答嗎」——原本「思考：」欄位的格式說明只要求「主題判斷」
-        跟「切入角度」兩段，完全沒有要求模型先確認【長者剛才說的話】裡
-        講了什麼，導致模型的「切入角度」常常直接跳去參考【眼前畫面元素】
-        或【長者生圖前分享的內容】這類較早、較穩定的素材，把長者剛剛才
-        講的內容晾在一邊沒真的讀——即使下面「承接語」欄位本身已經有
-        「必須具體回應【長者剛才說的話】」的規則，但思考階段沒有錨定，
-        等寫到承接語時「這題要問什麼」早就在思考階段定案了，那條規則
-        形同虛設。(2) 使用者抓到承接語把長者寫成第三人稱「長者剛才提到
-        跟家人一起在院子烤肉。」，不是直接對長者說話的「你剛才提到...」
-        ——這正是(1)的具體症狀：模型在「思考」裡用第三人稱描述長者的
-        情況（因為那個階段的語氣更接近旁白/摘要，不是真的要念給長者聽），
-        承接語又直接沿用了思考階段的措辭跟人稱，把旁白語氣一併帶了出來。
-        改成「思考：」欄位多加一個必答的第一步「長者剛才說了什麼」，強迫
-        模型先摘要一次【長者剛才說的話】，切入角度優先延續這一步找到的
-        重點；同時在【任務】跟「承接語」格式說明裡都明講稱呼一律用「你」、
-        不能用「長者」這個第三人稱名詞。另外在 response_guard.py 新增
-        third_person_elder_wording 規則（見該檔說明），不只讓模型自己
-        避免、也有事後防護攔截，跟「您」（nin_wording）同一種處理方式。
+        「思考：」欄位要求先摘要一次【長者剛才說的話】才能選錨點/切入角度，
+        且承接語稱呼一律用「你」、不能用「長者」這個第三人稱——避免模型
+        思考階段用旁白語氣描述長者、承接語又沿用同樣的人稱與語氣（事後
+        防護見 response_guard.py 的 third_person_elder_wording）。
         """
         system_content = _load_prompt("question_5w1h.txt") or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
@@ -5954,6 +5401,7 @@ class TherapyOrchestrator:
             f"的話）\n"
             f"問題：（≤25字，開放式，開頭要有具體錨點，畫面物件、長者提到的具體"
             f"人事物、或「那個時候」回指情境皆可）\n"
+            f"{_ANCHOR_FIELD_SPEC}\n"
             f"問題類型：STEP3補問\n"
             f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個W維度名稱本身，"
             f"不要自創其他詞彙、不要加括號說明）"
@@ -5981,7 +5429,7 @@ class TherapyOrchestrator:
         承接語本來的功能就是幫長者建立畫面感、順著話接下去，保底時也不該把這個
         功能整個丟掉。
         """
-        result: dict = {"scene_text": "", "question": "", "covered_w": []}
+        result: dict = {"scene_text": "", "question": "", "covered_w": [], "anchor": ""}
         thinking = ""
         # current_field 追蹤「目前正在填哪個欄位」，讓後續沒有標籤的行可以接到
         # 上一個標籤欄位——本地模型偶爾會把「問題：」單獨放一行、實際問題文字
@@ -6000,6 +5448,9 @@ class TherapyOrchestrator:
                 # 被念給長者聽，只印出來方便觀察模型的選題邏輯、調整 prompt。
                 thinking = line[len("思考："):].strip()
                 current_field = "thinking"
+            elif line.startswith("錨點："):
+                result["anchor"] = line[len("錨點："):].strip()
+                current_field = "anchor"
             elif line.startswith("承接語："):
                 # 這支函式現在只服務STEP3補問（見下方docstring），STEP3的prompt
                 # 只會要求輸出「承接語：」，不會有「場景文字：」這個標籤——
@@ -6033,6 +5484,8 @@ class TherapyOrchestrator:
                 result["question"] = f"{result['question']} {line}".strip()
             elif current_field == "thinking":
                 thinking = f"{thinking} {line}".strip()
+            elif current_field == "anchor":
+                result["anchor"] = f"{result['anchor']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
         for key in ("scene_text", "question"):
@@ -6056,8 +5509,8 @@ class TherapyOrchestrator:
         return result
 
     def _parse_track_c_response(self, raw: str, scene_elements: list[str] | None = None) -> dict:
-        """解析 Track C（承接語 + 問題）的輸出。"""
-        result: dict = {"scene_text": "", "question": ""}
+        """解析 Track C（承接語 + 問題 + 錨點）的輸出。"""
+        result: dict = {"scene_text": "", "question": "", "anchor": ""}
         # 同 _parse_question_response：追蹤目前正在填哪個欄位，處理標籤跟內容
         # 分兩行的情況（見該函式的說明）。
         current_field: str | None = None
@@ -6071,6 +5524,9 @@ class TherapyOrchestrator:
             elif line.startswith("問題："):
                 result["question"] = line[len("問題："):].strip()
                 current_field = "question"
+            elif line.startswith("錨點："):
+                result["anchor"] = line[len("錨點："):].strip()
+                current_field = "anchor"
             elif line.startswith("問題類型："):
                 # 這欄不儲存，同 _parse_question_only_response／_parse_image_
                 # reveal_response 的guard說明——這支函式的prompt也沒有要求
@@ -6081,6 +5537,8 @@ class TherapyOrchestrator:
                 result["scene_text"] = f"{result['scene_text']} {line}".strip()
             elif current_field == "question":
                 result["question"] = f"{result['question']} {line}".strip()
+            elif current_field == "anchor":
+                result["anchor"] = f"{result['anchor']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
         for key in ("scene_text", "question"):
@@ -6100,19 +5558,14 @@ class TherapyOrchestrator:
         """
         從 LLM 回應中萃取 JSON。
 
-        2026-08-18稽核（實測後補）：這支函式原本解析失敗時 raise ValueError，
-        但全檔 12 個呼叫點（_detect_covered_w／_detect_covered_senses／
-        _has_usable_detail／_plan_image 等）沒有一個接住這個例外——本地
-        量化基底模型偶爾會在輸出中途被截斷（實測案例：checks 陣列生到一半，
-        最後一個物件的 "dimension" 欄位值都還沒寫完就結束），這種截斷輸出
-        連「找最後一個}」的救援都救不回來（本來就沒有結尾的}），例外會一路
-        往上炸穿 process_response，整個療程回合當場中斷、長者連下一句話都
-        收不到。這幾個呼叫點全部是「偵測/核對」性質的輔助判斷（例如「這句
-        話有沒有涵蓋某個W維度」），不是長者會直接聽到的生成內容，判斷不出來
-        時退回「這次什麼都沒偵測到」（呼叫端的 .get(key, []) 預設值本來就是
-        安全的保守解讀）遠比讓整個回合當機更好。改成解析失敗時印警告、回傳
-        空dict，不再往上炸例外——呼叫端沒有一個是直接索引欄位、全部都用
-        .get(key, 預設值) 讀取，安全接住不需要逐一修改呼叫端。
+        解析失敗時印警告、回傳空dict，不往上炸例外——本地量化基底模型
+        偶爾會在輸出中途被截斷（例如陣列生到一半就結束），連「找最後一個
+        }」的救援都救不回來，若讓例外一路往上炸穿 process_response，整個
+        療程回合會當場中斷、長者連下一句話都收不到。全檔呼叫點
+        （_detect_covered_w／_detect_covered_senses／_has_usable_detail／
+        _plan_image 等）全部是「偵測/核對」性質的輔助判斷，不是長者會
+        直接聽到的生成內容，且都用 .get(key, 預設值) 讀取，判斷不出來時
+        退回「這次什麼都沒偵測到」遠比讓整個回合當機更好。
         """
         text = text.strip()
         if text.startswith("```"):

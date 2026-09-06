@@ -40,6 +40,7 @@ public class KinectCalibrationManager : MonoBehaviour
     private List<float> lookingAwayBuffer = new List<float>();
     private List<float> mouthMovedBuffer = new List<float>();
     private List<float> _pitchVarBuffer  = new List<float>();
+    private List<float> _rmsBuffer       = new List<float>();
 
     // 臉部訊號改由後端 face-service 分析（見 KinectSensorSender 類別開頭註解），
     // 校正期間不再逐幀讀本地 Kinect Face API 值。這裡是在算 15 秒內的平均值，
@@ -172,6 +173,7 @@ public class KinectCalibrationManager : MonoBehaviour
 
             CollectSkeletonData();
             CollectPitchData();
+            CollectAudioData();
 
             yield return null;
         }
@@ -190,6 +192,7 @@ public class KinectCalibrationManager : MonoBehaviour
         if (isStable)
         {
             ApplyCursorRemapping(); // ── 新增
+            ApplyAudioThreshold();
             SendCalibrationData();
 
             if (string.IsNullOrEmpty(sessionId))
@@ -333,6 +336,21 @@ public class KinectCalibrationManager : MonoBehaviour
         // 靜音期間的音高變異值不具代表性，僅在有聲音時蒐集
         if (audioSender != null && audioSender.CurrentAudioRms > 0.005f)
             _pitchVarBuffer.Add(audioSender.CurrentPitchVariance);
+    }
+
+    /// <summary>
+    /// 音量門檻校正，刻意跟 CollectPitchData 相反——這裡要量的是「校正這 15 秒
+    /// 沒特別要求長者開口時」的底噪水準（環境音＋Kinect 陣列麥克風本身的量測
+    /// 雜訊），所以每一幀都收，不像音高只在偵測到聲音時才收。校正窗口本來就
+    /// 只要求長者坐穩、不要求開口說話，收到的樣本本來就以底噪為主，用「底噪
+    /// 之上一點」設語音門檻，才能讓小聲/離 Kinect 較遠的長者說話時也能超過
+    /// 門檻，同時不需要改動校正流程去要求長者刻意講話。詳見後端 sensor.py
+    /// _audio_threshold 的完整說明（雙方個人化公式必須同步）。
+    /// </summary>
+    void CollectAudioData()
+    {
+        if (audioSender != null)
+            _rmsBuffer.Add(audioSender.CurrentAudioRms);
     }
 
     /// <summary>
@@ -492,6 +510,34 @@ public class KinectCalibrationManager : MonoBehaviour
                   $"Z:{CalibrationData.WorldZ:F2}");
     }
 
+    // 跟後端 sensor.py AUDIO_SPEECH_MIN / AUDIO_RMS_STD_K / AUDIO_RMS_THRESHOLD_MIN
+    // 是同一組數字，兩邊改動要同步，否則 Unity 本地的反應時間偵測門檻
+    // 會跟伺服器判斷長者「有沒有講話」的門檻對不起來。
+    const float AUDIO_SPEECH_MIN_DEFAULT = 0.015f;
+    const float AUDIO_RMS_STD_K          = 4.0f;
+    const float AUDIO_RMS_THRESHOLD_MIN  = 0.006f;
+
+    /// <summary>
+    /// 用校正期間量到的底噪 baseline + k×標準差，算出這位長者/這次現場環境
+    /// 專屬的語音音量門檻，寫進 CalibrationData 供 KinectSensorSender 本地
+    /// 判斷「長者開始回答了嗎」使用（見該檔 audioSpeechThreshold 用法）。
+    /// 只會比固定值低、不會比它高——完整理由見後端 sensor.py _audio_threshold。
+    /// </summary>
+    void ApplyAudioThreshold()
+    {
+        if (_rmsBuffer.Count == 0) return;
+
+        float baseline = Average(_rmsBuffer);
+        if (baseline <= 0f) return;
+
+        float std = StdDev(_rmsBuffer, baseline);
+        float threshold = Mathf.Min(AUDIO_SPEECH_MIN_DEFAULT,
+            Mathf.Max(AUDIO_RMS_THRESHOLD_MIN, baseline + AUDIO_RMS_STD_K * std));
+
+        CalibrationData.AudioSpeechThreshold = threshold;
+        Debug.Log($"[Calibration] 個人化語音門檻 → {threshold:F4}（底噪 baseline={baseline:F4}, std={std:F4}）");
+    }
+
     void ClearGeometryBuffers()
     {
         _spineYBuffer.Clear();
@@ -500,6 +546,7 @@ public class KinectCalibrationManager : MonoBehaviour
         _shoulderRXBuffer.Clear();
         _spineZBuffer.Clear();
         _pitchVarBuffer.Clear();
+        _rmsBuffer.Clear();
     }
     // ───────────────────────────────────────────────────
 
@@ -543,6 +590,7 @@ public class KinectCalibrationManager : MonoBehaviour
         }
 
         float pitchVarMean = Average(_pitchVarBuffer);
+        float rmsMean = Average(_rmsBuffer);
 
         var payload = new CalibrationPayload
         {
@@ -558,6 +606,10 @@ public class KinectCalibrationManager : MonoBehaviour
             // 系統性偏差，但這個偏差在校正基準跟即時量測上是同一套算法量出來的，
             // 用「相對自己校正期間分布」設門檻，能大致抵消掉這個偏差。
             pitchVarianceStdDev = StdDev(_pitchVarBuffer, pitchVarMean),
+            // 校正期間量到的底噪水準，供後端 _audio_threshold 算個人化語音門檻
+            // （見 CollectAudioData／ApplyAudioThreshold 說明，兩邊公式必須同步）。
+            audioRmsBaseline = rmsMean,
+            audioRmsStdDev = StdDev(_rmsBuffer, rmsMean),
             jointKeys = new List<string>(baselineJoints.Keys).ToArray(),
             jointX = GetAxis(baselineJoints, 0),
             jointY = GetAxis(baselineJoints, 1),
@@ -649,6 +701,8 @@ public class CalibrationPayload
     public float mouthMovedBaseline;
     public float pitchVarianceBaseline;
     public float pitchVarianceStdDev;
+    public float audioRmsBaseline;
+    public float audioRmsStdDev;
     public string[] jointKeys;
     public float[] jointX;
     public float[] jointY;

@@ -408,7 +408,7 @@ public class GameController : MonoBehaviour
             {
                 // 有辨識到文字：不再直接開放長者送出，改成鎖畫面送治療師平板審核。
                 isPendingTherapistReview = true;
-                inputText.text = "等待治療師確認中";
+                inputText.text = "等待輔導員確認中";
                 inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
                 micButton.interactable = false;
                 RefreshSubmitButton();
@@ -430,7 +430,7 @@ public class GameController : MonoBehaviour
         byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
 
         // 跟 SendResponse 同一種重試邏輯（3次、間隔1.5秒）：這支打不通的話，
-        // 治療師平板永遠不會看到這句話，長者就會永久卡在「等待治療師確認中」，
+        // 治療師平板永遠不會看到這句話，長者就會永久卡在「等待輔導員確認中」，
         // 比原本 SendResponse 失敗只是「這句話送不出去」更嚴重，所以重試用盡後
         // 直接退回舊流程讓長者自己送出，不留長者卡死的畫面。
         const int maxAttempts = 3;
