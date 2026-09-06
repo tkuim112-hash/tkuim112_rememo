@@ -22,7 +22,7 @@ export const DIMENSION_COLORS = {
 export type SignalCategory = "face" | "eye" | "body" | "speaker";
 
 export const SIGNAL_TEXT: Record<string, { category: SignalCategory; text: string }> = {
-  face_not_detected: { category: "face", text: "本回合未偵測到臉部畫面，臉部表情僅供參考" },
+  face_not_detected: { category: "face", text: "未偵測到臉部畫面" },
   face_smile: { category: "face", text: "有微笑" },
   face_smile_slight: { category: "face", text: "略帶微笑" },
   face_frown: { category: "face", text: "沒有明顯笑容" },

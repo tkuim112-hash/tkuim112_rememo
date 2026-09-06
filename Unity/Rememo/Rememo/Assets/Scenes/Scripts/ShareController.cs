@@ -128,8 +128,6 @@ public class ShareController : MonoBehaviour
         if (!string.IsNullOrEmpty(question)) segments.Add(question);
         closingFullText = string.Join("\n", segments);
         closingText.text = closingFullText;
-        // 收尾問題顯示完畢 → 啟動反應時間計時
-        kinectSensorSender?.OnQuestionAsked();
 
         // 承接語／感謝語／問句三段都是前端內建預錄音檔（見 audio_bank.py，
         // GameController.SendResponse 存進 PlayerPrefs 時已經用 '|' 串好），
@@ -139,8 +137,16 @@ public class ShareController : MonoBehaviour
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingSceneAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingThanksAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingQuestionAudioKeys")));
+        // 反應時間計時要等長者真的看完/聽完這幾段內容才開始，理由同
+        // GameController.ApplyRoundResponse——播放中的那幾秒不該算進反應時間；
+        // 萬一這幾段剛好都沒有對應音檔（closingAudioUris 是空的），改用估算
+        // 的閱讀時間頂替，不要直接立刻開始計時。
         if (closingAudioUris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, closingAudioUris));
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, closingAudioUris, () => kinectSensorSender?.OnQuestionAsked()));
+        else
+            StartCoroutine(LocalAudioPlayer.DelayedAction(
+                LocalAudioPlayer.EstimateReadingSeconds(closingFullText),
+                () => kinectSensorSender?.OnQuestionAsked()));
     }
 
     static string[] SplitAudioKeys(string playerPrefsKey)

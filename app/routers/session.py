@@ -134,6 +134,15 @@ async def _init_session_meta(
         await r.set(key, json.dumps(meta))
 
 
+async def _set_waiting_for_response(r, session_id: str, waiting: bool) -> None:
+    """標記「現在是不是輪到長者開口回答」，供 sensor.py 計算 silence_rate 的
+    分母用——虛擬人問問題/播放語音/治療師審核的時間，長者本來就不會說話，
+    不能跟「問題已經丟出去、長者卻沉默不答」混在同一個分母裡（2026-09-06
+    稽核：silence_rate 曾經因為分母沒排除這些時間，導致正常參與的長者也
+    超過 0.9，被拿掉；分母改對後才重新納入評分，見 _score_emotion）。"""
+    await r.set(f"session:{session_id}:waiting_for_response", "1" if waiting else "0", ex=86400)
+
+
 async def _get_cached_start_result(r, session_id: str) -> dict | None:
     """
     /session/start（第一回合）現在有兩個呼叫者：治療師網頁按下「啟動療程」，
@@ -153,6 +162,7 @@ async def _get_cached_start_result(r, session_id: str) -> dict | None:
     result = json.loads(raw)
     if result.get("state"):
         result["state"]["question_asked_at"] = int(time.time() * 1000)
+        await _set_waiting_for_response(r, session_id, True)
     return result
 
 
@@ -429,12 +439,11 @@ async def _fill_round_exchange_answer(
 
     回傳 True 代表這是第一次補上這題的答案；回傳 False 代表這一列早就有
     answer 了（或整列查不到）——呼叫端（session_respond）用這個判斷這次
-    請求是不是前端逾時重試造成的重複提交，藉此避免 _save_round_response／
-    _accumulate_round_response_time 被同一句回答重複觸發兩次（見
-    2026-08-26 code review 稽核：GameController.cs 新增的重試機制，如果
-    只是回應在路上弄丟、後端其實已經處理成功，重送會帶著同一組
-    round+question_number，答案文字被寫進 patient_response 兩次、反應時間
-    統計也被重複累加）。
+    請求是不是前端逾時重試造成的重複提交，藉此避免 _save_round_response
+    被同一句回答重複觸發兩次（見 2026-08-26 code review 稽核：
+    GameController.cs 新增的重試機制，如果只是回應在路上弄丟、後端其實
+    已經處理成功，重送會帶著同一組 round+question_number，答案文字會被
+    寫進 patient_response 兩次）。
     """
     try:
         round_row = await _get_or_create_round(db, session_id, round_number)
@@ -467,16 +476,6 @@ async def _fill_round_exchange_answer(
         return False
 
 
-async def _accumulate_round_response_time(r, session_id: str, round_number: int, elapsed_ms: int) -> None:
-    """長者這題花了多久回答，累加進本回合的 Redis 暫存，回合結束時取平均寫進 rounds.response_time。"""
-    key = f"session:{session_id}:round:{round_number}:timing"
-    pipe = r.pipeline(transaction=False)
-    pipe.hincrby(key, "sum_ms", elapsed_ms)
-    pipe.hincrby(key, "count", 1)
-    await pipe.execute()
-    await r.expire(key, 86400)
-
-
 async def _finalize_round_response_time(
     db: AsyncSession,
     r,
@@ -485,7 +484,10 @@ async def _finalize_round_response_time(
     patient_id: int | None = None,
     therapist_id: int | None = None,
 ) -> None:
-    """回合結束（end_round / end_session）時，把這回合累積的平均反應時間（秒）寫進 rounds.response_time。"""
+    """回合結束（end_round / end_session）時，把這回合累積的平均反應時間（秒）寫進
+    rounds.response_time。sum_ms/count 由 sensor.py _update_session_stats 直接用
+    Unity 送來的 response_time_ms 累加（2026-09-06 改版，理由見該函式說明），
+    這裡只負責讀出來取平均、寫進 DB、清掉 Redis 暫存，不在乎資料是誰寫的。"""
     key = f"session:{session_id}:round:{round_number}:timing"
     raw = await r.hgetall(key)
     count = int(raw.get("count", 0))
@@ -588,6 +590,26 @@ async def _finalize_round_signals(
 
 # ════════════ 評估分數計算輔助 ════════════════════════════════════════
 
+# 有些比率的分子分母都只在「真的有訊號」的幀才累加（face_detected_n／
+# emo_valid_n，見 sensor.py 說明），這樣分母不會被稀釋，但相對地失去了
+# 「樣本夠大、比率天生不容易衝到極端值」這個附帶的保護——真實訊號的幀數
+# 佔全部幀數的比例低於這個門檻時，比率是小樣本統計（例如整場只有 2 幀有
+# 訊號，剛好都判成負面），容易被雜訊帶去極端值，這裡統一當作「資料不足，
+# 不該讓這幾幀的結果主導分數」的判斷門檻（2026-09-06 稽核：換分母解決稀釋
+# 問題後才發現的副作用，跟原本的問題是同一個硬幣的兩面）。
+MIN_VALID_SAMPLE_RATIO = 0.2
+
+# waiting_n（真的輪到長者回答的幀數，見 sensor.py waiting_for_response 說明）
+# 沒辦法比照上面用「佔 frame_count 的比例」當門檻——等待回答的視窗本來就只
+# 佔整場一小部分，長者反應越快這個視窗天生就越短，用比例門檻會冤枉反應快
+# 的長者。改用累積幀數的絕對門檻：Unity 每 2 秒送一次感測資料（sendInterval），
+# 10 幀約等於整場所有題目加起來至少 20 秒的「等待回答」時間，少於這個門檻
+# 就是小樣本，不該讓 silence_rate 觸發判斷（2026-09-06 稽核：長者停頓
+# 2-3 秒才開口是正常現象，剛好幾幀都落在停頓期間就會被誤判成 100% 靜默）。
+MIN_WAITING_FRAMES = 10
+ATTENTION_DEFAULT_SCORE = 3
+
+
 def _score_attention(looking_away_rate: float, eye_closed_rate: float) -> int:
     """注意力：視線離開比率越低分數越高。"""
     raw = 1.0 - looking_away_rate - eye_closed_rate * 0.5
@@ -621,22 +643,52 @@ def _score_engagement(looking_away_rate: float, mouth_moved_rate: float, angry_r
 
 
 def _score_persistence(sad_rate: float, looking_away_rate: float,
-                       skel_absent_rate: float, far_rate: float = 0.0) -> int:
-    """持續力（AES）：離座（骨架消失或 SpineBase 移遠）或情緒極度低落 = 1分。"""
-    if sad_rate > 0.50 or skel_absent_rate > 0.30 or far_rate > 0.20:  return 1
-    if sad_rate > 0.30 or looking_away_rate > 0.60:                     return 2
-    if sad_rate > 0.10:                                                  return 3
-    return 4
+                       skel_absent_rate: float, far_rate: float = 0.0) -> tuple[int, str]:
+    """持續力（AES）：離座（骨架消失或 SpineBase 移遠）或情緒極度低落 = 1分。
+
+    回傳 (分數, 原因)——1分／2分這兩級各自可能是兩種完全不同的原因觸發
+    （1分：真的離座 vs 情緒極度低落；2分：情緒偏低落 vs 常看向別處），
+    只回傳分數的話，前端沒辦法知道該顯示「擅自離開」還是「情緒低落」，
+    固定寫死其中一種會跟另一種原因觸發的實際情況兜不起來（2026-09-06
+    稽核）。「離座」比「低落」更具體、對治療師來說更值得優先知道，兩個
+    條件都成立時優先回報離座。
+    """
+    if skel_absent_rate > 0.30 or far_rate > 0.20:
+        return 1, "left"
+    if sad_rate > 0.50:
+        return 1, "sad"
+    if sad_rate > 0.30:
+        return 2, "sad"
+    if looking_away_rate > 0.60:
+        return 2, "distracted"
+    if sad_rate > 0.10:
+        return 3, "default"
+    return 4, "default"
 
 
 def _score_emotion(emo: dict[str, int],
+                   silence_rate: float = 0.0,
                    high_pitch_rate: float = 0.0,
-                   pitch_baseline: float = 0.0) -> int:
-    """情緒狀況（OERS）：以 EMA 主導情緒為基底，音高變異作修正。
+                   pitch_baseline: float = 0.0) -> tuple[int, str]:
+    """情緒狀況（OERS）：以 EMA 主導情緒為基底，靜默率與音高變異作修正。
 
-    silence_rate 已從此函式移除：silence_n 計整個療程靜默 frame，
-    長者正常參與時 silence_rate 仍超過 0.90，用它作情緒門檻會讓所有人得 1 分。
-    「完全不說話」信號由 _score_interaction（response_count == 0）負責。
+    回傳 (分數, 最終判定的情緒 key)——emotional_status 文字標籤（治療師在
+    個案總覽頁「最近活動」列表看到的彩色標籤）必須用這裡回傳的 key 反查
+    _EMOTION_LABEL_MAP，不能自己另外從 emo 重算一次 dominant。2026-09-06
+    稽核發現：這裡套用 silence_rate／音高修正之後，分數可能跟「重新算一次
+    dominant」得到的文字標籤不一致（例如整場大多沉默、只有少數幾句剛好是
+    happy，分數被 silence_rate 修成 1 分低落，文字標籤卻仍顯示適當）——
+    治療師會在同一張卡片上同時看到分數換算的總分進度條跟這個文字標籤，
+    兩者矛盾會被直接看到，所以兩邊必須共用同一個判定結果，不能各自獨立算。
+
+    silence_rate 2026-06-25 曾經加入、2026-09-06 因為分母算法有問題被拿掉
+    （silence_n 分母是整場 frame_count，含虛擬人講話/治療師審核時間，長者
+    正常參與時也常態超過 0.90，用它當門檻會讓所有人得 1 分），2026-09-06
+    稽核後改成只在 waiting_for_response（真的輪到長者回答）時累積分子分母
+    （見 sensor.py _update_session_stats），分母正確後才重新納入評分——
+    「完全不說話」信號原本由 _score_interaction（response_count == 0）
+    獨力負責，那個只看「整場有沒有回應過」，這裡的 silence_rate 補上「輪到
+    長者回答時，答不答得出來的比率」這個更細緻的維度，兩者不重複。
 
     high_pitch_rate 的計數門檻已在 sensor.py 個人化（baseline × 2），
     有基準時用 0.40；無基準時退守 0.55（計數仍用固定 50 Hz²，較不可靠）。
@@ -645,31 +697,36 @@ def _score_emotion(emo: dict[str, int],
     「dominant 看起來還好（happy/excited），但音高起伏顯示可能有被蓋掉的
     焦躁」，不該反過來蓋掉本來就已經是 sad 的結論——長者真正低落/哭泣時
     講話聲音一樣會發抖、音高起伏大，不是只有焦躁的人才會這樣，若不排除
-    sad，會把「低落」（這張量表 1 分，最差）誤修成「焦躁」（2 分），還會跟
-    沒套用這個修正的 emotional_status 文字標籤（session_metrics 裡另外算的
-    dominant_emotion）兜不起來，同一份報告出現「文字說低落、分數卻是焦躁
-    的 2 分」這種矛盾。
+    sad，會把「低落」（這張量表 1 分，最差）誤修成「焦躁」（2 分）。
     """
+    if silence_rate > 0.60:
+        return 1, "sad"
     dominant = max(emo, key=emo.get) if any(emo.values()) else "happy"
     pitch_agitation_bar = 0.40 if pitch_baseline > 1.0 else 0.55
     if dominant != "sad" and high_pitch_rate > pitch_agitation_bar and emo.get("angry", 0) >= emo.get("happy", 0):
-        return 2
-    return {"sad": 1, "angry": 2, "excited": 3, "happy": 4}[dominant]
+        return 2, "angry"
+    return {"sad": 1, "angry": 2, "excited": 3, "happy": 4}[dominant], dominant
 
 
 def _score_interaction(response_count: int, speech_chars: int,
                        avg_response_ms: float | None = None,
-                       hand_active_rate: float = 0.0) -> int:
-    """互動頻率（Social Engagement Scale）：語音 + 反應延遲 + 手部動作。"""
-    if response_count == 0 and hand_active_rate < 0.05:   return 1
-    if response_count == 0:                                return 2  # 有肢體動作但無語音
+                       hand_active_rate: float = 0.0) -> tuple[int, str]:
+    """互動頻率（Social Engagement Scale）：語音 + 反應延遲 + 手部動作。
+
+    回傳 (分數, 原因)——2分有兩種完全不同的原因：整場完全零語音回應（只靠
+    肢體動作）、或是有回應但都是「嗯/好/有」這種極短回覆，只回傳分數的話
+    前端沒辦法分辨該顯示哪一種，固定寫死「僅指令回應」對完全沒開口的長者
+    來說是錯的敘述（2026-09-06 稽核）。
+    """
+    if response_count == 0 and hand_active_rate < 0.05:   return 1, "default"
+    if response_count == 0:                                return 2, "no_speech"  # 有肢體動作但無語音
     avg = speech_chars / response_count
     # 反應延遲懲罰：平均超過 10 秒視為需持續引導
     if avg_response_ms is not None and avg_response_ms > 10_000:
         avg *= 0.75
-    if avg < 10:   return 2   # 僅指令回覆（嗯/好/有）
-    if avg < 25:   return 3   # 需引導互動
-    return 4                  # 主動互動（完整句子/故事）
+    if avg < 10:   return 2, "short_replies"  # 僅指令回覆（嗯/好/有）
+    if avg < 25:   return 3, "default"        # 需引導互動
+    return 4, "default"                       # 主動互動（完整句子/故事）
 
 
 class SessionState(BaseModel):
@@ -905,6 +962,7 @@ async def session_start(
         )
         result["state"]["question_number"] = 1
         result["state"]["question_asked_at"] = int(time.time() * 1000)
+        await _set_waiting_for_response(r, session_id, True)
         tts = request.app.state.tts_service
         scene_audio_path = scene_audio_key = None
         if result.get("scene_text"):
@@ -1008,6 +1066,7 @@ async def session_round(
         )
         result["state"]["question_number"] = 1
         result["state"]["question_asked_at"] = int(time.time() * 1000)
+        await _set_waiting_for_response(r, session_id, True)
         # 第二、三回合不生圖也不合成語音（STT 仍照常），見這次改動需求：
         # 第二回合自由追問、第三回合 closing 都只靠畫面文字＋長者口說回應。
         if result.get("question") and round_number not in (2, 3):
@@ -1140,7 +1199,7 @@ async def session_control(
         # stats，這裡重複呼叫會因為讀不到 stats 而丟 404，直接吞掉即可
         # （不是錯誤，是正常的「已經結束過了」）。
         try:
-            await _compute_and_save_assessment(request, session_id, db, therapist_id)
+            await _compute_and_save_assessment(request.app.state, session_id, db, therapist_id)
         except HTTPException as e:
             print(f"[Control] end 觸發評估略過: {e.detail}")
     return {"ok": True, "delivered": delivered}
@@ -1356,6 +1415,9 @@ async def session_transcript(
     pipe.hincrby(key, "speech_chars",   len(body.text.strip()))
     await pipe.execute()
     await r.expire(key, 86400)
+    # 長者這一題已經開口回答了，「等待回答」的視窗到此結束——治療師接下來
+    # 審核/編輯這段文字的時間不是長者的沉默，不該繼續算進 silence_rate。
+    await _set_waiting_for_response(r, session_id, False)
     return {"ok": True}
 
 
@@ -1482,18 +1544,28 @@ async def _generate_and_save_round_summaries(llm_service, db: AsyncSession, sess
 
 
 async def _compute_and_save_assessment(
-    request: Request,
+    app_state,
     session_id: str,
     db: AsyncSession,
     therapist_id: int,
 ) -> dict:
-    """計算五指標評估分數、產出故事摘要與整體情緒，寫入 PostgreSQL，並清除 Redis session 暫存。"""
-    r = request.app.state.redis
+    """計算五指標評估分數、產出故事摘要與整體情緒，寫入 PostgreSQL，並清除 Redis session 暫存。
+
+    參數原本是 request: Request，只用得到 request.app.state.redis／
+    llm_service，改成直接收 app_state（FastAPI app.state，HTTP handler
+    傳 request.app.state，WebSocket handler 傳 websocket.app.state）——
+    ws_stt.py 的 _mark_abnormal_end 是在 WebSocket 斷線時呼叫，沒有 Request
+    物件可傳，這樣兩種呼叫端都能重用同一套評分邏輯，不用另外複製一份
+    （2026-09-06 稽核：/ws/stt 不正常斷線原本直接把 status 標成 completed，
+    完全沒有算分數，這裡才是真正把它接上 _compute_and_save_assessment）。
+    """
+    r = app_state.redis
     raw: dict = await r.hgetall(f"session:{session_id}:stats")
     if not raw:
         raise HTTPException(status_code=404, detail="找不到此療程的統計資料，請確認 session_id 正確且療程已進行")
 
     frame_count       = max(int(raw.get("frame_count",         0)), 1)
+    face_detected_n   = int(raw.get("face_detected_n",       0))
     looking_away_n    = int(raw.get("looking_away_n",        0))
     eye_closed_n      = int(raw.get("eye_closed_n",          0))
     mouth_moved_n     = int(raw.get("mouth_moved_n",         0))
@@ -1503,12 +1575,15 @@ async def _compute_and_save_assessment(
     speech_chars      = int(raw.get("speech_chars",          0))
     # A 階段擴充
     silence_n         = int(raw.get("silence_n",             0))
+    waiting_n         = int(raw.get("waiting_n",              0))
     rt_sum            = int(raw.get("response_time_sum",     0))
     rt_count          = int(raw.get("response_time_count",   0))
     # B 階段擴充（Unity 尚未傳送時 = 0，不影響評分）
     far_n             = int(raw.get("far_n",                 0))
+    spinebase_valid_n = int(raw.get("spinebase_valid_n",     0))
     high_pitch_var_n  = int(raw.get("high_pitch_var_n",      0))
     hand_active_n     = int(raw.get("hand_active_n",         0))
+    emo_valid_n       = int(raw.get("emo_valid_n",           0))
     emo = {
         "happy":   int(raw.get("emo_happy",   0)),
         "excited": int(raw.get("emo_excited", 0)),
@@ -1516,18 +1591,63 @@ async def _compute_and_save_assessment(
         "sad":     int(raw.get("emo_sad",     0)),
     }
 
-    looking_away_rate = looking_away_n   / frame_count
-    eye_closed_rate   = eye_closed_n     / frame_count
-    mouth_moved_rate  = mouth_moved_n    / frame_count
+    # looking_away/eye_closed/mouth_moved 只有這一幀真的偵測到臉才會有訊號
+    # （見 sensor.py _update_session_stats），分母要用 face_detected_n（實際
+    # 有臉部資料的幀數），不能用 frame_count（含沒偵測到臉的幀）——否則鏡頭
+    # 角度/光線不佳導致偵測率低時，比率會被「沒資料」的幀稀釋，看起來比長者
+    # 實際表現更好（2026-09-06 稽核：注意力分數因此跟治療師現場觀察對不上）。
+    face_valid_n      = max(face_detected_n, 1)
+    looking_away_rate = looking_away_n   / face_valid_n
+    eye_closed_rate   = eye_closed_n     / face_valid_n
+    mouth_moved_rate  = mouth_moved_n    / face_valid_n
+    # 臉部偵測率過低時（face_detected_n 只佔 frame_count 一小部分），上面三個
+    # 比率是小樣本統計，容易失真（例如整場只有 3 幀有臉，剛好都判成看向別處
+    # 就變成 100%）。歸零讓依賴它們的分項退回各自「沒有負面訊號」的預設分支
+    # ——參與度／持續力的公式在輸入 0 時本來就會落到中性判斷，不需要另外
+    # 特殊處理；只有注意力的公式在輸入全 0 時會誤判成滿分（1.0 - 0 - 0 = 滿分
+    # 注意力），所以注意力額外用 ATTENTION_DEFAULT_SCORE 蓋掉，不能靠歸零。
+    face_data_sufficient = face_detected_n / frame_count >= MIN_VALID_SAMPLE_RATIO
+    if not face_data_sufficient:
+        looking_away_rate = 0.0
+        mouth_moved_rate  = 0.0
     skel_absent_rate  = skel_absent_n    / frame_count
-    sad_rate          = emo["sad"]       / frame_count
+    # sad_rate／angry_rate 分母是 emo_valid_n，不是 frame_count——emo_* 計數
+    # 只在這一幀臉部或骨架至少有一個真的偵測到時才累加（見 sensor.py
+    # _update_session_stats 的 emo_has_signal 說明），沒訊號的幀分類結果只是
+    # 複製上一次的 EMA 值、不是新證據，分母也要一併排除，不然長者長時間
+    # 離座/追丟時，最後一刻的情緒會被稀釋或放大成不成比例的比率。
+    sad_rate          = emo["sad"]   / max(emo_valid_n, 1)
     # 「焦躁」= 高激動 + 負向情緒（見 _classify_from_scores），拿來判斷參與度
     # 的干擾行為比單看晃動比率（high_sway_rate）更準確，見 _score_engagement
     # 的完整說明——同樣高激動，正向的「亢奮」不該被當成干擾。high_sway_n
     # 這個累積值仍保留在 Redis 供其他用途，只是評分不再用它。
-    angry_rate        = emo["angry"]     / frame_count
-    silence_rate      = silence_n        / frame_count
-    far_rate          = far_n            / frame_count
+    angry_rate        = emo["angry"] / max(emo_valid_n, 1)
+    # emo_valid_n 太小時（例如整場只有 2 幀真的有訊號），上面兩個比率是小
+    # 樣本統計，容易被雜訊帶去 0 或 1 的極端值（例如 2 幀剛好都判成焦躁，
+    # angry_rate 直接變 1.0），足以誤觸發 _score_engagement／_score_persistence
+    # 的門檻，把參與度/持續力判成最差分——歸零後理由跟上面 face_data_sufficient
+    # 一樣，這兩個分項的公式在輸入 0 時會落到中性分支，不需要額外處理
+    # （2026-09-06 稽核：換分母修好稀釋問題後才浮現的副作用）。
+    emo_data_sufficient = emo_valid_n / frame_count >= MIN_VALID_SAMPLE_RATIO
+    if not emo_data_sufficient:
+        sad_rate   = 0.0
+        angry_rate = 0.0
+    # silence_rate 分母是 waiting_n（真的輪到長者回答的幀數），不是
+    # frame_count（含虛擬人講話/治療師審核的時間）——見 sensor.py
+    # _update_session_stats 的說明，這樣才不會讓正常參與的長者也被算成
+    # 常態性靜默。waiting_n 是 0（例如舊版部署過渡期間、追蹤旗標還沒生效）
+    # 時，silence_n 也必然是 0，安全退回 0，不會誤判成低落。
+    silence_rate      = silence_n / max(waiting_n, 1)
+    # waiting_n 太小時（見 MIN_WAITING_FRAMES 說明），這個比率是小樣本統計，
+    # 歸零讓 _score_emotion 不要用它觸發低落判斷，退回用 dominant/音高判斷。
+    if waiting_n < MIN_WAITING_FRAMES:
+        silence_rate = 0.0
+    # far_rate 分母是 spinebase_valid_n（真的追蹤到 SpineBase 的幀數），不是
+    # frame_count（含骨架完全追丟的幀）——跟 looking_away_rate 改用
+    # face_detected_n 是同一種修正，見上面的說明。骨架追丟時 skel_absent_rate
+    # 已經會單獨反映「長者可能不在座位上」，這裡只是不讓 far_rate 本身被
+    # 追丟的幀稀釋掉。
+    far_rate          = far_n / max(spinebase_valid_n, 1)
     high_pitch_rate   = high_pitch_var_n / frame_count
     hand_active_rate  = hand_active_n    / frame_count
     avg_response_ms   = rt_sum / rt_count if rt_count > 0 else None
@@ -1537,12 +1657,23 @@ async def _compute_and_save_assessment(
     calib          = json.loads(calib_raw) if calib_raw else {}
     pitch_baseline = float(calib.get("pitchVarianceBaseline", 0.0))
 
+    attention_score = (
+        _score_attention(looking_away_rate, eye_closed_rate)
+        if face_data_sufficient
+        else ATTENTION_DEFAULT_SCORE
+    )
+    emotion_score, final_emotion_key = _score_emotion(emo, silence_rate, high_pitch_rate, pitch_baseline)
+    endurance_score, endurance_reason = _score_persistence(sad_rate, looking_away_rate, skel_absent_rate, far_rate)
+    interaction_score, interaction_reason = _score_interaction(
+        response_count, speech_chars, avg_response_ms, hand_active_rate
+    )
+
     scores = {
         "參與度":   _score_engagement(looking_away_rate, mouth_moved_rate, angry_rate),
-        "注意力":   _score_attention(looking_away_rate, eye_closed_rate),
-        "持續力":   _score_persistence(sad_rate, looking_away_rate, skel_absent_rate, far_rate),
-        "情緒狀況": _score_emotion(emo, high_pitch_rate, pitch_baseline),
-        "互動頻率": _score_interaction(response_count, speech_chars, avg_response_ms, hand_active_rate),
+        "注意力":   attention_score,
+        "持續力":   endurance_score,
+        "情緒狀況": emotion_score,
+        "互動頻率": interaction_score,
     }
 
     # 從 Redis meta 讀取 patient_id / therapist_id
@@ -1550,9 +1681,12 @@ async def _compute_and_save_assessment(
     meta_raw = await r.get(meta_key)
     meta = json.loads(meta_raw) if meta_raw else {"session_id": session_id}
 
-    dominant_emotion = max(emo, key=emo.get) if any(emo.values()) else "happy"
-    emotional_status = _EMOTION_LABEL_MAP.get(dominant_emotion, "適當")
-    story_summary = await _generate_story_summary(request.app.state.llm_service, db, session_id)
+    # emotional_status 文字標籤（治療師個案總覽頁「最近活動」列表的彩色標籤）
+    # 直接用 _score_emotion 回傳的 final_emotion_key 反查，不能自己另外從 emo
+    # 重算一次 dominant——否則套用了 silence_rate／音高修正後，分數換算的
+    # 總分進度條跟這個文字標籤可能講不同的故事，見 _score_emotion 說明。
+    emotional_status = _EMOTION_LABEL_MAP.get(final_emotion_key, "適當")
+    story_summary = await _generate_story_summary(app_state.llm_service, db, session_id)
 
     # PostgreSQL 永久寫入
     try:
@@ -1568,8 +1702,10 @@ async def _compute_and_save_assessment(
                 score_participation=scores["參與度"],
                 score_attention=scores["注意力"],
                 score_endurance=scores["持續力"],
+                endurance_reason=endurance_reason,
                 score_emotion=scores["情緒狀況"],
                 score_interaction=scores["互動頻率"],
+                interaction_reason=interaction_reason,
                 total_score=total,
                 emotional_status=emotional_status,
                 story_summary=story_summary or None,
@@ -1581,8 +1717,10 @@ async def _compute_and_save_assessment(
                     "score_participation": scores["參與度"],
                     "score_attention": scores["注意力"],
                     "score_endurance": scores["持續力"],
+                    "endurance_reason": endurance_reason,
                     "score_emotion": scores["情緒狀況"],
                     "score_interaction": scores["互動頻率"],
+                    "interaction_reason": interaction_reason,
                     "total_score": total,
                     "emotional_status": emotional_status,
                     "status": "completed",
@@ -1599,7 +1737,7 @@ async def _compute_and_save_assessment(
             action="generate_assessment",
             resource=f"session:{session_id}",
         )
-        await _generate_and_save_round_summaries(request.app.state.llm_service, db, session_id)
+        await _generate_and_save_round_summaries(app_state.llm_service, db, session_id)
 
         # DB 寫入成功後清除所有 session Redis key
         await r.delete(
@@ -1613,6 +1751,7 @@ async def _compute_and_save_assessment(
             f"session:{session_id}:round1_carryover",
             f"session:{session_id}:round2_carryover",
             f"session:{session_id}:topics",
+            f"session:{session_id}:waiting_for_response",
         )
         if meta.get("patient_id"):
             await r.delete(f"patient:{meta['patient_id']}:active")
@@ -1630,7 +1769,7 @@ async def session_assessment(
     db: AsyncSession = Depends(get_db),
     therapist_id: int = Depends(get_current_therapist_id),
 ):
-    return await _compute_and_save_assessment(request, session_id, db, therapist_id)
+    return await _compute_and_save_assessment(request.app.state, session_id, db, therapist_id)
 
 
 class ConfirmResponsePayload(BaseModel):
@@ -1648,9 +1787,13 @@ async def _finalize_closing_response(
 ) -> dict:
     """
     處理長者的心得收尾回答。原本是 /session/{id}/closing 端點本體，現在被治療師
-    審核流程（/{id}/closing/review_request + /{id}/closing/confirm_response）共用，
-    理由跟 _finalize_elder_response 的重構說明一樣——answered_at_ms 是 review_request
-    收到 STT 結果的時間，不能算成治療師編輯完按確認的時間。
+    審核流程（/{id}/closing/review_request + /{id}/closing/confirm_response）共用。
+    answered_at_ms 是 review_request 收到 STT 結果的時間，不能算成治療師編輯完
+    按確認的時間——這裡跟主回合 1-3 不一樣，心得回合的 rounds.response_time
+    仍是伺服器用 closing_asked_at 算時間差（見下面），不是 Unity 端量的，
+    這個時間戳記還是需要的（跟 _finalize_elder_response 不同，那邊的反應
+    時間已經改用 sensor.py 直接累加 Unity 送來的 response_time_ms，
+    answered_at_ms 已經沒用而拿掉了）。
 
     做兩件事：
       1. 把心得問答存成 rounds.round_number=4（type='心得'）+ round_exchanges
@@ -1706,7 +1849,7 @@ async def _finalize_closing_response(
     # 不再另外生成第二段收尾訊息——closing_message 留空字串，ShareController.cs
     # 的 PostClosingAnswer 對空字串本來就會跳過顯示、直接轉場（見該檔）。
     try:
-        scores = await _compute_and_save_assessment(request, session_id, db, therapist_id)
+        scores = await _compute_and_save_assessment(request.app.state, session_id, db, therapist_id)
     except HTTPException as e:
         print(f"[Closing] 自動評估略過: {e.detail}")
         scores = None
@@ -1740,6 +1883,10 @@ async def session_closing(
     說明）。找不到就是原本的直接送出情境，行為不變。
     """
     r = request.app.state.redis
+    # 沒走 review_request（直接送出/長者沉默送空字串/重試用盡退回舊流程）
+    # 這幾種情況，review_request 那邊不會執行到，這裡要兜底把「等待回答」
+    # 關掉，不然沉默送出空字串的情境反而會讓 waiting_for_response 卡在 True。
+    await _set_waiting_for_response(r, session_id, False)
     answered_at_ms = None
     raw = await r.get(f"session:{session_id}:pending_closing_review")
     if raw:
@@ -1776,6 +1923,8 @@ async def session_closing_review_request(
         elder_response_draft=body.text,
         review_status="pending_closing",
     )
+    # 長者已經開口回答心得問題了，接下來是治療師審核時間，不算長者的沉默。
+    await _set_waiting_for_response(r, session_id, False)
     return {"ok": True}
 
 
@@ -1837,17 +1986,20 @@ async def _finalize_elder_response(
     state: SessionState,
     therapist_id: int,
     db: AsyncSession,
-    answered_at_ms: int | None = None,
 ) -> dict:
     """
     處理長者這一題的回答，取得下一步動作。原本是 /session/respond 端點本體，
-    現在被治療師審核流程（/{id}/review_request + /{id}/confirm_response）
-    共用：Unity STT 做完最終辨識後不再直接呼叫這裡，而是先呼叫 review_request
-    把文字＋state 暫存到 Redis，等治療師在平板確認（可能編輯過）後，
-    confirm_response 才真的呼叫這支函式，並把當時 review_request 收到的時間
-    當作 answered_at_ms 傳進來——反應時間要算到長者答完話那一刻，不能把
-    治療師編輯耗費的時間也算進去。answered_at_ms 是 None 時（例如 /session/respond
-    這支端點本身仍被直接呼叫）就退回用呼叫當下的時間，行為等同重構前。
+    2026-09-06 改版後（見 session_confirm_response 說明）治療師確認只推播
+    文字，不觸發生成，實際上只有 session_respond 這一個呼叫端——不管是
+    「不走審核直接送出」還是「長者按下送出故事」，Unity 都是呼叫
+    /session/respond，才會走到這支函式。
+
+    反應時間不在這裡算：長者從看完/聽完題目到開始回答的時間，只有 Unity
+    端知道（見 KinectSensorSender.cs OnQuestionAsked／response_time_ms），
+    伺服器這裡收到請求的時間點含了治療師審核＋長者按送出的延遲，拿來算
+    反應時間並不準。改由 sensor.py _update_session_stats 直接用 Unity 送
+    來的 response_time_ms 累加進 session:{id}:round:{n}:timing，回合結束
+    時一樣走 _finalize_round_response_time 寫進 rounds.response_time。
 
     回傳的 action：
       open_followup    → 話題豐富，繼續順著長者深入（含 scene_text + question）
@@ -1880,17 +2032,15 @@ async def _finalize_elder_response(
                 text=elder_response,
                 patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
-            # 這一題長者花了多久回答，累加進本回合的反應時間統計
-            if state.question_asked_at:
-                now_ms = answered_at_ms if answered_at_ms is not None else int(time.time() * 1000)
-                elapsed_ms = max(0, now_ms - state.question_asked_at)
-                await _accumulate_round_response_time(
-                    r, state.session_id, state.round, elapsed_ms
-                )
+            # 反應時間不在這裡算：改由 sensor.py _update_session_stats 直接用
+            # Unity 送來的 response_time_ms 累加進 session:{id}:round:{n}:timing
+            # （2026-09-06 稽核後改版，見該函式說明）——「聽/看完題目到長者
+            # 開始回答」這個定義只有 Unity 自己知道，伺服器用 question_asked_at
+            # 算時間差含了語音合成/播放的時間，不準。
         else:
             print(
                 f"[DB] round={state.round} q#={state.question_number} "
-                f"這題已經有答案，判定為重複提交，跳過逐字稿/反應時間累加"
+                f"這題已經有答案，判定為重複提交，跳過逐字稿累加"
             )
         await _update_live_view(
             request.app.state.redis, state.session_id,
@@ -1946,6 +2096,7 @@ async def _finalize_elder_response(
                     f"session:{state.session_id}:closing_asked_at",
                     str(int(time.time() * 1000)), ex=3600,
                 )
+                await _set_waiting_for_response(r, state.session_id, True)
                 # 心得環節開場邀請語是純規則模板（見 app/services/closing_
                 # templates.py），orchestrator._end_action 對 end_session 只回
                 # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
@@ -2053,6 +2204,7 @@ async def _finalize_elder_response(
             if result.get("state") is not None:
                 result["state"]["question_number"] = next_qn
                 result["state"]["question_asked_at"] = int(time.time() * 1000)
+                await _set_waiting_for_response(request.app.state.redis, state.session_id, True)
                 last_type = (result.get("state") or {}).get("last_question_type", "")
                 await _save_round_exchange(
                     db, state.session_id, state.round,
@@ -2085,11 +2237,11 @@ async def session_respond(
        response 說明；長者按送出時 Unity 才呼叫這支，等同直接送出流程）。
 
     如果這個 session 還留著 pending_review（代表 body.elder_response 是
-    剛經過治療師審核確認的文字），要用 pending_review 存的 received_at
-    當反應時間起算點——長者實際開口回答是在治療師審核**之前**，不能把
-    治療師審核＋長者按送出這段延遲也算進反應時間。用完就刪掉，避免
-    下一句話誤用到這次的舊時間戳記。找不到 pending_review 就是原本的
-    直接送出情境，沿用呼叫當下的時間，行為不變。
+    剛經過治療師審核確認的文字），用完就刪掉，避免下一句話誤用到這次的
+    舊狀態。找不到 pending_review 就是原本的直接送出情境，行為不變。
+    （反應時間不在這裡算，見 _finalize_elder_response 說明——這裡曾經用
+    pending_review 存的 received_at 當反應時間起算點，2026-09-06 改版後
+    反應時間改由 Unity 端量、sensor.py 直接累加，這個時間戳記不再需要。）
 
     這裡同時是「這一題真正結束、治療師網頁不用再讓治療師修改」的訊號
     （review_status 清空成 ""，見 session_confirm_response 的
@@ -2098,16 +2250,16 @@ async def session_respond(
     pending_review 被消耗掉的這一刻，才是真的不能再改了。
     """
     r = request.app.state.redis
-    answered_at_ms = None
+    # 沒走 /response（STT 沒辨識到文字、或 /review_request 重試用盡退回
+    # 舊流程）這幾種情況，session_transcript 那邊不會執行到，這裡兜底把
+    # 「等待回答」關掉，避免卡在 True 一路算到下一題問出去。
+    await _set_waiting_for_response(r, body.state.session_id, False)
     raw = await r.get(f"session:{body.state.session_id}:pending_review")
     if raw:
-        pending = json.loads(raw)
-        answered_at_ms = pending.get("received_at")
         await r.delete(f"session:{body.state.session_id}:pending_review")
         await _update_live_view(r, body.state.session_id, review_status="")
     return await _finalize_elder_response(
         request, body.elder_response, body.state, therapist_id, db,
-        answered_at_ms=answered_at_ms,
     )
 
 
@@ -2125,17 +2277,15 @@ async def session_review_request(
 ):
     """
     長者這一題的 STT 最終結果先暫存在 Redis，不落地資料庫、不驅動 orchestrator——
-    要等治療師在 /confirm_response 確認（可能編輯過）後才真的處理。state 一併存進來，
-    因為 confirm_response 呼叫 _finalize_elder_response 需要完整的回合狀態，而
-    後端本來就不持有這份狀態（一直是 Unity 端在往返傳遞）。received_at 供
-    confirm_response 算反應時間用，不能用治療師確認的時間點（見
-    _finalize_elder_response 的 answered_at_ms 說明）。
+    要等治療師在 /confirm_response 確認（可能編輯過）、長者真的按下送出後，
+    Unity 呼叫 /session/respond 才真的處理（見 session_confirm_response、
+    session_respond 說明）。state 一併存進來，因為 /session/respond 需要
+    完整的回合狀態，而後端本來就不持有這份狀態（一直是 Unity 端在往返傳遞）。
     """
     r = request.app.state.redis
     payload = {
         "elder_response": body.elder_response,
         "state": body.state.model_dump(),
-        "received_at": int(time.time() * 1000),
     }
     await r.set(
         f"session:{session_id}:pending_review",

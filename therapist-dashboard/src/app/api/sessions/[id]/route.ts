@@ -22,6 +22,11 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     scoreParticipation, scoreAttention, scoreEndurance, scoreEmotion, scoreInteraction,
   } = await req.json();
 
+  // endurance_reason／interaction_reason 是後端自動評分時附帶的觸發原因
+  // （例如持續力1分是「擅自離開」還是「情緒極度低落」），只在對應分數沒變
+  // 時保留——治療師手動把分數改成別的值，代表這是人工判斷，原本自動算出
+  // 的原因已經不適用，要清空，不然畫面會顯示一個跟新分數對不上的舊原因
+  // （2026-09-06 稽核：這是這兩欄新增時就要處理的既有風險，不是事後才發現）。
   const [updated] = await sql`
     UPDATE sessions SET
       total_score          = COALESCE(${totalScore ?? null}, total_score),
@@ -31,8 +36,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       score_participation  = COALESCE(${scoreParticipation ?? null}, score_participation),
       score_attention      = COALESCE(${scoreAttention ?? null}, score_attention),
       score_endurance      = COALESCE(${scoreEndurance ?? null}, score_endurance),
+      endurance_reason     = CASE
+        WHEN ${scoreEndurance ?? null}::int IS NOT NULL
+             AND ${scoreEndurance ?? null}::int IS DISTINCT FROM score_endurance
+        THEN NULL ELSE endurance_reason END,
       score_emotion        = COALESCE(${scoreEmotion ?? null}, score_emotion),
-      score_interaction    = COALESCE(${scoreInteraction ?? null}, score_interaction)
+      score_interaction    = COALESCE(${scoreInteraction ?? null}, score_interaction),
+      interaction_reason   = CASE
+        WHEN ${scoreInteraction ?? null}::int IS NOT NULL
+             AND ${scoreInteraction ?? null}::int IS DISTINCT FROM score_interaction
+        THEN NULL ELSE interaction_reason END
     WHERE ${sessionIdWhereClause(id)}
       AND patient_id IN (SELECT id FROM patients WHERE organization_id = ${session.organizationId})
     RETURNING patient_id
@@ -68,8 +81,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       s.score_participation,
       s.score_attention,
       s.score_endurance,
+      s.endurance_reason,
       s.score_emotion,
       s.score_interaction,
+      s.interaction_reason,
       s.therapist_note,
       (SELECT COUNT(*)::int FROM sessions s2
         WHERE s2.patient_id = s.patient_id AND s2.id <= s.id) AS session_number,
@@ -109,8 +124,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     scoreParticipation: s.score_participation ?? null,
     scoreAttention: s.score_attention ?? null,
     scoreEndurance: s.score_endurance ?? null,
+    enduranceReason: s.endurance_reason ?? null,
     scoreEmotion: s.score_emotion ?? null,
     scoreInteraction: s.score_interaction ?? null,
+    interactionReason: s.interaction_reason ?? null,
     therapistNote: s.therapist_note ?? "",
   });
 }

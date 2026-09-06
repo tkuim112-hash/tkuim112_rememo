@@ -530,7 +530,6 @@ public class GameController : MonoBehaviour
         currentState = resp.state;
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
-        kinectSensorSender?.OnQuestionAsked();
 
         // /session/start 回傳時 image_path 一定是空字串（見 StartRound 下方註解），
         // 圖片要等長者答完生圖前引導問題、/session/respond 才第一次真的生出來。
@@ -545,8 +544,17 @@ public class GameController : MonoBehaviour
             string.IsNullOrEmpty(resp.audio_path) ? null : BuildAudioUrl(resp.audio_path),
             new[] { resp.question_audio_key }));
 
+        // 反應時間計時要等長者真的看完/聽完題目才開始，不是文字一顯示就
+        // 開始——有語音的回合，語音播放的那幾秒鐘不該算進長者的反應時間；
+        // 沒有語音的回合（第2、3回合）改用估算的閱讀時間頂替，不然沒語音
+        // 的回合會變成完全不排除呈現時間，反而比有語音的回合更不公平
+        // （2026-09-06 稽核，見 LocalAudioPlayer.EstimateReadingSeconds 說明）。
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, () => kinectSensorSender?.OnQuestionAsked()));
+        else
+            StartCoroutine(LocalAudioPlayer.DelayedAction(
+                LocalAudioPlayer.EstimateReadingSeconds(aiText.text),
+                () => kinectSensorSender?.OnQuestionAsked()));
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -746,7 +754,6 @@ public class GameController : MonoBehaviour
         currentState = resp.state;
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
-        kinectSensorSender?.OnQuestionAsked();
 
         // /session/start、/session/round 回傳時 image_path 一定是空字串（見
         // ApplyRoundResponse 上方註解），圖片是長者答完生圖前引導問題、這支
@@ -763,8 +770,13 @@ public class GameController : MonoBehaviour
             string.IsNullOrEmpty(resp.audio_path) ? null : BuildAudioUrl(resp.audio_path),
             new[] { resp.question_audio_key }));
 
+        // 反應時間計時要等長者真的看完/聽完題目才開始，理由同 ApplyRoundResponse。
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, () => kinectSensorSender?.OnQuestionAsked()));
+        else
+            StartCoroutine(LocalAudioPlayer.DelayedAction(
+                LocalAudioPlayer.EstimateReadingSeconds(aiText.text),
+                () => kinectSensorSender?.OnQuestionAsked()));
     }
 
     static string JoinAudioKeys(string[] keys)
