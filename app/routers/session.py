@@ -1722,9 +1722,35 @@ async def session_closing(
     db: AsyncSession = Depends(get_db),
     therapist_id: int = Depends(get_current_therapist_id),
 ):
-    """薄封裝，保留給不走治療師審核流程的呼叫端（心得回合長者沉默直接送出空字串、
-    或 /closing/review_request 重試用盡退回舊流程時，ShareController.cs 直接呼叫這支）。"""
-    return await _finalize_closing_response(request, session_id, body.text, therapist_id, db)
+    """
+    薄封裝，供兩種呼叫端使用：
+    1. 不走治療師審核流程的直接送出（心得回合長者沉默直接送出空字串、或
+       /closing/review_request 重試用盡退回舊流程時，ShareController.cs
+       直接呼叫這支）。
+    2. 長者按下「送出故事」、真正觸發評估流程（2026-09-06 改版：治療師
+       確認只推播確認後的文字，不在確認當下就先寫資料庫/算評估，見
+       session_closing_confirm_response 說明；長者按送出時 Unity 才呼叫
+       這支，等同直接送出流程）。
+
+    如果這個 session 還留著 pending_closing_review（代表 body.text 是剛
+    經過治療師審核確認的心得文字），要用其中存的 received_at 當反應時間
+    起算點——長者實際開口回答是在治療師審核**之前**。用完就刪掉、把
+    review_status 清空，這才是真正結束、治療師網頁不用再讓治療師修改
+    的訊號（見 session_closing_confirm_response 的 awaiting_closing_submit
+    說明）。找不到就是原本的直接送出情境，行為不變。
+    """
+    r = request.app.state.redis
+    answered_at_ms = None
+    raw = await r.get(f"session:{session_id}:pending_closing_review")
+    if raw:
+        pending = json.loads(raw)
+        answered_at_ms = pending.get("received_at")
+        await r.delete(f"session:{session_id}:pending_closing_review")
+        await _update_live_view(r, session_id, review_status="")
+    return await _finalize_closing_response(
+        request, session_id, body.text, therapist_id, db,
+        answered_at_ms=answered_at_ms,
+    )
 
 
 class ClosingReviewRequestPayload(BaseModel):
@@ -1753,7 +1779,7 @@ async def session_closing_review_request(
     return {"ok": True}
 
 
-@router.post("/{session_id}/closing/confirm_response", summary="治療師確認（可能編輯過）長者的心得回答，推播回 Unity")
+@router.post("/{session_id}/closing/confirm_response", summary="治療師確認（可能編輯過）長者的心得回答，推播回 Unity，等長者按送出才觸發評估")
 async def session_closing_confirm_response(
     request: Request,
     session_id: str,
@@ -1761,27 +1787,48 @@ async def session_closing_confirm_response(
     therapist_id: int = Depends(get_current_therapist_id),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    2026-09-06 改版（跟回合1-3的 session_confirm_response 同一套理由）：
+    這裡不再直接呼叫 _finalize_closing_response（寫資料庫＋觸發五指標
+    評估＋故事摘要 LLM 呼叫）。原本設計是治療師一確認就先做完，代價是
+    治療師確認後、長者還沒按送出、療程就被結束時，這些已經算好的結果
+    會被丟棄，白白浪費一次 LLM 摘要呼叫，跟回合1-3踩到的問題是同一種。
+
+    改成這裡只把確認後的文字推播給 Unity，長者真的按下「送出故事」時
+    才會呼叫 /session/closing 觸發評估（見 ShareController.cs 的
+    OnSubmit／SubmitClosing）。
+
+    pending_closing_review 故意不刪除、只更新 text 欄位為確認後的文字：
+    received_at 要留給長者真的送出時的 /session/closing 用，反應時間才
+    能算到長者當初開口回答的那一刻。這也代表治療師可以在長者按送出前
+    重複呼叫這支修改文字，安全覆蓋、不會浪費任何已經觸發的流程。
+
+    review_status 改成 "awaiting_closing_submit"（不是共用回合1-3那個
+    "awaiting_round_submit"，也不是清空成 ""）：清空代表「完全結束」，
+    會讓治療師網頁把編輯框收掉，但長者這時候其實還沒按送出，治療師應該
+    還能改；跟回合1-3分開命名是因為治療師網頁要靠這個值判斷「重新確認
+    時該打哪一支 API」，如果兩邊共用同一個值，重新編輯時就分不出來是
+    回合1-3還是心得回合（見 LiveSessionView.tsx isClosing 判斷）。
+    """
     r = request.app.state.redis
     raw = await r.get(f"session:{session_id}:pending_closing_review")
     if not raw:
         raise HTTPException(status_code=409, detail="沒有待確認的長者心得")
     pending = json.loads(raw)
-
-    result = await _finalize_closing_response(
-        request, session_id, body.elder_response, therapist_id, db,
-        answered_at_ms=pending["received_at"],
+    pending["text"] = body.elder_response
+    await r.set(
+        f"session:{session_id}:pending_closing_review",
+        json.dumps(pending, ensure_ascii=False),
+        ex=1800,
     )
-
-    await r.delete(f"session:{session_id}:pending_closing_review")
     await _update_live_view(
-        r, session_id, elder_response=body.elder_response, review_status="",
+        r, session_id, elder_response=body.elder_response, review_status="awaiting_closing_submit",
     )
     await ws_registry.send_message(session_id, {
-        "type": "final_closing_response",
+        "type": "confirmed_closing_text",
         "elder_response": body.elder_response,
-        "closing_message": result.get("closing_message", ""),
     })
-    return result
+    return {"ok": True}
 
 
 async def _finalize_elder_response(
@@ -2029,9 +2076,39 @@ async def session_respond(
     therapist_id: int = Depends(get_current_therapist_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """薄封裝，保留給不走治療師審核流程的呼叫端（目前只剩 Unity 端在
-    STT 沒辨識到文字、或 /review_request 重試用盡退回舊流程時直接呼叫）。"""
-    return await _finalize_elder_response(request, body.elder_response, body.state, therapist_id, db)
+    """
+    薄封裝，供兩種呼叫端使用：
+    1. 不走治療師審核流程的直接送出（Unity 端在 STT 沒辨識到文字、或
+       /review_request 重試用盡退回舊流程時直接呼叫）。
+    2. 長者按下「送出故事」、真正觸發生成（2026-09-06 改版：治療師確認
+       只推播確認後的文字，不在確認當下就先生成，見 session_confirm_
+       response 說明；長者按送出時 Unity 才呼叫這支，等同直接送出流程）。
+
+    如果這個 session 還留著 pending_review（代表 body.elder_response 是
+    剛經過治療師審核確認的文字），要用 pending_review 存的 received_at
+    當反應時間起算點——長者實際開口回答是在治療師審核**之前**，不能把
+    治療師審核＋長者按送出這段延遲也算進反應時間。用完就刪掉，避免
+    下一句話誤用到這次的舊時間戳記。找不到 pending_review 就是原本的
+    直接送出情境，沿用呼叫當下的時間，行為不變。
+
+    這裡同時是「這一題真正結束、治療師網頁不用再讓治療師修改」的訊號
+    （review_status 清空成 ""，見 session_confirm_response 的
+    awaiting_round_submit 說明）——長者真的按下送出之前，pending_review
+    都還在，治療師網頁的編輯框要保持開著；長者按下送出、這支被呼叫、
+    pending_review 被消耗掉的這一刻，才是真的不能再改了。
+    """
+    r = request.app.state.redis
+    answered_at_ms = None
+    raw = await r.get(f"session:{body.state.session_id}:pending_review")
+    if raw:
+        pending = json.loads(raw)
+        answered_at_ms = pending.get("received_at")
+        await r.delete(f"session:{body.state.session_id}:pending_review")
+        await _update_live_view(r, body.state.session_id, review_status="")
+    return await _finalize_elder_response(
+        request, body.elder_response, body.state, therapist_id, db,
+        answered_at_ms=answered_at_ms,
+    )
 
 
 class ReviewRequestPayload(BaseModel):
@@ -2073,7 +2150,7 @@ async def session_review_request(
     return {"ok": True}
 
 
-@router.post("/{session_id}/confirm_response", summary="治療師確認（可能編輯過）長者這一題的回答，推播回 Unity")
+@router.post("/{session_id}/confirm_response", summary="治療師確認（可能編輯過）長者這一題的回答，推播回 Unity，等長者按送出才觸發生成")
 async def session_confirm_response(
     request: Request,
     session_id: str,
@@ -2081,27 +2158,55 @@ async def session_confirm_response(
     therapist_id: int = Depends(get_current_therapist_id),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    2026-09-06 改版：這裡不再直接呼叫 _finalize_elder_response（LLM 分類／
+    RAG／生圖那些耗時流程，一次要 20~30 秒）。原本設計是治療師一確認就先
+    把這些都做完、把完整結果推播給 Unity，讓長者按下「送出故事」時感覺是
+    瞬間完成——但代價是治療師確認後，只要長者還沒按送出、療程就被結束
+    （或長者中途離開/忘記按），這些已經算好的結果（包含真的花 API 成本
+    生成的圖片）就整份被丟棄，白白浪費運算與生圖成本（稽核：同一天測試
+    就踩到兩次，圖片明明生成成功，卻因為長者沒按送出、療程被結束而完全
+    沒被用到）。
+
+    改成這裡只把確認後的文字推播給 Unity，長者真的按下「送出故事」時
+    才會呼叫 /session/respond 觸發生成（見 GameController.cs 的
+    OnSubmit／SendResponse）——生成一定會被用到，代價是長者按下送出後
+    要重新等一次生成時間，兩種設計互有取捨，這次選擇「不做白工」優先。
+
+    pending_review 這裡故意不刪除、只更新 elder_response 欄位為確認後的
+    文字：received_at／state 都要留給長者真的送出時的 /session/respond
+    用（見該端點說明），反應時間才能算到長者當初開口回答的那一刻，不是
+    治療師審核或長者按送出的時間——這也代表治療師可以在長者按送出前
+    重複呼叫這支修改文字，pending_review 還在就會直接覆蓋成最新版本，
+    不會有任何生成流程已經跑掉、改了也沒用的問題。
+
+    review_status 故意不清空成 ""，改成 "awaiting_round_submit"：清空
+    代表「這一題完全結束」，會讓治療師網頁把編輯框收掉、切成唯讀顯示
+    （見 LiveSessionView.tsx），但長者這時候其實還沒按送出，真正的生成
+    流程根本還沒開始——治療師如果這時候發現要修改，應該還要能重新叫出
+    編輯框再送一次，不是被鎖死看唯讀文字。真正的「完全結束」訊號延後到
+    /session/respond 確認長者已經送出、pending_review 被消耗掉的那一刻
+    才發出（見該端點）。命名跟心得回合的 "awaiting_closing_submit" 分開
+    （不共用同一個值），治療師網頁要靠這個值判斷重新確認時該打哪一支
+    API，兩種回合共用同一個值的話，重新編輯時會分不出來（見
+    LiveSessionView.tsx isClosing 判斷）。
+    """
     r = request.app.state.redis
     raw = await r.get(f"session:{session_id}:pending_review")
     if not raw:
         raise HTTPException(status_code=409, detail="沒有待確認的長者回應")
     pending = json.loads(raw)
-    state = SessionState.model_validate(pending["state"])
-
-    result = await _finalize_elder_response(
-        request, body.elder_response, state, therapist_id, db,
-        answered_at_ms=pending["received_at"],
+    pending["elder_response"] = body.elder_response
+    await r.set(
+        f"session:{session_id}:pending_review",
+        json.dumps(pending, ensure_ascii=False),
+        ex=1800,
     )
-
-    await r.delete(f"session:{session_id}:pending_review")
-    # 只保留治療師確認後的版本：elder_response 欄位寫的是這裡的（可能編輯過的）
-    # 文字，長者原始 STT 逐字稿只在 pending_review 暫存過，這裡刪掉後就不留痕跡。
     await _update_live_view(
-        r, session_id, elder_response=body.elder_response, review_status="",
+        r, session_id, elder_response=body.elder_response, review_status="awaiting_round_submit",
     )
     await ws_registry.send_message(session_id, {
-        "type": "final_response",
+        "type": "confirmed_text",
         "elder_response": body.elder_response,
-        **result,
     })
     return {"ok": True}
