@@ -179,9 +179,9 @@ export function HistorySessionView({
              <div className="bg-[#f9fafb] px-6 py-5 border-t border-[#eee] flex flex-col gap-3">
                <p className="text-[12px] text-[#9aa1ab]">{reasonCaption(round.happinessPct!, round.agitationPct!)}</p>
                <div className="flex gap-8 flex-wrap">
-                 <EmotionBar label="專注度" pct={round.engagementPct!} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
-                 <EmotionBar label="表情訊號" pct={round.happinessPct!} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
-                 <EmotionBar label="肢體與語調訊號" pct={round.agitationPct!} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
+                 <EmotionBar label="投入度" pct={round.engagementPct!} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
+                 <EmotionBar label="臉部表情（正負向）" pct={round.happinessPct!} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
+                 <EmotionBar label="肢體與語調（激動程度）" pct={round.agitationPct!} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
                </div>
              </div>
            )}

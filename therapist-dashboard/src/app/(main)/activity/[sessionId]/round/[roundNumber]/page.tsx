@@ -118,9 +118,9 @@ export default function RoundDetailPage({
             <p className="text-[12px] text-[#9aa1ab]">{reasonCaption(currentRound.happinessPct, currentRound.agitationPct)}</p>
           </div>
           <div className="flex gap-6 flex-1 flex-wrap min-w-[300px]">
-            <EmotionBar label="專注度" pct={currentRound.engagementPct} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
-            <EmotionBar label="表情訊號" pct={currentRound.happinessPct} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
-            <EmotionBar label="肢體與語調訊號" pct={currentRound.agitationPct} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
+            <EmotionBar label="投入度" pct={currentRound.engagementPct} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
+            <EmotionBar label="臉部表情（正負向）" pct={currentRound.happinessPct} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
+            <EmotionBar label="肢體與語調（激動程度）" pct={currentRound.agitationPct} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
           </div>
         </div>
       )}

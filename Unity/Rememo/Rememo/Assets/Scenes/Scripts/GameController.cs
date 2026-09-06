@@ -354,6 +354,16 @@ public class GameController : MonoBehaviour
                     // 的通知（見 app/routers/session.py 呼叫 process_response 時的
                     // on_generating_image callback）；只有這個訊號會打開這個標籤，
                     // 生圖前追問Q2那種不生圖的分支不會走到這裡，不會誤顯示。
+                    //
+                    // 這個訊號常常是在治療師審核流程中收到的：長者已經回答完目前這題、
+                    // 正在等治療師平板確認（isPendingTherapistReview），這時候 aiText
+                    // 還顯示著長者剛剛回答過的舊題目。治療師一確認，後端就開始生圖並
+                    // 推播這個訊號，畫面會變成「舊題目」+「生圖中」同時出現，看起來
+                    // 像是那個舊題目還沒問完、卻已經在生圖，容易誤會（2026-09-06
+                    // 稽核：治療師反映生圖時旁邊的題目應該要清掉）。這裡把 aiText 一併
+                    // 藏起來，等 ApplyFinalResponse 套用新一輪回應時會自己重新顯示
+                    // （見該函式），不用另外處理復原。
+                    aiText.gameObject.SetActive(false);
                     if (generatingImageText != null) generatingImageText.SetActive(true);
                     break;
             }
@@ -596,7 +606,21 @@ public class GameController : MonoBehaviour
         RefreshSubmitButton();
         ResetInputText();
         aiText.gameObject.SetActive(false);
-        loadingSpinner.SetActive(true);
+
+        // 這一題治療師確認前的回答，後端在治療師平板按下確認時就已經處理完
+        // （_finalize_elder_response 由 /confirm_response 呼叫），如果那次
+        // 處理剛好觸發生圖，會推播「generating_image」把 loadingSpinner／
+        // generatingImageText 打開。SendResponse（長者直接送出、沒經過治療師
+        // 審核）成功拿到回應後會清掉這兩個提示才呼叫 ApplyFinalResponse（見該
+        // 函式），但這條治療師審核確認的路徑原本沒有對應的清除邏輯——題目/
+        // 照片/音檔都被 ApplyFinalResponse 正常顯示出來了，轉圈圈卻永遠不會
+        // 消失（2026-09-06 稽核：治療師反映題目都出來了畫面還在轉圈圈）。這裡
+        // 補上跟 SendResponse 一致的清除，而且要放在 ApplyFinalResponse 之前
+        // ——resp.action == "end_round" 時 ApplyFinalResponse 內部會另外
+        // StartCoroutine(StartRound(...)) 重新打開 loadingSpinner 準備載入
+        // 下一回合，清除邏輯放後面會把它剛打開的 spinner 又關掉。
+        loadingSpinner.SetActive(false);
+        if (generatingImageText != null) generatingImageText.SetActive(false);
 
         yield return StartCoroutine(ApplyFinalResponse(resp));
 

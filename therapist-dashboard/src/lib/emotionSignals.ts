@@ -22,7 +22,7 @@ export const DIMENSION_COLORS = {
 export type SignalCategory = "face" | "eye" | "body" | "speaker";
 
 export const SIGNAL_TEXT: Record<string, { category: SignalCategory; text: string }> = {
-  face_not_detected: { category: "face", text: "本回合未偵測到臉部畫面，表情訊號僅供參考" },
+  face_not_detected: { category: "face", text: "本回合未偵測到臉部畫面，臉部表情僅供參考" },
   face_smile: { category: "face", text: "有微笑" },
   face_smile_slight: { category: "face", text: "略帶微笑" },
   face_frown: { category: "face", text: "沒有明顯笑容" },
@@ -111,15 +111,19 @@ export const SIGNAL_DIMENSION: Record<string, Dimension> = {
   // 對「為什麼專注度這麼低」是關鍵情境資訊，歸進專注度底下一起顯示。
   body_left_seat: "engagement",
   // 身體收縮/封閉姿勢（C 階段草稿）：也不是任何一條量表加權公式的一部分，
-  // 是 _classify_from_scores 判斷「低落」的第二條獨立驗證路徑（跟
-  // engagement 退縮是 or 的關係，見 sensor.py 的完整說明），功能上跟
+  // 是 _classify_from_scores 判斷「低落」的加強確認條件（2026-09-06 改成
+  // 要跟 engagement 退縮同時成立的 and 關係，查證失智/淡漠評估文獻後認為
+  // 單一姿勢訊號證據力不足以獨立否決，見 sensor.py 的完整說明），功能上跟
   // engagement 退縮是同一類角色，所以歸在這裡顯示。
   body_constricted: "engagement",
-  // 沒偵測到臉部時 au 是空字典，happiness 100% 是 _face_happiness(au)
-  // （聳肩已經改進 agitation，表情訊號不再摻任何骨架資料），比「表情訊號」
-  // 以外任何量表都更依賴臉部資料（engagement 只有 30% 權重來自臉），所以
-  // 歸在這裡而不是 engagement——這個標籤本身不影響加權公式，純粹是提醒
-  // 治療師「這個百分比這次不可信」。
+  // happiness 100% 是 _face_happiness(au)（聳肩已經改進 agitation，表情訊號
+  // 不再摻任何骨架資料），比「表情訊號」以外任何量表都更依賴臉部資料
+  // （engagement 只有 30% 權重來自臉），所以歸在這裡而不是 engagement。
+  // 2026-09-06 前：沒偵測到臉時這個百分比會被當中性（0分）拉進平均，這個
+  // 標籤是用來提醒治療師「這次百分比不可信」；改成沒偵測到臉就不更新
+  // happiness 的 EMA（見 sensor.py _ema_classify）之後，百分比只反映真的
+  // 偵測到臉的那些幀，不會再被稀釋，這個標籤現在單純是「這回合期間有
+  // 追丟臉部的情況」的情境資訊，不影響百分比本身的可信度。
   face_not_detected: "happiness",
   face_smile: "happiness",
   face_smile_slight: "happiness",

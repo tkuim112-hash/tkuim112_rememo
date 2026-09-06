@@ -54,28 +54,41 @@ export default function WarmupPage({ params }: { params: Promise<{ sessionId: st
       .catch(() => {});
   }, [caseId]);
 
-  // 每秒從後端 polling 目前暖身動作卡。暖身每張卡通常十幾秒就換過，比主活動
-  // LiveSessionView 的 2 秒 metrics polling 間隔更短，避免治療師端明顯慢半拍。
+  // 從後端 polling 目前暖身動作卡。原本是 1 秒一次，但 Unity 換卡當下就會
+  // 立刻回報（見 WarmupCardController.ShowCurrentCard／ReportWarmupProgress），
+  // 1 秒的 polling 間隔會讓治療師端最差情況慢半拍快 1 秒才反映換卡，實測
+  // 感覺得出來。改成 300ms，跟 Unity 自己的 progressReportInterval 對齊，
+  // 感知延遲收斂到跟 Unity 回報節奏差不多，不再明顯慢半拍。
   useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
     const poll = async () => {
       try {
         const res = await fetch(`${API_BASE}/session/${sessionId}/warmup_progress`, {
           credentials: "include",
         });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.card_key) setCardKey(data.card_key);
-        setCardIndex(data.card_index ?? 0);
-        setTotalCards(data.total_cards ?? 0);
-        setAllCompleted(Boolean(data.all_completed));
+        if (res.ok) {
+          const data = await res.json();
+          if (data.card_key) setCardKey(data.card_key);
+          setCardIndex(data.card_index ?? 0);
+          setTotalCards(data.total_cards ?? 0);
+          setAllCompleted(Boolean(data.all_completed));
+        }
       } catch {
         // 網路暫時中斷時保留上次數值，不中斷顯示
+      } finally {
+        // 用 setTimeout 串行而不是 setInterval，避免請求偶爾變慢時同時有
+        // 多個 in-flight request 疊加、彼此搶著更新畫面。
+        if (!cancelled) timer = setTimeout(poll, 300);
       }
     };
 
     poll();
-    const timer = setInterval(poll, 1000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [sessionId]);
 
   const currentCard = cardKey ? WARMUP_CARDS[cardKey] : undefined;
