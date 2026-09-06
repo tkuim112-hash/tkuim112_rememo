@@ -39,8 +39,7 @@ ELBOW_FLARE_SHOULDER_RATIO_MAX = 0.5    # 有肩寬基準時：現在距離 / �
 
 # 臉部訊號改用 py-feat（face-service）分析 Kinect 彩色畫面得到的 FACS AU 強度，
 # 取代 Kinect 內建 Face API 只有 8 個粗糙布林屬性的做法（詳見專案記憶
-# project_openface_kinect_emotion_redesign）。這裡的門檻是初版映射，跟原本
-# Kinect 版一樣是手調的經驗值，之後需要用真實資料重新校準：
+# project_openface_kinect_emotion_redesign）。這裡的門檻是初版映射：
 AU_PRESENT_MIN = 0.5   # AU 強度判定為「有出現」的門檻（py-feat 輸出範圍依模型版本而定）
 YAW_AWAY_MAYBE = 15.0   # 度：頭部偏轉角度，視線「可能」離開畫面
 YAW_AWAY_YES   = 25.0   # 度：頭部偏轉角度，視線「確定」離開畫面
@@ -466,9 +465,6 @@ def _classify_from_scores(
              高激動預設偏向亢奮而不是焦躁，比預設成負面標籤保守）
     適當  — 其餘情況（arousal 低但仍有參與、body 也沒收縮，或 valence 已轉正）
 
-    AROUSAL_LOW_MAX/ENGAGEMENT_WITHDRAWN_MAX/ELBOW_FLARE_CONSTRICTED_MAX
-    都是手調的經驗值，沒有實測資料驗證，跟舊版的限制是同一種，只是換了個
-    有文獻依據的骨架去承載。
     """
     if agitation < AROUSAL_LOW_MAX:
         if engagement < ENGAGEMENT_WITHDRAWN_MAX and constricted and happiness <= 0:
