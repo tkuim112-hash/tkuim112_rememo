@@ -20,6 +20,8 @@ SPINEBASE_LEAVING_Z = 3.0    # m：SpineBase Z 超過此深度視為移離遊戲
 PITCH_VAR_EXCITED   = 50.0   # Hz²：音高變異閾值（焦躁/亢奮，無有效個人校正基準時的退回值）
 PITCH_VAR_STD_K     = 2.0    # 個人化門檻＝baseline + k×標準差 的 k，見 _pitch_threshold
 HANDTIP_ACTIVE_MIN  = 0.05   # m/s：手部主動互動速度閾值
+AUDIO_RMS_STD_K     = 4.0    # 個人化語音門檻＝底噪 baseline + k×標準差 的 k，見 _audio_threshold
+AUDIO_RMS_THRESHOLD_MIN = 0.006  # RMS：個人化門檻的下限，避免底噪本身的量測雜訊被誤判成語音
 
 # C 階段：身體收縮姿勢（草稿，未經真實資料校準）。文獻上收縮/封閉姿勢
 # （手臂收緊貼近軀幹）跟「低激動+負向情緒」明確相關，比展開姿勢的證據
@@ -407,7 +409,7 @@ def _reasoning_signals(
     if p.skel_spinebase_z is not None and p.skel_spinebase_z > SPINEBASE_LEAVING_Z:
         codes.append("body_left_seat")
 
-    if p.audio_rms > AUDIO_SPEECH_MIN:
+    if p.audio_rms > _audio_threshold(calib):
         codes.append("speaker_speaking")
     else:
         codes.append("speaker_quiet")
@@ -500,6 +502,32 @@ def _pitch_threshold(calib: dict | None) -> float:
     return PITCH_VAR_EXCITED
 
 
+def _audio_threshold(calib: dict | None) -> float:
+    """
+    個人化語音音量門檻：校正期間量到的底噪（環境噪音＋麥克風/Kinect陣列本身
+    的量測雜訊）baseline + k×標準差，沒有效校正基準時退回固定值 AUDIO_SPEECH_MIN。
+
+    跟 _pitch_threshold 刻意反方向：那邊的個人化門檻只會往上調（避免把天生
+    音高起伏大的人誤判成焦躁），這裡的個人化門檻只會往下調、絕不會比固定值
+    高（2026-09-06 稽核發現：長者說話音量較小、或 Kinect 陣列麥克風離長者
+    較遠時，實際 audio_rms 可能整場都不到寫死的 0.015，STT 那邊有正常轉出
+    逐字稿，代表音訊管線是通的，純粹是這個判斷門檻對這個人/這個現場環境
+    設太高，語音永遠不會被判定成「有講話」，連帶讓 silence_rate 被拉到誤觸發
+    _score_emotion 的低落覆寫、KinectSensorSender 也偵測不到反應時間）。
+
+    用「校正期間量到的底噪」設門檻而不是像音高一樣量「說話時的分布」，是
+    因為 15 秒校正窗口只要求長者坐穩、不要求開口說話，蒐集到的樣本本來就
+    以環境音為主；門檻設在「底噪之上一點」足以把真正的語音跟環境音分開，
+    且這個做法不需要額外要求長者在校正時開口，不用改動校正流程。
+    """
+    if calib:
+        baseline = calib.get("audioRmsBaseline", 0.0)
+        std = calib.get("audioRmsStdDev", 0.0)
+        if baseline > 0.0:
+            return min(AUDIO_SPEECH_MIN, max(AUDIO_RMS_THRESHOLD_MIN, baseline + AUDIO_RMS_STD_K * std))
+    return AUDIO_SPEECH_MIN
+
+
 # ════════════ EMA 平滑（狀態存 Redis）════════════════════════════════
 
 async def _ema_classify(
@@ -531,7 +559,7 @@ async def _ema_classify(
     prev_agi = float(ema.get("agitation",  0))
 
     # 計算本次原始三維分數
-    audio_eng = 1.0 if p.audio_rms > AUDIO_SPEECH_MIN else 0.0
+    audio_eng = 1.0 if p.audio_rms > _audio_threshold(calib) else 0.0
     skel_eng  = _skel_engagement(p)  # None＝兩個骨架關節都完全追丟，見該函式說明
     # B 階段：音高變異混入焦躁計算（門檻＝個人校正基準 + k×標準差，見 _pitch_threshold）
     pitch_agi   = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))
@@ -686,7 +714,7 @@ async def _update_session_stats(
     # 因此曾被拿掉不用（見 session.py _score_emotion 說明）。
     if waiting_for_response:
         pipe.hincrby(key, "waiting_n", 1)
-        if p.audio_rms < AUDIO_SPEECH_MIN and not skel_absent:
+        if p.audio_rms < _audio_threshold(calib) and not skel_absent:
             pipe.hincrby(key, "silence_n", 1)
 
     # B 階段：SpineBase 深度（長者後退離開遊戲區域）。跟 face_detected_n 是

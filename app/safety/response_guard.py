@@ -468,6 +468,34 @@ def judgment_evidence_unsupported(evidence: str, elder_response: str) -> bool:
     return False
 
 
+# 錨點內容開放式、無法窮舉成固定詞表，沿用 judgment_evidence_unsupported 的
+# 引號宣稱＋substring 核對手法：STEP2/3 prompt 要求模型額外輸出「錨點：」，
+# 用引號逐字標出這題真正引用的來源片段，這裡核對是否真的存在。
+def question_anchor_unsupported(
+    anchor: str,
+    elder_response: str,
+    pre_image_detail: str,
+    scene_elements: list[str] | None,
+) -> bool:
+    """True 代表「錨點」欄位裡引號標出的內容，沒有出現在長者剛才說的話、
+    生圖前分享的內容、或畫面元素任何一項裡——是編造出來、跟真實素材無關的
+    話題，需要重新生成。沒有用引號（例如純時間回指「那個時候」，或寫「無」）
+    不算違規，只有「宣稱這是引用」卻找不到出處時才算。"""
+    if not anchor:
+        return False
+    sources = [elder_response or "", pre_image_detail or "", "、".join(scene_elements or [])]
+    normalized_sources = [_PUNCT_STRIP_RE.sub("", s) for s in sources if s]
+    if not normalized_sources:
+        return False
+    for match in _QUOTED_RE.finditer(anchor):
+        normalized_quote = _PUNCT_STRIP_RE.sub("", match.group())
+        if not normalized_quote:
+            continue
+        if not any(normalized_quote in src for src in normalized_sources):
+            return True
+    return False
+
+
 # 2026-08-17稽核（實測後補）：分類「1」代表長者覺得圖跟記憶一致，但實測
 # 案例（長者說「柚子帽不像他印象中的樣子」）判斷依據欄位忠實引用了「不像」
 # 兩字，分類卻還是選1——證據寫對了，分類數字選反，不是judgment_evidence_
@@ -1250,6 +1278,35 @@ async def guarded_generate(
         # classification_lacks_discrepancy_evidence 已 retired，不再掛在這裡
         # ——見該函式上方 2026-08-18 稽核說明（分類2、3合併後，原本只排除
         # 分類3的誤判風險，現在會出現在合併後的分類2身上）。
+
+        # 問題錨點跟長者上一句話無關的話題跳躍（見 question_anchor_unsupported
+        # 上方註解）。只有 STEP2/STEP3 的 generate_fn 有「anchor」欄位，其餘
+        # 沒有這個 key，result.get 拿到空字串，函式本身直接回 False，不受影響。
+        anchor_val = result.get("anchor", "")
+        if question_anchor_unsupported(
+            anchor_val, elder_response_val,
+            generate_kwargs.get("pre_image_detail", ""),
+            generate_kwargs.get("scene_elements"),
+        ):
+            logger.warning(
+                f"[ResponseGuard] 問題錨點編造、找不到出處: {anchor_val!r}，"
+                f"重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的「錨點」欄位寫「{anchor_val}」，但這個內容沒有出現在"
+                "長者剛才說的話、長者生圖前分享的內容，或眼前畫面元素裡——這是"
+                "自己編造、跟這次真實素材無關的話題（例如長者在講三杯雞，問題"
+                "卻突然問起滷豬腳）。這次請重新讀一遍【長者剛才說的話】，只根據"
+                "長者這次實際提到的具體人事物、或畫面元素本身出題，不要無中生"
+                "有一個新的具體事物。"
+            )
+            # question_only_retry_fn 只保證回傳 question／covered_w，不保證
+            # 附帶重新生成的 anchor——鎖住其餘欄位會讓舊的（違規）anchor
+            # 留在 result 裡，下一輪立刻用同一個值再違規一次，白白燒重試
+            # 次數，故一律解鎖整包重新生成。
+            locked_fields = None
+            attempt += 1
+            continue
 
         # 格式/內容規則（too_long、double_question、memory_test、精確地名時間、
         # 要求描述畫面內容、已知用詞瑕疵，詳見 check_format_rules 上方註解）。

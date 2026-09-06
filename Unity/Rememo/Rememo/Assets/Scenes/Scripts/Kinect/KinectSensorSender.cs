@@ -33,7 +33,9 @@ public class KinectSensorSender : MonoBehaviour
     public KinectAudioSender audioSender;
 
     [Header("反應時間偵測")]
-    [Tooltip("麥克風 RMS 超過此值視為長者開始說話（用於計算反應時間）。預設 0.015")]
+    [Tooltip("麥克風 RMS 超過此值視為長者開始說話（用於計算反應時間）。預設 0.015，" +
+             "校正完成後會被 CalibrationData.AudioSpeechThreshold（個人化底噪門檻）覆蓋，" +
+             "這裡只在離線/demo 模式（沒跑過校正）時生效")]
     public float audioSpeechThreshold = 0.015f;
 
     [Header("臉部畫面設定")]
@@ -156,8 +158,14 @@ public class KinectSensorSender : MonoBehaviour
         // 分析現在是每 sendInterval 才做一次的非同步請求，沒有逐幀可用的嘴部
         // 動作訊號可以拿來加速偵測，見本檔案開頭類別註解的「已知行為變化」。
         float audioRms = audioSender != null ? audioSender.CurrentAudioRms : 0f;
+        // 校正完成時優先用 KinectCalibrationManager 依這位長者/這次現場底噪算出的
+        // 個人化門檻（CalibrationData.AudioSpeechThreshold），沒校正過（離線/demo
+        // 模式）才退回 Inspector 設的固定值，理由見 CalibrationData 欄位說明。
+        float effectiveThreshold = CalibrationData.IsCalibrated
+            ? CalibrationData.AudioSpeechThreshold
+            : audioSpeechThreshold;
         int responseMs = -1;
-        if (!responseTimeSent && questionAskedTime >= 0f && audioRms > audioSpeechThreshold)
+        if (!responseTimeSent && questionAskedTime >= 0f && audioRms > effectiveThreshold)
         {
             responseMs       = Mathf.RoundToInt((Time.realtimeSinceStartup - questionAskedTime) * 1000f);
             responseTimeSent = true;
