@@ -215,10 +215,17 @@ def _face_happiness(au: dict) -> float:
     return 0.0  # 沒有明確訊號（沒偵測到臉、或表情中性）
 
 
-def _skel_engagement(p: SensorPayload) -> float:
+def _skel_engagement(p: SensorPayload) -> float | None:
     """
     骨架參與度 [−2, +2]。
     低頭（疲勞/低落）和前傾（投入/興趣）是比臉部更穩定的老年人行為指標。
+
+    回傳 None（而不是 0.0）代表兩個關節都完全追丟，真的沒有任何骨架資料可用——
+    跟「有資料、算出來的分數剛好是 0（中性）」要能區分開來，呼叫端（_ema_classify）
+    才能在真的沒資料時跳過這一幀的 engagement EMA 更新，不要把「追丟」誤當成
+    「骨架顯示中性」去平均，稀釋掉其他幀真正偵測到的訊號（跟 happiness 只信
+    臉部單一管道時的稀釋問題是同一種，這裡因為 engagement 還有臉部/音量兩個
+    來源撐著，影響較小，但邏輯上該一致處理）。
     """
     score, count = 0.0, 0
 
@@ -237,7 +244,7 @@ def _skel_engagement(p: SensorPayload) -> float:
             score -= 0.5  # 後仰 = 輕微退縮
         count += 1
 
-    return max(-2.0, min(2.0, score / count)) if count else 0.0
+    return max(-2.0, min(2.0, score / count)) if count else None
 
 
 def _skel_tension(p: SensorPayload) -> float:
@@ -421,19 +428,28 @@ def _classify_from_scores(
 
     engagement／constricted 是低激動象限裡的裁判：valence 非正向（中性或
     負向）、arousal 也低時，可能是「安穩參與」也可能是「放空退縮/安靜地
-    情緒低落」，需要 engagement 明顯退縮**或**身體呈現收縮/封閉姿勢
-    （constricted，見 _is_body_constricted）其中一個成立才判低落，不會
+    情緒低落」，需要 engagement 明顯退縮**且**身體呈現收縮/封閉姿勢
+    （constricted，見 _is_body_constricted）兩者同時成立才判低落，不會
     因為只是「安靜」就被誤判。
 
-    constricted（C 階段，2026-09-05 新增）是這個分支的第二條獨立驗證路徑，
-    不是取代 engagement：查證過的心理生理學文獻指出身體收縮/封閉姿勢
-    （手臂收緊貼近軀幹）跟「低激動+負向情緒」明確相關，比展開姿勢的證據
-    更一致（展開姿勢跟正向/激動的關係是 mixed，沒有採用，見專案文獻查證）。
-    用 or 不用 and，是因為這兩個訊號來源不同（engagement 主要看骨架姿勢+
-    臉部注意力+音量；constricted 只看手肘離身體中心線的距離），只要其中
-    一個獨立訊號給出明確的「退縮/收縮」訊號，就足以驗證 happiness<=0 不是
-    單一雜訊管道的誤判——這跟原本只用 engagement 一個驗證管道時的邏輯是
-    同一種精神，只是多了一條路徑，減少假陰性（漏掉真正低落的案例）。
+    constricted（C 階段，2026-09-05 新增）原本是跟 engagement 平行的獨立
+    驗證路徑（or 關係，任一個成立就算數），2026-09-06 改成必須跟 engagement
+    同時成立（and）：查證失智/老年淡漠（apathy）評估文獻後發現，臨床上
+    對淡漠/退縮的評估明確要求跨行為/情緒/社交互動多面向一起看，不能只憑
+    單一指標下結論（Apathy, cognitive function and motor function in
+    Alzheimer's disease）；而臨床上已驗證跟淡漠有相關性的具體指標是表情
+    豐富度（Correlations Between Facial Expressivity and Apathy in Elderly
+    People With Neurocognitive Disorders）——這條路徑我們已經用 happiness
+    的 AU 分數涵蓋了，body_constricted 這種純骨架幾何量測（手肘離身體中心
+    線的距離）並沒有同等的臨床實證支持，且已知會被「單純坐姿習慣、怕冷、
+    關節不適」等跟情緒無關的原因誤觸發（另見多模態情緒融合文獻查證：決策層
+    融合方法 MAX/SUM/模糊積分/D-S證據理論本身沒有回答「單一線索夠不夠」，
+    不能反過來當作 or 關係的支持）。engagement 是視線＋頭部＋嘴部＋音量
+    綜合出來的複合分數，證據量遠比 constricted 這個單一幾何量測豐富，讓
+    兩者用 or 並列、給同等否決力量並不合理——改成 and 之後，constricted
+    的角色從「獨立就能判定」降為「跟 engagement 一起出現時的加強確認」，
+    更符合「多面向證據需同時出現」的臨床方向，也更保守（跟本專案「寧可
+    漏掉、不要誤判」的一貫原則一致，見下方 happiness<0 驗證的相同取捨）。
 
     這裡刻意不讓 happiness<0 單獨繞過驗證直接判低落，是討論過的取捨：
     聳肩（_skel_tension）2026-09-05 定案改進 agitation 的加權項（見上方
@@ -444,7 +460,7 @@ def _classify_from_scores(
     案例（假陰性），也不要把還在正常參與的長者誤判成低落（假陽性）——
     「低落」這個標籤在治療師端評估表是 1 分（最差），誤觸發的代價比較高。
 
-    低落  — arousal 低 + （明顯退縮 或 身體收縮） + valence 沒有轉正
+    低落  — arousal 低 + （明顯退縮 且 身體收縮） + valence 沒有轉正
     焦躁  — arousal 高 + valence 負向
     亢奮  — arousal 高 + valence 非負向（含中性——沒有明確負向訊號時，
              高激動預設偏向亢奮而不是焦躁，比預設成負面標籤保守）
@@ -455,7 +471,7 @@ def _classify_from_scores(
     有文獻依據的骨架去承載。
     """
     if agitation < AROUSAL_LOW_MAX:
-        if (engagement < ENGAGEMENT_WITHDRAWN_MAX or constricted) and happiness <= 0:
+        if engagement < ENGAGEMENT_WITHDRAWN_MAX and constricted and happiness <= 0:
             return "sad"
         return "happy"
     return "angry" if happiness < 0 else "excited"
@@ -499,6 +515,17 @@ async def _ema_classify(
 
     EMA 平滑的必要性：MCI 長者訊號不穩定（偶發性視線離開、臉部動作弱），
     單點分類雜訊大，需要時間平滑才能反映真實狀態。
+
+    happiness 的 EMA 只在這一幀真的偵測到臉（au 非空字典）時才更新，engagement
+    的 EMA 只在骨架至少有一個關節追蹤到時才更新（見 _skel_engagement），沒有
+    對應訊號的幀直接沿用上一次的值——「沒偵測到」跟「偵測到、但剛好是中性」
+    是兩回事，沒有這個保護的話，長者只要移動導致鏡頭/骨架頻繁追丟，這些維度
+    就會被不斷拉回中性，把真正偵測到的訊號稀釋掉（2026-09-06 稽核：某回合
+    六成幀數沒偵測到臉，導致明顯的皺眉訊號被稀釋成中性偏負的分數）。
+    happiness 100% 只靠臉部這一個管道，受影響最大；engagement 還有音量
+    （20%）撐著，受影響較小；agitation 完全不依賴臉部/單一骨架關節（晃動、
+    音高、聳肩三個來源都各自有自己的「沒訊號=沒有」合理預設，不是「假裝
+    知道答案」，見各自函式說明），沒有這個問題，維持每幀都更新。
     """
     ema_key = f"session:{session_id}:ema"
     ema = await r.hgetall(ema_key)
@@ -509,12 +536,7 @@ async def _ema_classify(
 
     # 計算本次原始三維分數
     audio_eng = 1.0 if p.audio_rms > AUDIO_SPEECH_MIN else 0.0
-    raw_eng = (
-        _face_engagement(au, pose) * 0.30 +   # 臉部注意力（老年人較弱，權重 30%）
-        _skel_engagement(p)        * 0.50 +   # 骨架姿勢（更可靠，權重 50%）
-        audio_eng                   * 0.20    # 音量（說話 = 有參與，權重 20%）
-    )
-    raw_hap = _face_happiness(au)  # 純粹是臉部表情，聳肩不影響這裡（見下方 raw_agi）
+    skel_eng  = _skel_engagement(p)  # None＝兩個骨架關節都完全追丟，見該函式說明
     # B 階段：音高變異混入焦躁計算（門檻＝個人校正基準 + k×標準差，見 _pitch_threshold）
     pitch_agi   = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))
     tension_agi = min(1.0, _skel_tension(p) / 2.0)  # _skel_tension 上界是 2.0，正規化成 [0,1]
@@ -523,27 +545,46 @@ async def _ema_classify(
         + pitch_agi   * 0.25
         + tension_agi * 0.15  # 聳肩，權重刻意壓低，見 _skel_tension 的已知限制說明
     )
-
-    # 套用個人校正基準（補償天生習慣，避免誤判）
-    if calib:
-        # 若長者校正時視線自然偏移，降低 looking_away 懲罰
-        if _looking_away_level(pose) in ("yes", "maybe"):
-            raw_eng += calib.get("lookingAwayBaseline", 0.0) * 2.0
-        # 校正期間的快樂基準反映靜止表情，從當前分數扣除避免虛高
-        raw_hap -= calib.get("happyBaseline", 0.0) * 1.5
-
-    # 校正補償是加/減法，理論上可能把值推出 ENGAGEMENT_RANGE/HAPPINESS_RANGE
-    # 宣告的範圍（見上方常數註解的公式推導）。這裡先夾回宣告範圍再做 EMA，
-    # 確保存進 Redis 的 EMA 狀態本身就沒有超界，不是只靠 _pct() 在最後
-    # 顯示時把百分比削平——後者只解決顯示層的當機/異常值，EMA 內部狀態
-    # 超界仍會讓收斂後的分數失真。
-    raw_eng = max(ENGAGEMENT_RANGE[0], min(ENGAGEMENT_RANGE[1], raw_eng))
-    raw_hap = max(HAPPINESS_RANGE[0], min(HAPPINESS_RANGE[1], raw_hap))
-
-    # EMA 更新
-    new_eng = prev_eng + EMA_ALPHA * (raw_eng - prev_eng)
-    new_hap = prev_hap + EMA_ALPHA * (raw_hap - prev_hap)
     new_agi = prev_agi + EMA_ALPHA * (raw_agi - prev_agi)
+
+    # EMA 更新：agitation 每一幀都更新，但 engagement／happiness 只在真的有對應
+    # 訊號時才更新——「沒偵測到」跟「偵測到、但剛好是中性/沒有」是兩回事，如果
+    # 每一幀都無條件把「沒偵測到」當成 0 套進 EMA，長者只要頻繁轉頭/移動導致
+    # 追丟臉部或骨架，這個維度就會被不斷拉回中性，把真正偵測到的訊號稀釋掉，
+    # 看起來比實際更平淡（2026-09-06 稽核：某回合 60% 幀數沒偵測到臉，導致
+    # 有偵測到的皺眉訊號被稀釋成中性偏負的分數）。沒訊號的幀直接維持上一次的
+    # EMA 不變——沒有新訊號就不該改變我們的估計，等真的再有訊號才繼續更新，
+    # 而不是把「追丟」當成「轉中性」。engagement 的骨架分量完全追丟時是同樣
+    # 處理，但因為 engagement 還有臉部（30%）／音量（20%）兩個獨立來源，
+    # 影響比 100% 只靠臉部的 happiness 小很多。
+    if skel_eng is not None:
+        raw_eng = (
+            _face_engagement(au, pose) * 0.30 +   # 臉部注意力（老年人較弱，權重 30%）
+            skel_eng                    * 0.50 +   # 骨架姿勢（更可靠，權重 50%）
+            audio_eng                   * 0.20     # 音量（說話 = 有參與，權重 20%）
+        )
+        # 套用個人校正基準（補償天生習慣，避免誤判）
+        if calib:
+            # 若長者校正時視線自然偏移，降低 looking_away 懲罰
+            if _looking_away_level(pose) in ("yes", "maybe"):
+                raw_eng += calib.get("lookingAwayBaseline", 0.0) * 2.0
+        # 校正補償是加法，理論上可能把值推出 ENGAGEMENT_RANGE 宣告的範圍（見上方
+        # 常數註解的公式推導）。這裡先夾回宣告範圍再做 EMA，確保存進 Redis 的
+        # EMA 狀態本身就沒有超界，不是只靠 _pct() 在最後顯示時把百分比削平——
+        # 後者只解決顯示層的當機/異常值，EMA 內部狀態超界仍會讓收斂後的分數失真。
+        raw_eng = max(ENGAGEMENT_RANGE[0], min(ENGAGEMENT_RANGE[1], raw_eng))
+        new_eng = prev_eng + EMA_ALPHA * (raw_eng - prev_eng)
+    else:
+        new_eng = prev_eng
+    if au:
+        raw_hap = _face_happiness(au)  # 純粹是臉部表情，聳肩不影響這裡（見上方 raw_agi）
+        if calib:
+            # 校正期間的快樂基準反映靜止表情，從當前分數扣除避免虛高
+            raw_hap -= calib.get("happyBaseline", 0.0) * 1.5
+        raw_hap = max(HAPPINESS_RANGE[0], min(HAPPINESS_RANGE[1], raw_hap))
+        new_hap = prev_hap + EMA_ALPHA * (raw_hap - prev_hap)
+    else:
+        new_hap = prev_hap
 
     await r.hset(ema_key, mapping={
         "engagement": str(new_eng),

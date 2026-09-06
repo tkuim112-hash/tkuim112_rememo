@@ -597,10 +597,25 @@ def _score_attention(looking_away_rate: float, eye_closed_rate: float) -> int:
     return 4
 
 
-def _score_engagement(looking_away_rate: float, mouth_moved_rate: float, high_sway_rate: float) -> int:
-    """參與度：干擾行為(晃動) > 不注意 > 主動說話 的優先判斷順序。"""
-    if high_sway_rate > 0.50:                              return 1  # 干擾
-    if looking_away_rate > 0.50:                           return 2  # 被動
+def _score_engagement(looking_away_rate: float, mouth_moved_rate: float, angry_rate: float) -> int:
+    """
+    參與度：干擾(焦躁) > 不注意 > 主動說話 的優先判斷順序。
+
+    原本用「晃動比率」（high_sway_rate，body_sway > SWAY_AGITATION_MIN 的比率）
+    判斷干擾，但 body_sway 這顆訊號在即時分類（_ema_classify/_classify_from_
+    scores）裡代表的是 arousal（激動程度），激動不等於負面：同樣晃動高，配上
+    正向/中性表情會被即時分類判成「亢奮」（_classify_from_scores 裡是可接受
+    的結果），配上負向表情才是「焦躁」。原本這裡完全不看情緒方向，晃動比率
+    一超過門檻就直接砍到參與度最低分，會出現長者聊到懷念往事很興奮、比手畫
+    腳（晃動高），即時畫面判「亢奮」，但同一份報告的參與度卻寫「1分:干擾」
+    的自相矛盾（2026-09-06 稽核）。
+
+    改用 angry_rate（這回合被分類成「焦躁」的頻率）取代——「焦躁」本身就是
+    「高激動 + 負向情緒」的組合（見 _classify_from_scores），已經排除了正向
+    的「亢奮」，跟即時分類的解讀維持一致，不用另外重新判斷情緒方向。
+    """
+    if angry_rate > 0.50:                                    return 1  # 干擾
+    if looking_away_rate > 0.50:                             return 2  # 被動
     if mouth_moved_rate > 0.30 and looking_away_rate < 0.30: return 4  # 主動
     return 3                                                          # 可配合
 
@@ -813,9 +828,16 @@ async def session_status(
     calibrating：Unity 目前是否連著 /ws/calibration、正在跑校正流程但還沒完成
       （見 ws_registry.py）；跟 calibrated 互斥，一旦 calibrated 為 true 就不算 calibrating。
     requested：治療師是否已按下「啟動療程」（/session/start 已被呼叫，但 LLM 分類／
-      RAG 檢索／TTS 合成不保證跑完）。Unity 的 WarmupController 只需要這個訊號就能
-      切去 InstructionScene，讓真正耗時的生成過程用說明頁的進度條呈現，不用在
-      WarmupScene 乾等。
+      RAG 檢索／TTS 合成不保證跑完）。
+    warmup_ready：治療師網頁的暖身頁面是否已經真的載入、開始 poll
+      warmup_progress（見 session_warmup_progress_get 那支設定這個旗標）。
+      Unity 的 WarmupController 除了 requested，還要等這個旗標才會切去
+      WarmupGameScene——治療師網頁跳轉到暖身頁面（router.push）不會等
+      /session/start 那支耗時的生成流程跑完，但頁面切換、React 掛載還是
+      需要一點時間，如果 Unity 只看 requested 就切場景，有機會比治療師
+      網頁還早進暖身頁面，治療師端還沒開始 polling 就已經漏看最前面幾張
+      卡片的回報。多等這個旗標，確保 Unity 一定是「治療師網頁已經在看」
+      之後才開始跑，不用賭兩邊時間差。
     started：/session/start 是否已完整跑完（session:{id}:meta 已建立），代表第一回合
       內容真的生成好了。InstructionScene 靠這個訊號決定何時把內容拿回來、進場 GameScene。
     """
@@ -823,11 +845,13 @@ async def session_status(
     calibrated = bool(await r.exists(f"session:{session_id}:calibration"))
     calibrating = (not calibrated) and ws_registry.is_calibrating(session_id)
     requested = bool(await r.exists(f"session:{session_id}:requested"))
+    warmup_ready = bool(await r.exists(f"session:{session_id}:warmup_ready"))
     started = bool(await r.exists(f"session:{session_id}:meta"))
     return {
         "calibrated": calibrated,
         "calibrating": calibrating,
         "requested": requested,
+        "warmup_ready": warmup_ready,
         "started": started,
     }
 
@@ -1083,17 +1107,38 @@ async def session_control(
     if body.action == "end":
         r = request.app.state.redis
         meta_raw = await r.get(f"session:{session_id}:meta")
+        patient_id = None
         if meta_raw:
-            patient_id = json.loads(meta_raw).get("patient_id")
+            patient_id = _to_int(json.loads(meta_raw).get("patient_id"))
             if patient_id:
                 await r.delete(f"patient:{patient_id}:active")
-        # 治療師提前手動結束（長者可能還沒念到心得回合），/closing 那條
-        # 自動寫入路徑不會被觸發——這裡補上，讓評估分數與 status="completed"
-        # 一定會落地，治療師隨後在 /activity/{id}/end 頁面看到的才是真實
-        # 數據而不是前端的預設分數。若長者剛好已經正常走完心得，
-        # _compute_and_save_assessment 早就算過一次並清掉 Redis stats，
-        # 這裡重複呼叫會因為讀不到 stats 而丟 404，直接吞掉即可（不是
-        # 錯誤，是正常的「已經結束過了」）。
+        # 治療師提前手動結束時，長者當下正在進行的那個回合不會走到
+        # /session/respond 的 state is None 分支（那才是 _finalize_round_*
+        # 系列平常唯一的呼叫點，見上面 result.get("state") is None 說明），
+        # 導致這個回合累積在 Redis 的反應時間／情緒多數決／判斷依據
+        # （engagement_pct 等）永遠沒機會寫進 rounds 資料表，治療師事後在
+        # 歷史活動只會看到這個回合整排空白（2026-09-06 稽核發現：session
+        # 855 手動結束時 round 1 已經真的收到 17 幀鏡頭分析，資料卻孤兒在
+        # Redis 沒寫進 DB）。這裡補呼叫一次，把「正在進行中」的這個回合也
+        # 收尾掉。三支函式都是「Redis 裡沒東西就直接跳過、清掉 key」的
+        # no-op 設計，就算這個回合剛好已經正常收尾過一次（key 已被刪除），
+        # 重複呼叫也不會出錯或造成資料錯亂。
+        current_round = _to_int(await r.hget(f"session:{session_id}:metrics", "current_round")) or 1
+        await _finalize_round_response_time(
+            db, r, session_id, current_round, patient_id=patient_id, therapist_id=therapist_id,
+        )
+        await _finalize_round_emotion(
+            db, r, session_id, current_round, patient_id=patient_id, therapist_id=therapist_id,
+        )
+        await _finalize_round_signals(
+            db, r, session_id, current_round, patient_id=patient_id, therapist_id=therapist_id,
+        )
+        # /closing 那條自動寫入路徑不會被觸發——這裡補上，讓評估分數與
+        # status="completed" 一定會落地，治療師隨後在 /activity/{id}/end
+        # 頁面看到的才是真實數據而不是前端的預設分數。若長者剛好已經正常
+        # 走完心得，_compute_and_save_assessment 早就算過一次並清掉 Redis
+        # stats，這裡重複呼叫會因為讀不到 stats 而丟 404，直接吞掉即可
+        # （不是錯誤，是正常的「已經結束過了」）。
         try:
             await _compute_and_save_assessment(request, session_id, db, therapist_id)
         except HTTPException as e:
@@ -1171,6 +1216,12 @@ async def session_warmup_progress_get(
     therapist_id: int = Depends(get_current_therapist_id),
 ):
     r = request.app.state.redis
+    # 治療師網頁跳轉到暖身頁面後，這支是它第一支會呼叫、而且會持續每 300ms
+    # 呼叫一次的 API，用它的第一次呼叫當「暖身頁面真的載入了」的訊號，供
+    # /session/{id}/status 的 warmup_ready 欄位讀取（見該端點說明），讓 Unity
+    # 知道可以放心切場景了，不用賭治療師網頁的頁面切換/掛載時間。這裡每次
+    # 呼叫都重設，不差這一點成本，換來不用另外維護「有沒有設過」的邊界情況。
+    await r.set(f"session:{session_id}:warmup_ready", "1", ex=3600)
     data: dict = await r.hgetall(f"session:{session_id}:warmup")
     return {
         "card_key": data.get("card_key", ""),
@@ -1468,9 +1519,13 @@ async def _compute_and_save_assessment(
     looking_away_rate = looking_away_n   / frame_count
     eye_closed_rate   = eye_closed_n     / frame_count
     mouth_moved_rate  = mouth_moved_n    / frame_count
-    high_sway_rate    = high_sway_n      / frame_count
     skel_absent_rate  = skel_absent_n    / frame_count
     sad_rate          = emo["sad"]       / frame_count
+    # 「焦躁」= 高激動 + 負向情緒（見 _classify_from_scores），拿來判斷參與度
+    # 的干擾行為比單看晃動比率（high_sway_rate）更準確，見 _score_engagement
+    # 的完整說明——同樣高激動，正向的「亢奮」不該被當成干擾。high_sway_n
+    # 這個累積值仍保留在 Redis 供其他用途，只是評分不再用它。
+    angry_rate        = emo["angry"]     / frame_count
     silence_rate      = silence_n        / frame_count
     far_rate          = far_n            / frame_count
     high_pitch_rate   = high_pitch_var_n / frame_count
@@ -1483,7 +1538,7 @@ async def _compute_and_save_assessment(
     pitch_baseline = float(calib.get("pitchVarianceBaseline", 0.0))
 
     scores = {
-        "參與度":   _score_engagement(looking_away_rate, mouth_moved_rate, high_sway_rate),
+        "參與度":   _score_engagement(looking_away_rate, mouth_moved_rate, angry_rate),
         "注意力":   _score_attention(looking_away_rate, eye_closed_rate),
         "持續力":   _score_persistence(sad_rate, looking_away_rate, skel_absent_rate, far_rate),
         "情緒狀況": _score_emotion(emo, high_pitch_rate, pitch_baseline),

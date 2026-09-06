@@ -90,46 +90,61 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
    }
  }, [sessionId, caseId]);
 
- // 每 2 秒從後端 polling 情緒、反應時間與場景資訊
+ // 從後端 polling 情緒、反應時間與場景資訊。Unity 端是每 2 秒送一次感測
+ // 資料（見 KinectSensorSender.cs sendInterval），原本這裡也用 2 秒
+ // polling、跟來源同頻，但兩邊沒有對齊時脈，最壞情況 polling 剛好卡在
+ // Unity 更新前一刻，要等下一輪才追上，等於白白多等快 2 秒、判斷依據百分比
+ // 感覺卡卡的。改成 500ms polling，來源資料還是 2 秒才變一次，但能把「沒
+ // 對齊」造成的最差延遲收斂到 0.5 秒內。
  useEffect(() => {
+   let cancelled = false;
+   let timer: ReturnType<typeof setTimeout>;
+
    const poll = async () => {
      try {
        const res = await fetch(`${API_BASE}/session/${sessionId}/metrics`, {
          credentials: "include",
        });
-       if (!res.ok) return;
-       const data = await res.json();
-       // 長者答完心得、後端算完評估分數後 session:{id}:meta 會被清掉
-       // （見 app/routers/session.py session_metrics 的 session_completed 說明），
-       // 不用等治療師自己按「結束活動」，直接自動跳轉到結束頁面。
-       if (data.session_completed) {
-         router.push(`/activity/${sessionId}/end?from=live`);
-         return;
+       if (res.ok) {
+         const data = await res.json();
+         // 長者答完心得、後端算完評估分數後 session:{id}:meta 會被清掉
+         // （見 app/routers/session.py session_metrics 的 session_completed 說明），
+         // 不用等治療師自己按「結束活動」，直接自動跳轉到結束頁面。
+         if (data.session_completed) {
+           router.push(`/activity/${sessionId}/end?from=live`);
+           return;
+         }
+         setSession((s) => ({
+           ...s,
+           emotionState: data.emotion ?? s.emotionState,
+           responseTime: data.response_time ?? s.responseTime,
+           currentScene: data.current_scene ?? s.currentScene,
+           elderResponse: data.elder_response ?? s.elderResponse,
+           currentRound: data.current_round ?? s.currentRound,
+           totalRounds: data.total_rounds ?? s.totalRounds,
+           reviewStatus: data.review_status ?? s.reviewStatus,
+           elderResponseDraft: data.elder_response_draft ?? s.elderResponseDraft,
+           engagementPct: data.engagement_pct ?? s.engagementPct,
+           happinessPct: data.happiness_pct ?? s.happinessPct,
+           agitationPct: data.agitation_pct ?? s.agitationPct,
+           signalCodes: data.signal_codes ?? s.signalCodes,
+         }));
+         if (data.current_round) setCurrentRound(data.current_round);
        }
-       setSession((s) => ({
-         ...s,
-         emotionState: data.emotion ?? s.emotionState,
-         responseTime: data.response_time ?? s.responseTime,
-         currentScene: data.current_scene ?? s.currentScene,
-         elderResponse: data.elder_response ?? s.elderResponse,
-         currentRound: data.current_round ?? s.currentRound,
-         totalRounds: data.total_rounds ?? s.totalRounds,
-         reviewStatus: data.review_status ?? s.reviewStatus,
-         elderResponseDraft: data.elder_response_draft ?? s.elderResponseDraft,
-         engagementPct: data.engagement_pct ?? s.engagementPct,
-         happinessPct: data.happiness_pct ?? s.happinessPct,
-         agitationPct: data.agitation_pct ?? s.agitationPct,
-         signalCodes: data.signal_codes ?? s.signalCodes,
-       }));
-       if (data.current_round) setCurrentRound(data.current_round);
      } catch {
        // 網路暫時中斷時保留上次數值，不中斷顯示
+     } finally {
+       // 用 setTimeout 串行而不是 setInterval，避免請求偶爾變慢時同時有
+       // 多個 in-flight request 疊加、彼此搶著更新畫面。
+       if (!cancelled) timer = setTimeout(poll, 500);
      }
    };
 
    poll();
-   const timer = setInterval(poll, 2000);
-   return () => clearInterval(timer);
+   return () => {
+     cancelled = true;
+     clearTimeout(timer);
+   };
  }, [sessionId]);
 
 
@@ -305,9 +320,9 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
            </h3>
            <p className="text-[12px] text-[#9aa1ab]">{reasonCaption(session.happinessPct, session.agitationPct)}</p>
            <div className="flex flex-col sm:flex-row gap-3 lg:gap-6 xl:gap-8">
-             <EmotionBar label="專注度" pct={session.engagementPct} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
-             <EmotionBar label="表情訊號" pct={session.happinessPct} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
-             <EmotionBar label="肢體與語調訊號" pct={session.agitationPct} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
+             <EmotionBar label="投入度" pct={session.engagementPct} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
+             <EmotionBar label="臉部表情（正負向）" pct={session.happinessPct} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
+             <EmotionBar label="肢體與語調（激動程度）" pct={session.agitationPct} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
            </div>
            <p className="text-[11px] md:text-[12px] text-[#888] leading-relaxed">
              Kinect 依臉部表情、姿勢與聲音特徵綜合判斷，僅供參考，仍以治療師實際觀察為主。
