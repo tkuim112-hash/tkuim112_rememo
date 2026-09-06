@@ -72,8 +72,15 @@ class TherapySession(Base):
     score_participation: Mapped[int | None] = mapped_column(Integer)
     score_attention: Mapped[int | None] = mapped_column(Integer)
     score_endurance: Mapped[int | None] = mapped_column(Integer)
+    # 持續力同一個分數可能是「擅自離開」或「情緒極度低落」兩種完全不同的
+    # 原因觸發（見 session.py _score_persistence），存下實際原因供前端挑選
+    # 正確的文字標籤，不是固定寫死對應分數的單一敘述。
+    endurance_reason: Mapped[str | None] = mapped_column(Text)
     score_emotion: Mapped[int | None] = mapped_column(Integer)
     score_interaction: Mapped[int | None] = mapped_column(Integer)
+    # 互動頻率同一個分數可能是「完全沒開口，只有動作」或「只回極短的指令式
+    # 回答」兩種原因（見 session.py _score_interaction），理由同 endurance_reason。
+    interaction_reason: Mapped[str | None] = mapped_column(Text)
     total_score: Mapped[int | None] = mapped_column(Integer)
     emotional_status: Mapped[str | None] = mapped_column(Text)
     therapist_note: Mapped[str | None] = mapped_column(Text)

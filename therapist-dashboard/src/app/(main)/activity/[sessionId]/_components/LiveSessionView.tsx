@@ -172,15 +172,21 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
  };
 
  // 「確認並送回長者畫面」按鈕——回合1-3跟心得回合是兩支不同的後端API，
- // 用 reviewStatus 判斷現在是哪一種，打對應的那支。
+ // 用 reviewStatus 判斷現在是哪一種，打對應的那支。判斷式要同時涵蓋
+ // "pending_*"（第一次確認前）跟 "awaiting_*_submit"（確認過、長者還沒
+ // 按送出、治療師正在重新編輯）兩種階段，不然重新編輯時 isClosing 判斷
+ // 錯誤，會打錯 API（2026-09-06 稽核：兩種回合的 awaiting 狀態改成分開
+ // 命名就是為了這裡能分辨）。
  const handleConfirmResponse = async () => {
+   const isClosing =
+     session.reviewStatus === "pending_closing" ||
+     session.reviewStatus === "awaiting_closing_submit";
    setConfirming(true);
    setConfirmError(false);
    try {
-     const url =
-       session.reviewStatus === "pending_closing"
-         ? `${API_BASE}/session/${sessionId}/closing/confirm_response`
-         : `${API_BASE}/session/${sessionId}/confirm_response`;
+     const url = isClosing
+       ? `${API_BASE}/session/${sessionId}/closing/confirm_response`
+       : `${API_BASE}/session/${sessionId}/confirm_response`;
      const res = await fetch(url, {
        method: "POST",
        headers: { "Content-Type": "application/json" },
@@ -188,8 +194,20 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
        body: JSON.stringify({ elder_response: draftText }),
      });
      if (!res.ok) throw new Error("confirm_response failed");
-     // 樂觀更新：不用等下一次 polling，按下去畫面就先恢復唯讀顯示。
-     setSession((s) => ({ ...s, reviewStatus: "", elderResponse: draftText }));
+     // 樂觀更新：不用等下一次 polling，按下去畫面就先反映結果。2026-09-06
+     // 改版後兩種回合都一樣——治療師確認只是把文字送給長者看，真正的
+     // 生成/評估要等長者自己按下「送出故事」才觸發（見 app/routers/
+     // session.py session_confirm_response／session_closing_confirm_
+     // response 說明），這裡故意不清空 reviewStatus，讓編輯框繼續開著，
+     // 長者按送出前治療師都能重新編輯、再送一次（後端 pending_review／
+     // pending_closing_review 支援重複確認覆蓋，見該端點）。真正結束的
+     // 訊號等長者按送出後，下一次 polling 到 metrics 的 review_status
+     // 變空字串時才會反映出來。
+     setSession((s) => ({
+       ...s,
+       reviewStatus: isClosing ? "awaiting_closing_submit" : "awaiting_round_submit",
+       elderResponse: draftText,
+     }));
    } catch {
      // 這支失敗代表長者會一直卡在「等待治療師確認中」，不能像 sendControl
      // 那樣靜默吞掉，要讓治療師看到錯誤、可以重試。
@@ -276,7 +294,10 @@ export function LiveSessionView({ sessionId, caseId }: { sessionId: string; case
            {view === "response" && session.reviewStatus !== "" ? (
              <div className="bg-white rounded-xl p-3 md:p-3 lg:p-5 xl:p-6 h-[170px] md:h-[210px] lg:h-[270px] xl:h-[320px] flex flex-col gap-2 lg:gap-3">
                <p className="shrink-0 text-[14px] md:text-[16px] lg:text-[18px] xl:text-[20px] text-[#7a4a28] font-medium">
-                 長者剛講完話，確認或編輯後送回長者畫面
+                 {session.reviewStatus === "awaiting_round_submit" ||
+                 session.reviewStatus === "awaiting_closing_submit"
+                   ? "已送給長者確認，長者按下送出前都還能再次編輯後重新送出"
+                   : "長者剛講完話，確認或編輯後送回長者畫面"}
                </p>
                <textarea
                  value={draftText}

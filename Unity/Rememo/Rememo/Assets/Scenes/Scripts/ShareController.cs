@@ -70,25 +70,24 @@ public class ShareController : MonoBehaviour
 
     // 跟 GameController.cs 同一套設計：STT辨識完成後不直接讓長者送出，先鎖畫面
     // 送治療師平板審核，等治療師確認（可能編輯過）後才顯示給長者看、解鎖送出鍵。
+    // pendingConfirmedText 只存確認後的文字，不像舊版存已經算好的完整結果
+    // （2026-09-06 改版，理由跟 GameController.cs 的 pendingConfirmedText
+    // 說明一樣：延後評估流程到長者真的按下送出才觸發，避免長者還沒按送出、
+    // 療程就被結束時，已經算好的結果被整份丟棄）。
     private bool isPendingTherapistReview = false;
-    private ClosingReviewResponse pendingFinalResponse = null;
+    private string pendingConfirmedText = null;
 
     [System.Serializable]
     private class ControlPayload { public string type; }
 
     [System.Serializable]
-    private class STTMessage { public string type; public string text; public bool isFinal; public string action; }
+    private class STTMessage { public string type; public string text; public bool isFinal; public string action; public string elder_response; }
 
     [System.Serializable]
     private class ClosingResponse { public bool ok; public string closing_message; }
 
     [System.Serializable]
     private class TextPayload { public string text; }
-
-    // /ws/stt 推播的 "final_closing_response" 訊息——治療師確認（可能編輯過）長者
-    // 心得回答後的結果，見 HandleSTTMessage／ApplyFinalClosingResponse。
-    [System.Serializable]
-    private class ClosingReviewResponse { public string type; public string elder_response; public string closing_message; }
 
     private bool UseKinect => kinectAudioSender != null;
 
@@ -129,8 +128,6 @@ public class ShareController : MonoBehaviour
         if (!string.IsNullOrEmpty(question)) segments.Add(question);
         closingFullText = string.Join("\n", segments);
         closingText.text = closingFullText;
-        // 收尾問題顯示完畢 → 啟動反應時間計時
-        kinectSensorSender?.OnQuestionAsked();
 
         // 承接語／感謝語／問句三段都是前端內建預錄音檔（見 audio_bank.py，
         // GameController.SendResponse 存進 PlayerPrefs 時已經用 '|' 串好），
@@ -140,8 +137,16 @@ public class ShareController : MonoBehaviour
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingSceneAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingThanksAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingQuestionAudioKeys")));
+        // 反應時間計時要等長者真的看完/聽完這幾段內容才開始，理由同
+        // GameController.ApplyRoundResponse——播放中的那幾秒不該算進反應時間；
+        // 萬一這幾段剛好都沒有對應音檔（closingAudioUris 是空的），改用估算
+        // 的閱讀時間頂替，不要直接立刻開始計時。
         if (closingAudioUris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, closingAudioUris));
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, closingAudioUris, () => kinectSensorSender?.OnQuestionAsked()));
+        else
+            StartCoroutine(LocalAudioPlayer.DelayedAction(
+                LocalAudioPlayer.EstimateReadingSeconds(closingFullText),
+                () => kinectSensorSender?.OnQuestionAsked()));
     }
 
     static string[] SplitAudioKeys(string playerPrefsKey)
@@ -203,38 +208,14 @@ public class ShareController : MonoBehaviour
         if (isRecording) StopRecording();
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
 
-        if (pendingFinalResponse != null)
-        {
-            // 治療師已經確認（可能編輯過）心得回答，DB 寫入／評估計算治療師確認
-            // 當下就做完了，這裡不用再打 API，直接套用收到的結果。
-            var resp = pendingFinalResponse;
-            pendingFinalResponse = null;
-            StartCoroutine(ApplyFinalClosingResponse(resp));
-            return;
-        }
-
-        // 沒有待套用的治療師確認結果：走舊路徑，給「長者沉默送出空字串」或
-        // RequestReview 重試用盡退回舊流程這兩種邊界情況用。
+        // pendingConfirmedText != null（治療師已確認，可能編輯過）時，
+        // displayedText 在收到 confirmed_closing_text 訊息當下已經設成確認
+        // 後的文字（見 HandleSTTMessage）；不管是不是走治療師審核流程，
+        // SubmitClosing 都是讀 displayedText 送出，兩條路徑共用同一支，
+        // DB 寫入／評估計算延後到這裡才真正觸發（2026-09-06 改版，見
+        // pendingConfirmedText 欄位說明，取代原本的 ApplyFinalClosingResponse）。
+        pendingConfirmedText = null;
         StartCoroutine(SubmitClosing());
-    }
-
-    IEnumerator ApplyFinalClosingResponse(ClosingReviewResponse resp)
-    {
-        submitButton.interactable = false;
-        if (micButton != null) micButton.interactable = false;
-
-        // 承接語＋收尾肯定語（見 app/services/closing_templates.py）顯示給長者看幾秒，
-        // 讓療程有好好被送出去的感覺，再轉場，不是送出後畫面立刻消失——跟
-        // SubmitClosing 尾段完全同一套邏輯，只是資料來源是治療師推播的結果。
-        if (!string.IsNullOrEmpty(resp.closing_message) && closingText != null)
-        {
-            if (replayCoroutine != null) StopCoroutine(replayCoroutine);
-            closingText.text = resp.closing_message;
-            yield return new WaitForSeconds(closingMessageDisplaySeconds);
-        }
-
-        PlayerPrefs.SetString("NextScene", "ThankYouScene");
-        SceneManager.LoadScene("LoadingScene");
     }
 
     IEnumerator RequestReview(string text)
@@ -498,20 +479,18 @@ public class ShareController : MonoBehaviour
             return;
         }
 
-        if (msg.type == "final_closing_response")
+        if (msg.type == "confirmed_closing_text")
         {
-            // 治療師在平板確認（可能編輯過）長者的心得回答後，後端推播過來的結果——
-            // 資料庫寫入／評估計算治療師確認當下就做完了，這裡只是把確認後的文字
-            // 顯示給長者看，等長者按送出時直接套用（見 ApplyFinalClosingResponse／OnSubmit）。
-            ClosingReviewResponse resp;
-            try { resp = JsonUtility.FromJson<ClosingReviewResponse>(json); }
-            catch { return; }
+            // 治療師在平板確認（可能編輯過）長者的心得回答後，後端推播過來的確認
+            // 文字——2026-09-06 改版後，資料庫寫入／評估計算延後到長者真的按下
+            // 送出才觸發（見 OnSubmit／SubmitClosing，取代原本的
+            // ApplyFinalClosingResponse），這裡只是把確認後的文字顯示給長者看。
             isPendingTherapistReview = false;
-            pendingFinalResponse = resp;
+            pendingConfirmedText = msg.elder_response;
             if (typingCoroutine != null) StopCoroutine(typingCoroutine);
             isTyping = false;
-            displayedText = resp.elder_response;
-            inputText.text = resp.elder_response;
+            displayedText = msg.elder_response;
+            inputText.text = msg.elder_response;
             inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
             hasRecordedOnce = true;
             RefreshSubmitButton();
@@ -581,11 +560,11 @@ public class ShareController : MonoBehaviour
         // 沒有這個條件的話按鈕會在動畫還沒把最終結果完整打出來前就先亮起，
         // 這時候按下送出，SubmitClosing 讀到的 displayedText 只會是動畫跑到一半的
         // 半截文字，不是完整的最終辨識結果。
-        // pendingFinalResponse != null：治療師已經確認（可能編輯過）心得回答，長者
+        // pendingConfirmedText != null：治療師已經確認（可能編輯過）心得回答，長者
         // 只需要看完內容按送出；isPendingTherapistReview 則整個鎖死，避免審核結果
         // 還沒回來時誤觸（理由同 GameController.cs 的 RefreshSubmitButton）。
         submitButton.interactable = !isPaused && !isTyping && !isPendingTherapistReview &&
-            (pendingFinalResponse != null ||
+            (pendingConfirmedText != null ||
              (hasRecordedOnce && !isRecording && !isWaitingForStt));
     }
 

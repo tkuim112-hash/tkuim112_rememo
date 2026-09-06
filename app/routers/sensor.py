@@ -39,8 +39,7 @@ ELBOW_FLARE_SHOULDER_RATIO_MAX = 0.5    # 有肩寬基準時：現在距離 / �
 
 # 臉部訊號改用 py-feat（face-service）分析 Kinect 彩色畫面得到的 FACS AU 強度，
 # 取代 Kinect 內建 Face API 只有 8 個粗糙布林屬性的做法（詳見專案記憶
-# project_openface_kinect_emotion_redesign）。這裡的門檻是初版映射，跟原本
-# Kinect 版一樣是手調的經驗值，之後需要用真實資料重新校準：
+# project_openface_kinect_emotion_redesign）。這裡的門檻是初版映射：
 AU_PRESENT_MIN = 0.5   # AU 強度判定為「有出現」的門檻（py-feat 輸出範圍依模型版本而定）
 YAW_AWAY_MAYBE = 15.0   # 度：頭部偏轉角度，視線「可能」離開畫面
 YAW_AWAY_YES   = 25.0   # 度：頭部偏轉角度，視線「確定」離開畫面
@@ -466,9 +465,6 @@ def _classify_from_scores(
              高激動預設偏向亢奮而不是焦躁，比預設成負面標籤保守）
     適當  — 其餘情況（arousal 低但仍有參與、body 也沒收縮，或 valence 已轉正）
 
-    AROUSAL_LOW_MAX/ENGAGEMENT_WITHDRAWN_MAX/ELBOW_FLARE_CONSTRICTED_MAX
-    都是手調的經驗值，沒有實測資料驗證，跟舊版的限制是同一種，只是換了個
-    有文獻依據的骨架去承載。
     """
     if agitation < AROUSAL_LOW_MAX:
         if engagement < ENGAGEMENT_WITHDRAWN_MAX and constricted and happiness <= 0:
@@ -605,7 +601,8 @@ async def _ema_classify(
 async def _update_session_stats(
     r, session_id: str, p: SensorPayload, emotion_raw: str, au: dict, pose: dict,
     calib: dict | None = None, signals: list[str] | None = None,
-    eng: float = 0.0, hap: float = 0.0, agi: float = 0.0,
+    eng: float = 0.0, hap: float = 0.0, agi: float = 0.0, face_detected: bool = True,
+    waiting_for_response: bool = False,
 ):
     """
     每收到一個 sensor frame 就累積統計至 session:{id}:stats。
@@ -629,10 +626,30 @@ async def _update_session_stats(
     # 獨立算出來的，不會被前一回合的殘留影響。
     signal_key = f"session:{session_id}:round:{current_round}:signals"
 
+    # 三個骨架欄位同時 None → Unity 未追蹤到身體，長者可能離開座位。提前算好
+    # 供下面 emo_has_signal 判斷用（原本這行在函式後段，現在要在 emo_*
+    # 累加之前就知道這一幀骨架是不是也追丟了）。
+    skel_absent = (
+        p.skel_head_drop is None
+        and p.skel_lean_forward is None
+        and p.skel_shoulder_raise is None
+    )
+    # emotion_raw 是 _ema_classify 分類出來的結果，但 eng/hap 這兩個維度在
+    # 沒有對應訊號時只是沿用上一次的 EMA 值（見該函式說明），不是這一幀真的
+    # 重新判斷過。如果臉部跟骨架這一幀都沒訊號（face_detected 為 False 且
+    # skel_absent 為真），這次的 emotion_raw 100% 是複製舊值，不該當成新
+    # 證據累加——不然長者中途離座/鏡頭長時間追丟時，最後一刻剛好判到的情緒
+    # 會被複製到整段沒資料的時間，把一瞬間的情緒放大成半場的情緒，連動讓
+    # _score_emotion 的 dominant、sad_rate／angry_rate 都失真，還可能跟持續力
+    # 分數同時出現「離座卻情緒很好」的自相矛盾（2026-09-06 稽核）。
+    emo_has_signal = face_detected or not skel_absent
+
     pipe = r.pipeline(transaction=False)
     pipe.hincrby(key, "frame_count",    1)
-    pipe.hincrby(key, f"emo_{emotion_raw}", 1)
-    pipe.hincrby(round_key, emotion_raw, 1)
+    if emo_has_signal:
+        pipe.hincrby(key, "emo_valid_n", 1)
+        pipe.hincrby(key, f"emo_{emotion_raw}", 1)
+        pipe.hincrby(round_key, emotion_raw, 1)
     pipe.expire(round_key, 86400)
 
     pipe.hincrby(signal_key, "_frame_count", 1)
@@ -643,6 +660,14 @@ async def _update_session_stats(
         pipe.hincrby(signal_key, code, 1)
     pipe.expire(signal_key, 86400)
 
+    # looking_away/eye_closed/mouth_moved 都是靠臉部 AU/pose 判斷，沒偵測到臉
+    # 的幀完全沒有這些訊號（見 _looking_away_level 的保守假設：無資料視為
+    # 「沒偏離」）。face_detected_n 記錄「這幀真的有臉部資料」的次數，療程
+    # 結束時 session.py 拿它當這三個比率的分母，而不是拿 frame_count（含沒
+    # 臉的幀），避免鏡頭角度/光線不佳導致偵測率低時，比率被稀釋到不合理地低
+    # （2026-09-06 稽核：注意力分數會因此跟治療師現場觀察對不上）。
+    if face_detected:
+        pipe.hincrby(key, "face_detected_n", 1)
     if _looking_away_level(pose) in ("yes", "maybe"):
         pipe.hincrby(key, "looking_away_n", 1)
     if _au_eyes_closed(au):
@@ -651,22 +676,28 @@ async def _update_session_stats(
         pipe.hincrby(key, "mouth_moved_n", 1)
     if p.body_sway > SWAY_AGITATION_MIN:
         pipe.hincrby(key, "high_sway_n", 1)
-    # 三個骨架欄位同時 None → Unity 未追蹤到身體，長者可能離開座位
-    skel_absent = (
-        p.skel_head_drop is None
-        and p.skel_lean_forward is None
-        and p.skel_shoulder_raise is None
-    )
     if skel_absent:
         pipe.hincrby(key, "skel_absent_n", 1)
 
-    # A 階段：靜默（長者在場但無語音，排除骨架消失狀態）
-    if p.audio_rms < AUDIO_SPEECH_MIN and not skel_absent:
-        pipe.hincrby(key, "silence_n", 1)
+    # A 階段：靜默（長者在場但無語音，排除骨架消失狀態）。分子分母都只在
+    # waiting_for_response 為真（真的輪到長者回答，不是虛擬人講話/治療師
+    # 審核的時間）時才計入，2026-09-06 稽核：舊版分母是不分場合的
+    # frame_count，長者正常參與時 silence_rate 仍常態超過 0.9，這個訊號
+    # 因此曾被拿掉不用（見 session.py _score_emotion 說明）。
+    if waiting_for_response:
+        pipe.hincrby(key, "waiting_n", 1)
+        if p.audio_rms < AUDIO_SPEECH_MIN and not skel_absent:
+            pipe.hincrby(key, "silence_n", 1)
 
-    # B 階段：SpineBase 深度（長者後退離開遊戲區域）
-    if p.skel_spinebase_z is not None and p.skel_spinebase_z > SPINEBASE_LEAVING_Z:
-        pipe.hincrby(key, "far_n", 1)
+    # B 階段：SpineBase 深度（長者後退離開遊戲區域）。跟 face_detected_n 是
+    # 同一種分母問題：far_n 只在 skel_spinebase_z 有追蹤到時才判斷，分母不能
+    # 用 frame_count（含骨架完全追丟的幀），不然骨架追蹤率低時 far_rate 會被
+    # 稀釋，看起來比實際更少離座。spinebase_valid_n 記錄「這幀真的有追蹤到
+    # SpineBase」的次數，療程結束時 session.py 拿它當 far_rate 的分母。
+    if p.skel_spinebase_z is not None:
+        pipe.hincrby(key, "spinebase_valid_n", 1)
+        if p.skel_spinebase_z > SPINEBASE_LEAVING_Z:
+            pipe.hincrby(key, "far_n", 1)
 
     # B 階段：音高變異（焦躁/亢奮的聲學特徵，門檻見 _pitch_threshold）
     if p.audio_pitch_variance > _pitch_threshold(calib):
@@ -676,10 +707,26 @@ async def _update_session_stats(
     if p.skel_handtip_velocity > HANDTIP_ACTIVE_MIN:
         pipe.hincrby(key, "hand_active_n", 1)
 
-    # A 階段：反應延遲累計（計算平均反應時間）
+    # A 階段：反應延遲累計（計算平均反應時間，供 _score_interaction 用）。
+    # response_time_ms 是 Unity 自己用本地計時器量的，起點是 GameController/
+    # ShareController 呼叫 OnQuestionAsked() 的那一刻（等語音真的播完/估算的
+    # 閱讀時間過去才呼叫，見 KinectSensorSender.cs、LocalAudioPlayer.cs 說明）——
+    # 比伺服器自己用 question_asked_at 算時間差準，因為伺服器那個起點在
+    # 語音合成/播放之前，會把這段時間也算進反應時間裡。
+    #
+    # 同一個值也同時累加進這個回合自己的 session:{id}:round:{n}:timing
+    # （欄位名沿用 session.py _finalize_round_response_time 原本讀的
+    # sum_ms/count），讓「歷史活動」顯示的 rounds.response_time 跟這裡的
+    # 互動頻率評分，用的是同一套 Unity 量出來的定義，不是兩條各自獨立、
+    # 起點不同的邏輯（2026-09-06 稽核後改版：原本 rounds.response_time
+    # 是伺服器自己算的，跟這裡完全不同套）。
     if p.response_time_ms >= 0:
         pipe.hincrby(key, "response_time_sum",   p.response_time_ms)
         pipe.hincrby(key, "response_time_count", 1)
+        round_timing_key = f"session:{session_id}:round:{current_round}:timing"
+        pipe.hincrby(round_timing_key, "sum_ms", p.response_time_ms)
+        pipe.hincrby(round_timing_key, "count", 1)
+        pipe.expire(round_timing_key, 86400)
 
     await pipe.execute()
     await r.expire(key, 86400)
@@ -742,6 +789,10 @@ async def receive_sensor(
     body = SensorPayload.model_validate_json(payload)
     r = request.app.state.redis
     calib = await _load_calibration(r, body.session_id)
+    # session.py 在問題丟出去/長者回答完這兩個時間點分別把這個旗標設 True/
+    # False（見該檔 _set_waiting_for_response），供下面 silence_n 判斷「現在
+    # 是不是輪到長者回答」——虛擬人講話/治療師審核的時間不該算進沉默分母。
+    waiting_for_response = (await r.get(f"session:{body.session_id}:waiting_for_response")) == "1"
 
     # 臉部訊號：Unity 這一幀有抓到畫面才送 frame，face-service 沒偵測到臉/逾時
     # 時 face_detected 會是 False，au/pose 保持空字典——下游的判斷函式對空字典
@@ -762,7 +813,7 @@ async def receive_sensor(
 
     emotion_raw, eng, hap, agi = await _ema_classify(r, body.session_id, body, au, pose, calib)
     signals = _reasoning_signals(body, au, pose, calib, face_detected)
-    await _update_session_stats(r, body.session_id, body, emotion_raw, au, pose, calib, signals, eng, hap, agi)
+    await _update_session_stats(r, body.session_id, body, emotion_raw, au, pose, calib, signals, eng, hap, agi, face_detected, waiting_for_response)
     emotion_label = _EMOTION_LABEL.get(emotion_raw, "適當")
     ts            = body.timestamp or time.time()
 

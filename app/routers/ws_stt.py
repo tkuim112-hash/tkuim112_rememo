@@ -9,23 +9,38 @@ from sqlalchemy import update
 from auth import get_therapist_id_from_ws_token
 from db.models import Patient, TherapySession
 from db.session import AsyncSessionLocal
+from routers.session import _compute_and_save_assessment
 import ws_registry
 
 router = APIRouter()
 
 
-async def _mark_abnormal_end(session_id: str) -> None:
+async def _mark_abnormal_end(app_state, session_id: str, therapist_id: int) -> None:
     """/ws/stt 斷線，但既不是治療師按「結束活動」（ws_registry.consume_ending）、
     也不是三回合正常跑完轉場去問心得（session:{id}:reached_closing，見
     session.py session_respond 對 end_session 的處理）——代表長者端 App 或
     治療師網頁被直接關掉、當機、斷線，療程不正常中止。status 卡在 in_progress
     會讓治療師頁面（cases/[id]/page.tsx）誤判成「還在進行中」、把治療師導去
-    永遠不會再更新的即時監控頁，這裡把它視同已結束。只在還是 in_progress 時
-    才動（避免蓋掉本來就是 completed / scheduled 的資料）。"""
+    永遠不會再更新的即時監控頁，這裡把它視同已結束。
+
+    2026-09-06 稽核：這裡原本只是把 status 直接改成 completed，完全沒有算
+    分數——治療師點開這種療程的結束頁，看到 status 顯示「已完成」卻五個
+    分數全是 null，前端 DEFAULT_SCORES 補位機制會顯示一組編出來的假分數，
+    看起來像是真的評估過。改成優先呼叫 _compute_and_save_assessment，跟
+    治療師手動結束的路徑（session.py session_control 的 end action）用
+    同一套邏輯——長者離線前只要有送過幾幀感測資料，就能算出一個真實（哪怕
+    資料有限）的評估。只有 Redis 連 session:{id}:stats 都沒有（一幀都沒收到
+    就斷線）這種完全沒東西可算的情況，才退回原本單純標記 completed 的行為，
+    不然評估流程本身無法失敗式地產生分數。"""
     if not session_id:
         return
     try:
         async with AsyncSessionLocal() as db:
+            try:
+                await _compute_and_save_assessment(app_state, session_id, db, therapist_id)
+                return
+            except HTTPException:
+                pass  # session:{id}:stats 不存在，真的一幀資料都沒收到，退回下面的舊行為
             await db.execute(
                 update(TherapySession)
                 .where(
@@ -114,7 +129,7 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
       {"type": "control", "action": "replay_audio"|"skip_scene"|"pause"|"resume"}
     """
     try:
-        await get_therapist_id_from_ws_token(websocket.app.state.redis, token)
+        therapist_id = await get_therapist_id_from_ws_token(websocket.app.state.redis, token)
     except HTTPException:
         await websocket.close(code=1008)
         return
@@ -202,4 +217,4 @@ async def ws_stt(websocket: WebSocket, session_id: str = "", token: str = ""):
         if not ended_via_control:
             reached_closing = await r.get(f"session:{session_id}:reached_closing")
             if not reached_closing:
-                await _mark_abnormal_end(session_id)
+                await _mark_abnormal_end(websocket.app.state, session_id, therapist_id)
