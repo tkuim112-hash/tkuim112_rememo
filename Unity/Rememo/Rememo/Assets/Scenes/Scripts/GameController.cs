@@ -176,6 +176,8 @@ public class GameController : MonoBehaviour
         if (micButtonImage != null) micButtonImage.color = new Color(1f, 0.3f, 0.3f, 1f);
         RefreshSubmitButton();
 
+        kinectSensorSender?.OnMicPressed();
+
         if (UseKinect)
         {
             kinectAudioSender.StartSTT();
@@ -250,7 +252,7 @@ public class GameController : MonoBehaviour
     {
         if (!UseKinect && isRecording) StreamMicAudio();
         DrainIncomingMessages();
-        if (!UseKinect) TickWsReconnect();
+        if (!UseKinect) { TickWsReconnect(); TickKeepAlive(); }
     }
 
     void TickWsReconnect()
@@ -264,17 +266,44 @@ public class GameController : MonoBehaviour
         ConnectWebSocket();
     }
 
+    // 回合間（尤其是答完生圖前引導問題、後端在跑 LLM/生圖那段）長者不會碰麥克風，
+    // 這條 STT 連線會閒置一段不確定的時間——太久沒有任何訊框，中間的伺服器/代理
+    // 容易把連線判定逾時關掉，長者回來按第一次麥克風時才發現連線已經斷了，
+    // 中間重連的那幾秒錄音會漏掉（見 StreamMicAudio 的說明）。這裡固定週期送一個
+    // 後端會忽略的輕量心跳文字訊框，讓連線一直有動靜，從源頭避免被判定逾時，
+    // 不用等斷線後才補救。
+    private float sttKeepAliveTimer = 0f;
+    private const float SttKeepAliveInterval = 20f;
+
+    void TickKeepAlive()
+    {
+        if (ws == null || ws.ReadyState != WebSocketState.Open) { sttKeepAliveTimer = 0f; return; }
+        sttKeepAliveTimer += Time.deltaTime;
+        if (sttKeepAliveTimer < SttKeepAliveInterval) return;
+        sttKeepAliveTimer = 0f;
+        SendControl("ping");
+    }
+
     void StreamMicAudio()
     {
         int pos = Microphone.GetPosition(micDevice);
         if (pos < lastSamplePos) lastSamplePos = 0;
         int count = pos - lastSamplePos;
         if (count <= 0) return;
+
+        // 連線還沒開（例如上一回合等治療師審核太久，連線被閒置逾時斷開，
+        // StartRecording 觸發的 ConnectWebSocket 還在交握中）就先不要消耗這段
+        // 樣本——舊版不管有沒有真的送出都會推進 lastSamplePos，等於把長者
+        // 剛開口那幾秒錄音直接丟掉，連線恢復後也補不回來，導致 STT 辨識不到
+        // 內容、要按第二次麥克風才會成功（2026-09-07 稽核：回合2開場前那段
+        // 等治療師審核的空檔最容易踩到）。這裡改成連線沒開就整段跳過、
+        // 下一幀再重新累積，等連線真的開了再一次把累積的樣本送出，不會漏音。
+        if (ws == null || ws.ReadyState != WebSocketState.Open) return;
+
         float[] samples = new float[count];
         micClip.GetData(samples, lastSamplePos);
         lastSamplePos = pos;
-        if (ws?.ReadyState == WebSocketState.Open)
-            ws.SendAsync(FloatToInt16Bytes(samples), null);
+        ws.SendAsync(FloatToInt16Bytes(samples), null);
     }
 
     byte[] FloatToInt16Bytes(float[] samples)

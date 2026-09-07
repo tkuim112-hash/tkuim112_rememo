@@ -158,6 +158,7 @@ public class KinectAudioSender : MonoBehaviour
         TryInitAudio();
         PollAudio();
         TickReconnect();
+        TickKeepAlive();
     }
 
     void TickReconnect()
@@ -169,6 +170,22 @@ public class KinectAudioSender : MonoBehaviour
         needsReconnect = false;
         Debug.Log("[STT WS Kinect] 嘗試重新連線");
         ConnectWebSocket();
+    }
+
+    // 回合間（尤其是答完生圖前引導問題、後端在跑 LLM/生圖那段）長者不會碰麥克風，
+    // 這條 STT 連線會閒置一段不確定的時間——太久沒有任何訊框，中間的伺服器/代理
+    // 容易把連線判定逾時關掉。這裡固定週期送一個後端會忽略的輕量心跳文字訊框，
+    // 讓連線一直有動靜，從源頭避免被判定逾時，不用等斷線後才靠 TickReconnect 補救。
+    private float keepAliveTimer = 0f;
+    private const float KeepAliveInterval = 20f;
+
+    void TickKeepAlive()
+    {
+        if (wsStt == null || wsStt.ReadyState != WebSocketState.Open) { keepAliveTimer = 0f; return; }
+        keepAliveTimer += Time.deltaTime;
+        if (keepAliveTimer < KeepAliveInterval) return;
+        keepAliveTimer = 0f;
+        wsStt.SendAsync("{\"type\":\"ping\"}", null);
     }
 
     private void PollAudio()
