@@ -53,6 +53,10 @@ public class KinectSensorSender : MonoBehaviour
 
     // 反應時間
     private float questionAskedTime = -1f;
+    // 新問題文字一顯示（OnNewQuestionDisplayed）就設，一定比 questionAskedTime
+    // （narration播完/估讀時間到才設）早。OnMicPressed() 找不到 questionAskedTime
+    // 時退回用這個當基準，見該方法 2026-09-08 第二次稽核的說明。
+    private float _questionDisplayedTime = -1f;
     private bool  responseTimeSent  = false;
     // 是否已進入「長者該回答」的等待期（narration播完/估算閱讀時間到才算開始）。
     // 見 OnQuestionAsked／OnNewQuestionDisplayed 說明——新問題文字剛顯示、
@@ -90,11 +94,17 @@ public class KinectSensorSender : MonoBehaviour
             Debug.LogWarning("[Emotion] KinectManager 的 Compute Color Map 未開啟，臉部分析畫面將無法擷取");
     }
 
-    /// <summary>GameController 在 TTS 播完、顯示問題後呼叫，啟動反應時間計時。</summary>
+    /// <summary>
+    /// GameController 在 TTS 播完、顯示問題後呼叫，把反應時間的計時基準從
+    /// OnNewQuestionDisplayed() 設的「文字剛顯示」推進到「narration/估讀
+    /// 時間也結束」這個更精確的起點。responseTimeSent 不在這裡重置——已經
+    /// 交給 OnNewQuestionDisplayed() 在新問題一出現時處理一次就好，這裡如果
+    /// 又重置一次，長者在這之前就已經按過麥克風送出過一次反應時間的話，
+    /// 之後同一題再按（重新錄音）會被誤判成「還沒送過」，變成同一題送兩次。
+    /// </summary>
     public void OnQuestionAsked()
     {
-        questionAskedTime = Time.realtimeSinceStartup;
-        responseTimeSent  = false;
+        questionAskedTime  = Time.realtimeSinceStartup;
         _awaitingResponse  = true;
     }
 
@@ -104,10 +114,23 @@ public class KinectSensorSender : MonoBehaviour
     /// 開始，長者還不該開口」，OnQuestionAsked() 觸發時（語音播完或估讀時間
     /// 到）才標記「進入回答等待期」。兩者中間送出的感測幀，後端會知道這段
     /// 沉默/嘴巴沒動是正常的，不當成投入度低的證據。
+    ///
+    /// 2026-09-08 第二次稽核（第三回合單輪問答那種只有一題的回合，反應
+    /// 時間整場永遠是空的）：這裡也要把 responseTimeSent 重置、questionAskedTime
+    /// 清掉、記錄 _questionDisplayedTime——麥克風按鈕從文字一顯示就能按，
+    /// 不會等 narration/估讀時間跑完才解鎖，如果長者（或治療師操作跳過
+    /// 等待）在 OnQuestionAsked() 真正觸發之前就按下麥克風，原本
+    /// responseTimeSent 還停留在「上一題已經送過」的 true，OnMicPressed()
+    /// 的判斷式會直接跳過，這一題就永遠量不到反應時間；只有一題的回合
+    /// 沒有下一題可以補救，就會整回合空白。這裡提前重置，讓 OnMicPressed()
+    /// 隨時都能量到東西（正式觸發前用 _questionDisplayedTime 當退回基準）。
     /// </summary>
     public void OnNewQuestionDisplayed()
     {
-        _awaitingResponse = false;
+        _questionDisplayedTime = Time.realtimeSinceStartup;
+        questionAskedTime      = -1f;
+        responseTimeSent       = false;
+        _awaitingResponse      = false;
     }
 
     /// <summary>
@@ -128,15 +151,24 @@ public class KinectSensorSender : MonoBehaviour
     /// 夠長；回合一旦在這之前結束，後端 _finalize_round_response_time 會
     /// 在算平均時讀到 0 筆樣本，直接跳過不寫，這個回合的反應時間就永遠是
     /// 空的，被治療師端誤顯示成「0秒」。
+    ///
+    /// 2026-09-08 第二次稽核：questionAskedTime 要等 narration/估讀時間跑完
+    /// 才會被 OnQuestionAsked() 設成有效值，但麥克風按鈕沒有跟著鎖住，長者
+    /// 答得夠快（或操作端提前按）時，這裡執行當下 questionAskedTime 可能
+    /// 還沒被設定。以前的寫法遇到這狀況會整個跳過、什麼都不送，這裡改成
+    /// 退回用 _questionDisplayedTime（文字剛顯示那一刻，一定有效）當基準——
+    /// 量出來的數字會把 narration/估讀時間也算進去、比嚴格定義的「反應時間」
+    /// 略長，但總比整回合永遠空白、被治療師端誤讀成「秒答」好。
     /// </summary>
     public void OnMicPressed()
     {
-        if (!responseTimeSent && questionAskedTime >= 0f)
-        {
-            int ms = Mathf.RoundToInt((Time.realtimeSinceStartup - questionAskedTime) * 1000f);
-            responseTimeSent = true;
-            StartCoroutine(PostResponseTime(ms));
-        }
+        if (responseTimeSent) return;
+        float anchor = questionAskedTime >= 0f ? questionAskedTime : _questionDisplayedTime;
+        if (anchor < 0f) return;
+
+        int ms = Mathf.RoundToInt((Time.realtimeSinceStartup - anchor) * 1000f);
+        responseTimeSent = true;
+        StartCoroutine(PostResponseTime(ms));
     }
 
     void Update()

@@ -111,29 +111,15 @@ Q2_SCENARIO1_TEXT_KEYS = {
 
 # ── 心得環節（對應 app/services/closing_templates.py）───────────────────
 # 逐一核對 closing_templates.py 目前的實際內容（不是照抄 docs/心得分享.md）。
+# 2026-09-08：心得環節拿掉了「承接語」那段（見 closing_templates.py
+# build_closing_invitation 說明），原本對應 CLOSING_RECEIVING_PHRASES／
+# SYSTEM_COMPLAINT_RECEIVING_PHRASES／HARDSHIP_CORE_VARIANTS／
+# WARM_CORE_VARIANTS 的 sharing_ack_*／sharing_complaint_*／sharing_affirm_*
+# 這批 key 已經沒有程式碼在查表，一併移除；對應的 .wav 還留在 Unity
+# StreamingAssets/Audio，之後確定不會再用到可以整批刪掉。
 SHARING_TEXT_KEYS = {
     # build_closing_invitation 固定問句
     "回想整場聊下來，你有什麼想跟我分享的呢？": "sharing_opening",
-    # CLOSING_RECEIVING_PHRASES
-    "聽你這樣說，我也覺得很溫暖。": "sharing_ack_positive_1",
-    "能感覺到你很珍惜這些回憶呢。": "sharing_ack_positive_2",
-    "沒關係，能陪你聊今天這些，我也很開心。": "sharing_ack_short",
-    "這些回憶對你來說真的很重要，謝謝你願意跟我分享。": "sharing_ack_emotional",
-    # SYSTEM_COMPLAINT_RECEIVING_PHRASES
-    "不好意思，讓你覺得不耐煩了。": "sharing_complaint_impatient",
-    "抱歉，我沒辦法像真人一樣理解你，這是我的限制。": "sharing_complaint_distrust",
-    "不好意思，沒能讓你覺得像在跟真人聊天。": "sharing_complaint_want_human",
-    "抱歉讓你覺得這個沒有幫助，這個方式不一定適合每個人。": "sharing_complaint_useless",
-    # HARDSHIP_CORE_VARIANTS
-    "你經歷了這麼多事，也都一一走過來、撐過來了，這是很不容易、很值得驕傲的一件事。": "sharing_affirm_hard_1",
-    "這一路走來不容易，但你都撐過來了，這份堅強真的很讓人佩服。": "sharing_affirm_hard_2",
-    "不管過程多辛苦，你都一步一步走過來了，這些都是你這一生的勳章。": "sharing_affirm_hard_3",
-    "這些不容易的日子，你都好好地撐過來了，這份韌性很值得為自己驕傲。": "sharing_affirm_hard_4",
-    # WARM_CORE_VARIANTS
-    "你這一生有這麼多美好的時光可以回味，這些都是屬於你自己的、獨一無二的故事，真的很珍貴。": "sharing_affirm_warm_1",
-    "這些美好的回憶，都是只屬於你的故事，很珍貴、很值得好好收藏。": "sharing_affirm_warm_2",
-    "能擁有這麼多值得回味的時光，真的是很幸福的一件事。": "sharing_affirm_warm_3",
-    "這一生留下這麼多溫暖的回憶，都是屬於你自己獨一無二的寶藏。": "sharing_affirm_warm_4",
     # CLOSING_TAIL_VARIANTS
     "謝謝你今天願意跟我分享這麼多，希望這些美好的時光，能常常陪著你、讓你覺得溫暖。": "sharing_closing_1",
     "謝謝你今天陪我聊了這麼多，希望這份溫暖能一直留在你心裡。": "sharing_closing_2",

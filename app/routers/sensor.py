@@ -21,7 +21,14 @@ PITCH_VAR_EXCITED   = 50.0   # Hz²：音高變異閾值（焦躁/亢奮，無�
 PITCH_VAR_STD_K     = 2.0    # 個人化門檻＝baseline + k×標準差 的 k，見 _pitch_threshold
 HANDTIP_ACTIVE_MIN  = 0.05   # m/s：手部主動互動速度閾值
 AUDIO_RMS_STD_K     = 4.0    # 個人化語音門檻＝底噪 baseline + k×標準差 的 k，見 _audio_threshold
-AUDIO_RMS_THRESHOLD_MIN = 0.006  # RMS：個人化門檻的下限，避免底噪本身的量測雜訊被誤判成語音
+AUDIO_RMS_THRESHOLD_MIN = 0.004  # RMS：個人化門檻的下限，避免底噪本身的量測雜訊被誤判成語音
+# 2026-09-08 稽核（實測校正+對話）：安靜房間校正出的底噪 baseline 只有
+# 0.0000282，門檻卡在原本下限 0.006 時，長者實際說話（STT 逐字稿確認有效
+# 回答）audio_rms 大多數時間仍過不了門檻——speaker_pitch_var_high（門檻
+# 0.005，見 KinectAudioSender.cs 的 UpdatePitch）幾乎每幀觸發，代表 audio_rms
+# 常超過 0.005，speaker_speaking／audio_eng 卻從未觸發，兩個「有沒有聲音」
+# 的判斷用不同尺，才會不一致。下限比底噪高約 100 倍，離量測雜訊還有足夠
+# 安全邊際，不會因此把底噪誤判成語音。
 
 # C 階段：身體收縮姿勢（草稿，未經真實資料校準）。文獻上收縮/封閉姿勢
 # （手臂收緊貼近軀幹）跟「低激動+負向情緒」明確相關，比展開姿勢的證據

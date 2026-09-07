@@ -2360,6 +2360,43 @@ class TherapyOrchestrator:
         )
         print(f"  → 出示圖片反應分類: {result.get('classification', '')!r}"
               f"（依據: {result.get('judgment_evidence', '')!r}）")
+        # 判斷依據是空的，代表模型沒有真的針對長者這句話推理就直接下了
+        # 分類／承接語——prompt本身有明文要求「看不出線索也要老實寫『反應
+        # 內容簡短，看不出明確線索』，不能空著」（見上面【輸出格式】說明），
+        # 空字串必然是違反格式。實測發現這種情況常伴隨照抄prompt裡少樣本
+        # 範例的分類/承接語內容交差（2026-09-08 稽核：長者說「很像當時的
+        # 氛圍」這種單純肯定、沒有轉折的反應，卻被判成分類2、承接語幾乎
+        # 原文照抄範例1的「這張圖確實沒辦法把每個細節都畫得剛剛好……」）。
+        # 跟 STEP2/STEP3 補問角度對不上時「帶retry_feedback重打一次」同一
+        # 套修法：判斷依據是唯一可靠、跟語意無關的格式訊號，不用另外猜
+        # 長者這句話「應該」是哪個分類（那樣容易對到 prompt 自己也還在
+        # 處理的模糊地帶，例如「很像...但...」這種真的該判分類2的句子）。
+        if result.get("classification") and not result.get("judgment_evidence"):
+            print("  → 出示圖片反應分類判斷依據是空的（疑似照抄範例），"
+                  "帶 retry_feedback 重打一次")
+            retry_feedback = (
+                "上一次的輸出「判斷依據」欄位是空的，沒有先針對長者這句"
+                f"「{elder_response}」具體列出裡面的線索就直接下了分類跟"
+                "承接語，也不能直接照抄範例的分類或承接語內容交差。請重新"
+                "逐字檢查這句話裡有沒有肯定/相似詞、差異詞、比較級詞或"
+                "明顯情緒字眼，寫出具體的判斷依據（看不出明確線索就老實"
+                "寫「反應內容簡短，看不出明確線索」），再根據這個依據決定"
+                "分類與承接語。"
+            )
+            result = await guarded_generate(
+                self._generate_image_reveal_reaction,
+                taboo_words=user["taboos"],
+                llm_service=self.llm,
+                max_retry=3,
+                text_keys=("reaction_text",),
+                fallback={"reaction_text": ""},
+                user=user, scene_elements=scene_els, elder_response=elder_response,
+                scene_composition=scene_comp, covered_w=covered_w,
+                pre_image_detail=pre_image_detail, emotion=emotion,
+                retry_feedback=retry_feedback,
+            )
+            print(f"  → 重打後：出示圖片反應分類: {result.get('classification', '')!r}"
+                  f"（依據: {result.get('judgment_evidence', '')!r}）")
         # 長者看完圖的反應是在評論AI示意圖畫得準不準（像不像、哪裡不一樣），
         # 不是主動在敘述回憶本身，跟STEP2自由對話裡長者真的在講故事時性質
         # 不同——不呼叫 _detect_covered_w，這種評論內容硬套進5W1H覆蓋度會
@@ -3121,8 +3158,14 @@ class TherapyOrchestrator:
                 topic_senses=state.get("topic_senses"),
                 retry_feedback=retry_feedback,
             )
-            actual_w = await self._classify_question_dimension(result["question"]) or target_w
-            print(f"  → 重打後：補問 W({target_w})，實際角度 {actual_w}: {result['question']!r}")
+            # 重打後不再花一次LLM呼叫重新核對角度——重打已經帶著明確的
+            # retry_feedback要求模型改問target_w，而且這裡本來就不論結果
+            # 都接受、不會觸發第二次重打（避免疊加太多層LLM呼叫拖累品質），
+            # 再核對一次的結果只會拿去存state["last_w_asked"]，不影響這題
+            # 真正念給長者聽的內容，直接視為重打成功即可（2026-09-08稽核：
+            # 這次核對呼叫是判斷鏈裡的純粹開銷，沒有實際擋下任何東西）。
+            actual_w = target_w
+            print(f"  → 重打後：補問 W({target_w}): {result['question']!r}")
         elif actual_w != target_w:
             print(f"  → 補問 W({target_w}) 但問題實際角度是 {actual_w}: {result['question']}")
         else:
@@ -3346,9 +3389,12 @@ class TherapyOrchestrator:
                 topic_senses=state.get("topic_senses"),
                 retry_feedback=retry_feedback,
             )
-            actual_sense = await self._classify_question_sense(result["question"])
-            print(f"  → 重打後：補問感官(目標{target_sense})，"
-                  f"實際感官{actual_sense!r}: {result['question']!r}")
+            # 同 _ask_supplement 對 target_w 的做法：重打後不再花一次LLM
+            # 呼叫重新核對感官，這裡本來就「只重打一次、不論結果都接受」，
+            # 再核對一次只會拿去存state["last_sense_asked"]，不影響這題
+            # 真正念給長者聽的內容，直接視為重打成功即可。
+            actual_sense = target_sense
+            print(f"  → 重打後：補問感官(目標{target_sense}): {result['question']!r}")
         else:
             print(f"  → 補問感官(目標{target_sense})，實際感官"
                   f"{actual_sense!r}: {result['question']!r}")
@@ -3743,6 +3789,13 @@ class TherapyOrchestrator:
         desc_list = "\n".join(f"- {w}：{_W_DESC[w]}" for w in _W_ORDER)
         prompt = (
             f"這是治療師問長者的一句話：「{question_text}」\n\n"
+            f"這句話開頭如果是「那個時候」「那時候」這類字眼，那只是"
+            f"question_5w1h.txt 教的「回指整段已經聊開的情境」最後手段錨點"
+            f"（找不到更具體的錨點時的萬用開場語），不代表這句話真的在問"
+            f"時間點，不要因為看到這幾個字就判成「When」——要看這句話後面"
+            f"實際要求長者回答的具體內容是什麼（例如「那時候，有沒有嚐到"
+            f"什麼特別的味道呢？」，開頭雖然是「那時候」，但實際要長者回答"
+            f"的是味覺/味道，不是時間，應該判「How」或 NONE，不是「When」）。\n\n"
             f"這句話主要是想引導長者回答下面哪一個維度？\n{desc_list}\n\n"
             f"只回{dim_list}其中一個維度名稱本身，不要其他文字或說明；"
             "如果都不像，回NONE。"

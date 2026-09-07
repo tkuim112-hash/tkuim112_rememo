@@ -17,7 +17,7 @@ public class ShareController : MonoBehaviour
     public Image micButtonImage;
     public TMP_Text inputText;
     public TMP_Text closingText;    // 線條區：顯示 LLM 收尾語
-    [Tooltip("心得環節開場語音（承接語／感謝語／問句，見 LoadClosingText）播放用")]
+    [Tooltip("心得環節開場語音（感謝語／問句，見 LoadClosingText）播放用")]
     public AudioSource audioSource;
 
     [Header("Kinect 整合")]
@@ -121,25 +121,24 @@ public class ShareController : MonoBehaviour
     void LoadClosingText()
     {
         if (closingText == null) return;
-        string text = PlayerPrefs.GetString("ClosingText", "");
         string thanks = PlayerPrefs.GetString("ClosingThanks", "");
         string question = PlayerPrefs.GetString("ClosingQuestion", "");
-        // 三段（承接語／感謝語／問題）各自可能是空字串（例如心得環節開場
-        // 邀請語只有 question，沒有 text/thanks），只把有內容的段落接起來，
+        // 兩段（感謝語／問題）各自可能是空字串，只把有內容的段落接起來，
         // 避免空字串還是接了一個換行、畫面上多出空行。
+        // 2026-09-08：原本這裡還有第三段「承接語」，三段拼起來常常超過
+        // AIBubble 背景圖（st.png）畫死的4條格線，超出的行沒有格線可以
+        // 對齊、畫面跑版，使用者決定拿掉承接語，只留感謝語＋問題。
         var segments = new List<string>();
-        if (!string.IsNullOrEmpty(text)) segments.Add(text);
         if (!string.IsNullOrEmpty(thanks)) segments.Add(thanks);
         if (!string.IsNullOrEmpty(question)) segments.Add(question);
         closingFullText = string.Join("\n", segments);
         closingText.text = closingFullText;
 
-        // 承接語／感謝語／問句三段都是前端內建預錄音檔（見 audio_bank.py，
+        // 感謝語／問句兩段都是前端內建預錄音檔（見 audio_bank.py，
         // GameController.SendResponse 存進 PlayerPrefs 時已經用 '|' 串好），
         // 依序接起來播——這裡沒有需要即時TTS的動態內容，全部是本地 key，
         // 不用像 GameController 那樣還要組後端下載的 audio_path。
         closingAudioUris = new List<string>();
-        closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingSceneAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingThanksAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingQuestionAudioKeys")));
         // 心得環節的內容剛顯示，同 GameController.ApplyRoundResponse：先標記
