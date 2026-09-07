@@ -23,7 +23,8 @@ build_closing_invitation 產生的收尾語已經呼應過回合3的回答、接
 
 用法：在 app/ 目錄下執行 `python manual_test_full_round.py`，每一題會印出
 scene_text/question，接著在終端機手動輸入「長者」的回答，Enter 空白代表
-長者沒回應（沉默逾時）。全部跑完（心得環節問完最後一題並記錄回答後）自動停止。
+長者沒回應（模擬治療師按跳過，見 orchestrator.py _NO_RESPONSE_MARKER 說明）。
+全部跑完（心得環節問完最後一題並記錄回答後）自動停止。
 """
 import os
 import sys

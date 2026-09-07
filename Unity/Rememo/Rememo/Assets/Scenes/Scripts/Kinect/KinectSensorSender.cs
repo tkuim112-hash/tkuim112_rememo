@@ -15,12 +15,11 @@ using Windows.Kinect;
 /// 這裡因此不再讀 Microsoft.Kinect.Face 的 FaceFrameSource/FaceFrameReader，
 /// 也不再需要 BodyFrameReader（原本只是用來取得 Face Tracking ID）。
 ///
-/// 已知行為變化：原本反應時間偵測（OnQuestionAsked 之後）除了看麥克風音量，
-/// 也會看 Kinect 回報的 MouthMoved/MouthOpen 即時布林值；現在臉部分析變成
-/// 每 sendInterval 才做一次的非同步網路請求，沒有逐幀可用的嘴部動作訊號，
-/// 反應時間偵測改成只看音量。這是換架構的直接代價，如果之後發現反應時間
-/// 判斷變得不夠靈敏（長者張嘴但還沒發出聲音的情況偵測不到），需要另外設計
-/// 補救方案，不是這次的範圍。
+/// 反應時間（OnQuestionAsked → OnMicPressed）對齊長者按下麥克風那一刻，不是
+/// 音量超過門檻的那一刻——2026-09-07 稽核（治療師實測回報反應時間數字對不
+/// 上）：改用音量偵測時，長者清喉嚨、椅子聲、環境雜音只要夠大聲就會在長者
+/// 真正按下麥克風之前把計時器停掉，量出來的時間跟「聽完問題、決定要回答、
+/// 按下麥克風」這個真正有意義的反應時間脫鉤。詳見 OnMicPressed 的說明。
 /// </summary>
 public class KinectSensorSender : MonoBehaviour
 {
@@ -31,12 +30,6 @@ public class KinectSensorSender : MonoBehaviour
     [Header("外部參考")]
     public GameController    gameController;
     public KinectAudioSender audioSender;
-
-    [Header("反應時間偵測")]
-    [Tooltip("麥克風 RMS 超過此值視為長者開始說話（用於計算反應時間）。預設 0.015，" +
-             "校正完成後會被 CalibrationData.AudioSpeechThreshold（個人化底噪門檻）覆蓋，" +
-             "這裡只在離線/demo 模式（沒跑過校正）時生效")]
-    public float audioSpeechThreshold = 0.015f;
 
     [Header("臉部畫面設定")]
     [Tooltip("送給後端做臉部分析的 JPEG 品質（0-100）。畫面每 sendInterval 秒送一次，不需要很高品質")]
@@ -60,6 +53,11 @@ public class KinectSensorSender : MonoBehaviour
     // 反應時間
     private float questionAskedTime = -1f;
     private bool  responseTimeSent  = false;
+    // OnMicPressed() 當下直接算好存這裡，CollectAndSend() 只負責讀走、送出、
+    // 歸零——實際按鈕觸發跟送出頻率脫鉤（後者每 sendInterval 才跑一次），
+    // 不能反過來在 CollectAndSend 裡才用「現在」去算時間差，那樣算出來的
+    // 會是「按下麥克風到下一次送出感測資料」的間隔，不是真正的反應時間。
+    private int _pendingResponseMs = -1;
 
     // HandTip 速度（B 階段）
     private float   _latestHandTipVelocity = 0f;
@@ -89,6 +87,27 @@ public class KinectSensorSender : MonoBehaviour
     {
         questionAskedTime = Time.realtimeSinceStartup;
         responseTimeSent  = false;
+        _pendingResponseMs = -1;
+    }
+
+    /// <summary>
+    /// GameController/ShareController 在長者按下麥克風、真正開始錄音那一刻呼叫
+    /// （StartRecording() 呼叫 kinectAudioSender.StartSTT() 的同時）。
+    ///
+    /// 2026-09-07 稽核（治療師實測回報反應時間數字對不上）：原本改成量「音量
+    /// 超過門檻的那一刻」，結果長者清喉嚨、椅子聲、環境雜音，只要音量夠大
+    /// 就會在長者真正按下麥克風之前把計時器停掉，量出來的時間比「聽完問題、
+    /// 決定要回答、按下麥克風」這段真正有意義的反應時間短很多，跟按鈕動作
+    /// 完全脫鉤。改回對齊「按下麥克風」這個長者主動的操作，量測的才是使用者
+    /// 真正想回答的反應時間，不會被環境噪音誤觸發。
+    /// </summary>
+    public void OnMicPressed()
+    {
+        if (!responseTimeSent && questionAskedTime >= 0f)
+        {
+            _pendingResponseMs = Mathf.RoundToInt((Time.realtimeSinceStartup - questionAskedTime) * 1000f);
+            responseTimeSent   = true;
+        }
     }
 
     void Update()
@@ -153,23 +172,13 @@ public class KinectSensorSender : MonoBehaviour
 
     void CollectAndSend(long userId)
     {
-        // ── 反應時間偵測（Unity 端計時，後端不做）──────────────────
-        // 只看音量：舊版還會看 Kinect 即時回報的 MouthMoved/MouthOpen，但臉部
-        // 分析現在是每 sendInterval 才做一次的非同步請求，沒有逐幀可用的嘴部
-        // 動作訊號可以拿來加速偵測，見本檔案開頭類別註解的「已知行為變化」。
+        // ── 反應時間讀取（Unity 端計時，後端不做）──────────────────
+        // 真正的計時/停表在 OnMicPressed()（長者按下麥克風那一刻），這裡只是
+        // 把算好的值讀走、送給後端，送完歸零，避免同一個值被下一次
+        // CollectAndSend 重複送出。
         float audioRms = audioSender != null ? audioSender.CurrentAudioRms : 0f;
-        // 校正完成時優先用 KinectCalibrationManager 依這位長者/這次現場底噪算出的
-        // 個人化門檻（CalibrationData.AudioSpeechThreshold），沒校正過（離線/demo
-        // 模式）才退回 Inspector 設的固定值，理由見 CalibrationData 欄位說明。
-        float effectiveThreshold = CalibrationData.IsCalibrated
-            ? CalibrationData.AudioSpeechThreshold
-            : audioSpeechThreshold;
-        int responseMs = -1;
-        if (!responseTimeSent && questionAskedTime >= 0f && audioRms > effectiveThreshold)
-        {
-            responseMs       = Mathf.RoundToInt((Time.realtimeSinceStartup - questionAskedTime) * 1000f);
-            responseTimeSent = true;
-        }
+        int responseMs = _pendingResponseMs;
+        _pendingResponseMs = -1;
 
         // ── 骨架量測（純算術，不做分類）────────────────────────────
         float headDrop        = userId != 0 ? MeasureHeadDrop(userId)             : -999f;

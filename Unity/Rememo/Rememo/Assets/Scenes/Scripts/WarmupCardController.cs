@@ -91,7 +91,8 @@ public class WarmupCardController : MonoBehaviour
     [Tooltip("CountXxx 類型：關節資料常常會抖動雜訊，張開/收回都要連續穩定這麼多秒才算數，避免抖一下就誤判成一次")]
     public float countStableSeconds = 0.3f;
 
-    [Tooltip("HoldXxx 類型：姿勢要連續消失超過這麼多秒，累積的保持時間才會歸零，避免單幀的雜訊抖動把進度洗掉")]
+    [Tooltip("HoldXxx 類型：姿勢要連續消失超過這麼多秒，才確認長者真的放下了（用來判斷 hasSeenRetractedThisCard，見 UpdateHold 說明），" +
+             "避免單幀的雜訊抖動誤判成「放下」。已累積的保持秒數不會因為放下而歸零，長者中途休息可以接著累加")]
     public float holdDropoutTolerance = 0.5f;
 
     private List<ActionCard> selectedCards;
@@ -448,7 +449,13 @@ public class WarmupCardController : MonoBehaviour
             holdDropoutTimer += Time.deltaTime;
             if (holdDropoutTimer >= holdDropoutTolerance)
             {
-                holdTimer = 0f;
+                // 2026-09-07 稽核（使用者回報）：手臂平舉這類 Hold 動作長者中途手
+                // 痠放下來休息很常見，原本放下超過 holdDropoutTolerance 就把
+                // holdTimer 整個歸零，等於逼長者重新從 0 秒撐滿，對體力較弱的
+                // 長者不友善。改成只標記「已經真的放下過一次」（讓下面
+                // hasSeenRetractedThisCard 的邏輯照樣能擋掉「換卡時延續上一張卡
+                // 姿勢」的誤算），不清空 holdTimer——累積的保持秒數用「總共撐了
+                // 幾秒」計算，休息不會洗掉之前的進度，重新舉起時接著累加。
                 hasSeenRetractedThisCard = true;
             }
         }

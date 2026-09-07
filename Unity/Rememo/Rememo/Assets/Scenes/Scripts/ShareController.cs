@@ -328,6 +328,8 @@ public class ShareController : MonoBehaviour
         if (micButtonImage != null) micButtonImage.color = new Color(1f, 0.3f, 0.3f, 1f);
         RefreshSubmitButton();
 
+        kinectSensorSender?.OnMicPressed();
+
         if (UseKinect)
         {
             kinectAudioSender.StartSTT();

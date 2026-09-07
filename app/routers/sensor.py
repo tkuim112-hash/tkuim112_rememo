@@ -512,8 +512,8 @@ def _audio_threshold(calib: dict | None) -> float:
     高（2026-09-06 稽核發現：長者說話音量較小、或 Kinect 陣列麥克風離長者
     較遠時，實際 audio_rms 可能整場都不到寫死的 0.015，STT 那邊有正常轉出
     逐字稿，代表音訊管線是通的，純粹是這個判斷門檻對這個人/這個現場環境
-    設太高，語音永遠不會被判定成「有講話」，連帶讓 silence_rate 被拉到誤觸發
-    _score_emotion 的低落覆寫、KinectSensorSender 也偵測不到反應時間）。
+    設太高，語音永遠不會被判定成「有講話」，連帶讓 KinectSensorSender 也
+    偵測不到反應時間）。
 
     用「校正期間量到的底噪」設門檻而不是像音高一樣量「說話時的分布」，是
     因為 15 秒校正窗口只要求長者坐穩、不要求開口說話，蒐集到的樣本本來就
@@ -630,7 +630,6 @@ async def _update_session_stats(
     r, session_id: str, p: SensorPayload, emotion_raw: str, au: dict, pose: dict,
     calib: dict | None = None, signals: list[str] | None = None,
     eng: float = 0.0, hap: float = 0.0, agi: float = 0.0, face_detected: bool = True,
-    waiting_for_response: bool = False,
 ):
     """
     每收到一個 sensor frame 就累積統計至 session:{id}:stats。
@@ -706,16 +705,6 @@ async def _update_session_stats(
         pipe.hincrby(key, "high_sway_n", 1)
     if skel_absent:
         pipe.hincrby(key, "skel_absent_n", 1)
-
-    # A 階段：靜默（長者在場但無語音，排除骨架消失狀態）。分子分母都只在
-    # waiting_for_response 為真（真的輪到長者回答，不是虛擬人講話/治療師
-    # 審核的時間）時才計入，2026-09-06 稽核：舊版分母是不分場合的
-    # frame_count，長者正常參與時 silence_rate 仍常態超過 0.9，這個訊號
-    # 因此曾被拿掉不用（見 session.py _score_emotion 說明）。
-    if waiting_for_response:
-        pipe.hincrby(key, "waiting_n", 1)
-        if p.audio_rms < _audio_threshold(calib) and not skel_absent:
-            pipe.hincrby(key, "silence_n", 1)
 
     # B 階段：SpineBase 深度（長者後退離開遊戲區域）。跟 face_detected_n 是
     # 同一種分母問題：far_n 只在 skel_spinebase_z 有追蹤到時才判斷，分母不能
@@ -817,10 +806,6 @@ async def receive_sensor(
     body = SensorPayload.model_validate_json(payload)
     r = request.app.state.redis
     calib = await _load_calibration(r, body.session_id)
-    # session.py 在問題丟出去/長者回答完這兩個時間點分別把這個旗標設 True/
-    # False（見該檔 _set_waiting_for_response），供下面 silence_n 判斷「現在
-    # 是不是輪到長者回答」——虛擬人講話/治療師審核的時間不該算進沉默分母。
-    waiting_for_response = (await r.get(f"session:{body.session_id}:waiting_for_response")) == "1"
 
     # 臉部訊號：Unity 這一幀有抓到畫面才送 frame，face-service 沒偵測到臉/逾時
     # 時 face_detected 會是 False，au/pose 保持空字典——下游的判斷函式對空字典
@@ -841,7 +826,7 @@ async def receive_sensor(
 
     emotion_raw, eng, hap, agi = await _ema_classify(r, body.session_id, body, au, pose, calib)
     signals = _reasoning_signals(body, au, pose, calib, face_detected)
-    await _update_session_stats(r, body.session_id, body, emotion_raw, au, pose, calib, signals, eng, hap, agi, face_detected, waiting_for_response)
+    await _update_session_stats(r, body.session_id, body, emotion_raw, au, pose, calib, signals, eng, hap, agi, face_detected)
     emotion_label = _EMOTION_LABEL.get(emotion_raw, "適當")
     ts            = body.timestamp or time.time()
 

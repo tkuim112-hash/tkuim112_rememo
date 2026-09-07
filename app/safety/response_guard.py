@@ -1,7 +1,8 @@
 """
 內容驗證與重試模組 — app/safety/response_guard.py
 
-防護對象：AI 生成的回應內容（scene_text / question）在送給長者聽之前，
+防護對象：AI 生成的回應內容（question，以及各生成函式自己的承接語欄位，
+例如 reaction_text／closing_text／emotional_text）在送給長者聽之前，
 是否符合 question_5w1h.txt 明文規定的格式/內容規則（是非題、太長、
 把AI示意圖當成真實地點、把長者寫成站在畫面裡、精確地名時間、要求描述
 畫面內容、已知用詞瑕疵等）。這些規則跟禁忌話題無關，是問題本身的品質/
@@ -164,24 +165,29 @@ def scene_text_addresses_elder(scene_text: str, elder_name: str = "") -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 場景文字把畫面講成「這是一幅畫/示意圖」，用後設視角拉開距離
+# 場景文字/承接語把畫面講成「這是一幅畫/示意圖」，用後設視角拉開距離
 # ══════════════════════════════════════════════════════════════════════
 #
 # 2026-08 orchestrator.py 開始把生圖時的 image_prompt 英文原文（脫敏、濾掉
 # 畫風片語後）直接傳給問題生成步驟當構圖參考，實測發現本地模型偶爾還是會把
-# 畫風描述的殘留語感翻譯進場景文字，變成「一幅水彩畫描繪了1970年代台灣煤礦
+# 畫風描述的殘留語感翻譯進承接語，變成「一幅水彩畫描繪了1970年代台灣煤礦
 # 場景」這種用後設視角描述「這是一幅畫」的句子——跟「場景文字不能寫成長者
 # 站在畫面裡」是同一種問題的相反方向：不是把長者拉進畫面裡，是把畫面本身
 # 講成一件被觀賞的作品，一樣會讓長者聽起來像在聽別人介紹一幅畫，而不是
-# 沉浸式的場景描述，跟「像在描述一幅畫」這句規則裡的比喻本意（客觀、第三
-# 人稱）恰恰相反。已經從源頭把 image_prompt 裡的畫風片語濾掉（見
+# 沉浸式的場景描述。已經從源頭把 image_prompt 裡的畫風片語濾掉（見
 # orchestrator.py _strip_style_descriptors），這裡加一道事後防護，避免模型
 # 自己聯想出其他「這是一幅畫/示意圖」的講法。
+#
+# 2026-09-07起：STEP2/STEP3不再產生「scene_text」這個key（見該次改動
+# 說明），這條檢查改成跟 is_generic_acknowledgment 等檢查共用 ack_check_
+# text（reaction_text，_generate_image_reveal_reaction／_generate_quick_
+# end_recap 也一樣拿 scene_composition 當構圖參考，同樣可能踩到這個毛病），
+# 不再單獨查已經永遠是空字串的 scene_text_val。
 _ARTWORK_FRAME_RE = re.compile(r"水彩畫|這是一幅畫|一幅.{0,4}畫作|插畫|示意圖|畫面描繪|畫中")
 
 
 def scene_text_frames_as_artwork(scene_text: str) -> bool:
-    """True 代表場景文字把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的距離，需要重新生成。"""
+    """True 代表場景文字/承接語把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的距離，需要重新生成。"""
     if not scene_text:
         return False
     return bool(_ARTWORK_FRAME_RE.search(scene_text))
@@ -208,28 +214,10 @@ _KNOWN_PROMPT_EXAMPLES = {
     "夕陽下的海港，你以前都怎麼帶團介紹？",
     "像這樣的工作場所，你以前都做些什麼？",
     "像這樣的廟口，你小時候都去做什麼？",
-    "紡織廠的大門在黃昏的光線下顯得格外寧靜，工人們陸續走出廠門，往各自的方向散去。",
-    "聽起來那段跟阿珠姐一起做工的日子很熱鬧呢。",
     "廟口的攤販剛擺出來，香氣混著人聲，好熱鬧。",
-    # 2026-08-17稽核（實測後補，隨後撤回）：一度把 _generate_image_reveal_
-    # reaction 分類1的範例句（orchestrator.py「改用自己的話接，例如...」
-    # 那句）加進這份清單，理由是「這句不會跟judgment_evidence_unsupported
-    # 搶額度，因為兩者不是同時發生」——這個判斷是錯的，judgment_evidence_
-    # unsupported 檢查的是「判斷依據」欄位有沒有編造內容，任何分類（含1）
-    # 只要長者反應訊號弱，都可能同時觸發「編造依據」跟「照抄範例」兩條
-    # 規則，跟2026-08-16那次拿掉分類2/3/4範例句的理由其實是同一種情況。
-    # 使用者確認：這裡的照抄範例本身不是問題，只要分類跟判斷依據有根據
-    # 就好，不需要為了防照抄，犧牲原本就更值得攔的judgment_evidence_
-    # unsupported檢查的重試額度——維持2026-08-16當時的結論，這句不放進來。
-    # 2026-08-17稽核（實測後補）：_generate_open_followup（STEP2）自己內嵌在
-    # 【任務】說明裡教「承接語不能是問句」用的示範句（orchestrator.py
-    # 4851-4854）——實測長者答得很薄（例如只說「就是切仔麵」）時，模型會把
-    # 這兩句範例原封不動背出來當真實輸出，而不是根據這次長者實際說的話重新
-    # 生成。原本這種情況只被 scene_text_addresses_elder 誤抓（因為範例句剛好
-    # 含「你」），retry_feedback 講的是錯的重點；那條規則已經retired（見該
-    # 函式上方註解），改成正確地由這裡的照抄檢查攔下。
-    "原來是切仔麵，光聽你這樣說就覺得很有味道。",
-    "那時候通常都跟誰一起去吃？",
+    "老王那時候，你們都聊些什麼？",
+    "那個時候的爐灶，是什麼樣子的呢？",
+    "以前用爐灶煮飯，是什麼樣的情形呢？",
     # 2026-08-16稽核：_generate_image_reveal_reaction 自己的4類反應分類範例句
     # （orchestrator.py）2026-08一度加進這份清單，但實測發現這條檢查會跟新
     # 加的 judgment_evidence_unsupported 檢查搶同一份重試額度——長者反應
@@ -238,6 +226,18 @@ _KNOWN_PROMPT_EXAMPLES = {
     # 使用者判斷「照抄範例」本身不是問題（承接語內容跟範例像，只要分類跟
     # 判斷依據是根據長者這次實際說的話推出來的就好），比起「編造依據」是
     # 更值得攔的問題，決定把這4句從清單移除，把重試額度留給後者。
+    #
+    # 2026-09-07稽核：STEP2/STEP3不再產生承接語（見orchestrator.py該次改動
+    # 說明），原本這裡幾句只在承接語規則裡出現過的範例句（「聽起來那段跟
+    # 阿珠姐一起做工的日子很熱鬧呢。」「原來是切仔麵，光聽你這樣說就覺得
+    # 很有味道。」「那時候通常都跟誰一起去吃？」「紡織廠的大門在黃昏的
+    # 光線下...」）已經不存在於任何 prompt 裡，永遠不會再被真的照抄，一併
+    # 移除；改成加入這次新增的「先呼應再問」複合句範例（含 orchestrator.py
+    # STEP2/STEP3 的【任務】示範句），跟「是怎麼回事」語氣修正範例——這些
+    # 都是實測會被模型原句背出來的新範例句，理由同上面「夕陽下的海港」那條。
+    "聽起來那段全家一起蒸年糕的日子很熱鬧，你們都怎麼分工？",
+    "圍爐那時候，你們都準備了哪些菜？",
+    "原來是滷豬腳，你最喜歡的是哪一種滷法？",
 }
 
 
@@ -674,7 +674,7 @@ _TRIVIALIZE_DISCREPANCY_RE = re.compile(
 _QUESTION_ONLY_FORMAT_RULES = frozenset({
     "too_long", "double_question", "memory_test", "precise_fact",
     "image_description", "comparison_trap", "vague_association",
-    "sense_as_method",
+    "sense_as_method", "confused_tone",
 })
 
 _PRECISE_FACT_RE = re.compile(r"哪一?年|什麼時候|幾點|叫什麼|哪一?位")
@@ -743,6 +743,14 @@ _SENSE_METHOD_EXAMPLES = (
     "「那個時候，空氣中有沒有什麼味道呢？」"
     "「那時候，有沒有嚐到什麼味道呢？」"
 )
+
+# 「是怎麼回事／怎麼一回事」：question_5w1h.txt【提問規則】已經明文禁止用這
+# 種問法問單純的舊物件/舊生活方式（見該檔「不要用『是怎麼回事』」那條），
+# 但只有 prompt 文字、沒有對應的事後防護——這個句型平常是問「發生了什麼
+# 意外/異常狀況」才會用的語氣，帶著疑惑、追問的味道，套用在單純懷舊的內容
+# 上（例如「那個時候的舊式爐灶是怎麼回事？」）會顯得像在質問，不像老朋友
+# 聊天，跟其他「用詞規則」（您/長者/先/咱們等）同一類問題，補上同一套防護。
+_CONFUSED_TONE_RE = re.compile(r"是怎麼回事|怎麼一回事")
 
 # 「您」：question_5w1h.txt 明文規定「稱呼長者一律用「你」...不要用「您」——
 # 「您」念起來太正式，會破壞老朋友聊天的溫暖感」，但這條規則之前也只有口頭
@@ -829,6 +837,14 @@ def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] |
             "「有沒有什麼X，讓你印象特別深呢」這種問印象/記憶本身的句型），套用"
             "同一個句型、換成跟這次情境相關的感官對象即可，不要用「你/你們+怎麼+"
             "聽/聞/嚐」這種句型。"
+        )
+
+    if _CONFUSED_TONE_RE.search(q):
+        return "confused_tone", (
+            f"上一次的問題「{q}」用了「是怎麼回事／怎麼一回事」，這種問法平常是問"
+            "「發生了什麼意外／異常狀況」才會用的語氣，拿來問單純懷舊的舊物件、"
+            "舊生活方式會顯得像在質問，不像老朋友聊天。這次請改用「是什麼樣子的"
+            "呢」「是什麼樣的情形呢」這類自然問法，不要用「怎麼回事」。"
         )
 
     if _NIN_RE.search(combined):
@@ -1048,34 +1064,18 @@ async def guarded_generate(
             continue
 
         # scene_text_addresses_elder 這條檢查 2026-08-17 稽核後從這裡移除，
-        # 見該函式上方註解的retired說明——現在唯一還會產生scene_text欄位的
-        # 兩支函式（_generate_open_followup／_generate_supplement_question，
-        # 也就是STEP2/STEP3的承接語）本身的prompt都明確要求「稱呼長者一律
-        # 用『你』」「具體呼應長者剛才說的內容」，這條檢查對它們來說100%是
-        # 攔錯人（實測案例：「聽你這麼一說，大家在院子裡打鬧的樣子，應該很
-        # 有趣吧」這種正常呼應長者的承接語被誤擋）。真正該防的「把長者寫成
-        # 站在AI示意圖裡」這個情境，在_generate_image_reveal_reaction改用
-        # reaction_text當key之後就已經不會再命中scene_text這個key了。
-        scene_text_val = result.get("scene_text", "")
-
-        # 場景文字不能把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的
-        # 距離（見 scene_text_frames_as_artwork 上方註解）。只查 scene_text，
-        # 理由同上一個檢查。
-        if scene_text_frames_as_artwork(scene_text_val):
-            logger.warning(
-                f"[ResponseGuard] 場景文字把畫面講成一幅畫/示意圖: {scene_text_val!r}，"
-                f"重新生成 (attempt={attempt})"
-            )
-            retry_feedback = (
-                f"上一次的場景文字「{scene_text_val}」把畫面講成「一幅畫」「示意圖」，"
-                "用後設視角在介紹一件作品，會讓長者覺得有距離感。這次請直接沉浸式描述"
-                "畫面裡的場景本身（例如直接寫「礦坑入口處，煤炭散落一地」），不要提到"
-                "「畫」「畫作」「插畫」「示意圖」這類詞。"
-            )
-            # 理由同上：查的是承接語／場景文字欄位，解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+        # 見該函式上方註解的retired說明。2026-09-07起STEP2/STEP3
+        # （_generate_open_followup／_generate_supplement_question）也不再
+        # 產生「scene_text」這個key（不再生成承接語，見 orchestrator.py
+        # 該次改動說明）——這個系統裡已經沒有任何 generate_fn 會回傳
+        # "scene_text" 這個 key 了。原本掛在這裡、只查 scene_text_val 的
+        # scene_text_frames_as_artwork（場景文字把畫面講成一幅畫/示意圖）
+        # 檢查沒有跟著整個刪掉——那個失效模式（模型把 scene_composition
+        # 構圖參考的殘留語感講成「一幅水彩畫描繪了...」）在唯一還會用到
+        # scene_composition 的 _generate_image_reveal_reaction／_generate_
+        # quick_end_recap（reaction_text）身上一樣可能發生，這條檢查改到
+        # 下面跟 is_generic_acknowledgment 等檢查共用的 ack_check_text
+        # （reaction_text）上，不再查已經永遠是空字串的 scene_text_val。
 
         # 同樣不論有沒有設禁忌詞：擋「原句照抄 question_5w1h.txt 範例」，
         # 這種輸出可能跟這次真正的畫面元素對不上（見 echoes_prompt_example 上方註解）。
@@ -1125,7 +1125,7 @@ async def guarded_generate(
             attempt += 1
             continue
 
-        # 承接語／場景文字不能是空泛套語，沒有具體呼應長者剛才說的內容
+        # 承接語不能是空泛套語，沒有具體呼應長者剛才說的內容
         # （見 is_generic_acknowledgment 上方註解）。
         #
         # 2026-08稽核：這裡原本只查 scene_text_val（寫死 "scene_text" 這個
@@ -1133,13 +1133,34 @@ async def guarded_generate(
         # 用的 "reaction_text" key完全沒被這條規則覆蓋到——那兩支函式的任務
         # 說明明明也要求「不能只是空泛的稱讚」（例如 _generate_quick_end_recap
         # 明講「不能只是空泛的稱讚（例如不寫「謝謝你告訴我這些」...」），卻沒有
-        # 對應的事後防護，是漏放。改成 scene_text_val 為空時退回讀 reaction_text
-        # ——不用像 check_format_rules 那樣完整迭代整個 text_keys，因為
-        # closing_text／emotional_text 的核心內容本來就常常合理包含「謝謝你的
-        # 分享」這類語意（收尾語、情緒支持的本質就是要感謝/肯定），套用這條
-        # 規則會造成大量誤判，只有 reaction_text 跟 scene_text 一樣是「呼應
-        # 長者剛才說的內容」性質的承接語，才適合共用同一條檢查。
-        ack_check_text = scene_text_val or result.get("reaction_text", "")
+        # 對應的事後防護，是漏放。closing_text／emotional_text 的核心內容本來
+        # 就常常合理包含「謝謝你的分享」這類語意（收尾語、情緒支持的本質就是
+        # 要感謝/肯定），套用這條規則會造成大量誤判，只有 reaction_text 是
+        # 「呼應長者剛才說的內容」性質的承接語，才適合共用下面這組檢查。
+        # 2026-09-07起：scene_text 這個 key 已經完全不存在了（見上方
+        # scene_text_frames_as_artwork 註解），直接讀 reaction_text 即可，
+        # 不用再跟已經永遠是空字串的 scene_text_val 做 or 判斷。
+        ack_check_text = result.get("reaction_text", "")
+
+        # 承接語把畫面講成「這是一幅畫/示意圖」（見 scene_text_frames_as_
+        # artwork 上方註解），跟上面 is_generic_acknowledgment 共用同一組
+        # ack_check_text。
+        if scene_text_frames_as_artwork(ack_check_text):
+            logger.warning(
+                f"[ResponseGuard] 承接語把畫面講成一幅畫/示意圖: {ack_check_text!r}，"
+                f"重新生成 (attempt={attempt})"
+            )
+            retry_feedback = (
+                f"上一次的承接語「{ack_check_text}」把畫面講成「一幅畫」「示意圖」，"
+                "用後設視角在介紹一件作品，會讓長者覺得有距離感。這次請直接沉浸式描述"
+                "畫面裡的場景本身（例如直接寫「礦坑入口處，煤炭散落一地」），不要提到"
+                "「畫」「畫作」「插畫」「示意圖」這類詞。"
+            )
+            # 查的是承接語欄位本身，解鎖退回整包重新生成。
+            locked_fields = None
+            attempt += 1
+            continue
+
         if is_generic_acknowledgment(ack_check_text):
             logger.warning(
                 f"[ResponseGuard] 承接語是空泛套語: {ack_check_text!r}，"
@@ -1310,21 +1331,21 @@ async def guarded_generate(
 
         # 格式/內容規則（too_long、double_question、memory_test、精確地名時間、
         # 要求描述畫面內容、已知用詞瑕疵，詳見 check_format_rules 上方註解）。
-        # 2026-08 稽核發現這裡原本直接用上面的 scene_text_val（寫死只讀 "scene_text"
-        # 這個 key），導致 closing_text／emotional_text 這類換了 key 名稱的欄位
-        # 從沒被「您/先/咱們/搭把手」等用詞檢查覆蓋到——改成組合 text_keys 裡除了
-        # question 以外的所有欄位，讓每一種 generate_fn 的非問題欄位都受到保護。
+        # 2026-08 稽核發現這裡原本直接寫死只讀 "scene_text" 這個 key，導致
+        # closing_text／emotional_text 這類換了 key 名稱的欄位從沒被「您/先/
+        # 咱們/搭把手」等用詞檢查覆蓋到——改成組合 text_keys 裡除了 question
+        # 以外的所有欄位，讓每一種 generate_fn 的非問題欄位都受到保護。
         wording_check_text = "".join(result.get(k, "") for k in text_keys if k != "question")
         format_rule, format_feedback = check_format_rules(question_text, wording_check_text)
         if format_rule:
             logger.warning(
                 f"[ResponseGuard] 格式/內容規則違規({format_rule}): "
-                f"question={question_text!r} scene_text={scene_text_val!r}，重新生成 (attempt={attempt})"
+                f"question={question_text!r} 其他欄位={wording_check_text!r}，重新生成 (attempt={attempt})"
             )
             # 只有 _QUESTION_ONLY_FORMAT_RULES 裡的規則保證只查 question_text
             # 本身（見該常數說明），其餘規則（nin/xian/zanmen等）查的是
-            # scene_text_val+question 的 combined，沒辦法排除是被鎖定的欄位
-            # 造成違規，一律解鎖。
+            # wording_check_text+question 的 combined，沒辦法排除是被鎖定的
+            # 欄位造成違規，一律解鎖。
             if question_only_retry_fn is not None and format_rule in _QUESTION_ONLY_FORMAT_RULES:
                 locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
             else:

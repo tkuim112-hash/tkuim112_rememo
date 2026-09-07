@@ -5,13 +5,7 @@ import { use, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { Case, Session } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
-
-const RATING_COLOR: Record<string, string> = {
-  適當: "#4caf7d",
-  亢奮: "#e09540",
-  焦躁: "#e09540",
-  低落: "#e05c3a",
-};
+import { EMOTION_COLORS } from "@/lib/emotionSignals";
 
 const inputClass =
   "w-full bg-[#f5f5f5] rounded-xl px-4 py-2 text-[15px] text-[#1a1a1a] outline-none focus:bg-[#efefef] transition-colors";
@@ -324,7 +318,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                 <h2 className="text-[22px] font-bold text-[#e05c3a]">最近活動</h2>
                 {recentSessions.map((s, idx) => {
                   const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
-                  const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
+                  const color = EMOTION_COLORS[s.rating ?? ""] ?? "#888";
                   return (
                     <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
                       <div className="flex flex-col gap-1.5">
@@ -361,7 +355,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
             ) : (
               sessions.map((s, idx) => {
                 const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
-                const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
+                const color = EMOTION_COLORS[s.rating ?? ""] ?? "#888";
                 return (
                   <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
                     <div className="flex flex-col gap-1.5">

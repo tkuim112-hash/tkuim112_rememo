@@ -192,7 +192,6 @@ public class KinectCalibrationManager : MonoBehaviour
         if (isStable)
         {
             ApplyCursorRemapping(); // ── 新增
-            ApplyAudioThreshold();
             SendCalibrationData();
 
             if (string.IsNullOrEmpty(sessionId))
@@ -510,34 +509,6 @@ public class KinectCalibrationManager : MonoBehaviour
                   $"Z:{CalibrationData.WorldZ:F2}");
     }
 
-    // 跟後端 sensor.py AUDIO_SPEECH_MIN / AUDIO_RMS_STD_K / AUDIO_RMS_THRESHOLD_MIN
-    // 是同一組數字，兩邊改動要同步，否則 Unity 本地的反應時間偵測門檻
-    // 會跟伺服器判斷長者「有沒有講話」的門檻對不起來。
-    const float AUDIO_SPEECH_MIN_DEFAULT = 0.015f;
-    const float AUDIO_RMS_STD_K          = 4.0f;
-    const float AUDIO_RMS_THRESHOLD_MIN  = 0.006f;
-
-    /// <summary>
-    /// 用校正期間量到的底噪 baseline + k×標準差，算出這位長者/這次現場環境
-    /// 專屬的語音音量門檻，寫進 CalibrationData 供 KinectSensorSender 本地
-    /// 判斷「長者開始回答了嗎」使用（見該檔 audioSpeechThreshold 用法）。
-    /// 只會比固定值低、不會比它高——完整理由見後端 sensor.py _audio_threshold。
-    /// </summary>
-    void ApplyAudioThreshold()
-    {
-        if (_rmsBuffer.Count == 0) return;
-
-        float baseline = Average(_rmsBuffer);
-        if (baseline <= 0f) return;
-
-        float std = StdDev(_rmsBuffer, baseline);
-        float threshold = Mathf.Min(AUDIO_SPEECH_MIN_DEFAULT,
-            Mathf.Max(AUDIO_RMS_THRESHOLD_MIN, baseline + AUDIO_RMS_STD_K * std));
-
-        CalibrationData.AudioSpeechThreshold = threshold;
-        Debug.Log($"[Calibration] 個人化語音門檻 → {threshold:F4}（底噪 baseline={baseline:F4}, std={std:F4}）");
-    }
-
     void ClearGeometryBuffers()
     {
         _spineYBuffer.Clear();
@@ -607,7 +578,8 @@ public class KinectCalibrationManager : MonoBehaviour
             // 用「相對自己校正期間分布」設門檻，能大致抵消掉這個偏差。
             pitchVarianceStdDev = StdDev(_pitchVarBuffer, pitchVarMean),
             // 校正期間量到的底噪水準，供後端 _audio_threshold 算個人化語音門檻
-            // （見 CollectAudioData／ApplyAudioThreshold 說明，兩邊公式必須同步）。
+            // （用於情緒/沉默率判斷，見 CollectAudioData 說明；跟 Unity 本地的
+            // 反應時間量測已改用 OnMicPressed 對齊按鍵動作，兩者互不相關）。
             audioRmsBaseline = rmsMean,
             audioRmsStdDev = StdDev(_rmsBuffer, rmsMean),
             jointKeys = new List<string>(baselineJoints.Keys).ToArray(),
