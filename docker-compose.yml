@@ -10,7 +10,15 @@ services:
     volumes:
       - ./app:/app
       - ./media:/media
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    # --ws-ping-interval/--ws-ping-timeout 拉寬 uvicorn 內建 WebSocket ping/pong
+    # 保活窗口（預設都是 20 秒）：/ws/stt 走 Cloudflare Tunnel 到長者端 Unity，
+    # 多一段公網往返延遲，一遇到網路抖動或事件迴圈忙碌，20 秒內收不到 pong
+    # 就會被 uvicorn 自己判定連線死掉、直接關閉——這跟 Unity 端應用層那個
+    # 20 秒心跳（KinectAudioSender.cs SendSttControl "ping"）是兩回事，救不了
+    # 彼此。ping 照樣 20 秒送一次（維持原本及早偵測真斷線的頻率），但把等
+    # pong 回應的容忍時間拉到 60 秒，給 tunnel 延遲/抖動更多緩衝，減少長者
+    # 端連線被誤判斷線、治療師確認回應因此送不到而要按兩次的情況。
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --ws-ping-interval 20 --ws-ping-timeout 60
     depends_on:
       - ollama
       - tts

@@ -1800,6 +1800,19 @@ async def _finalize_closing_response(
             await db.rollback()
     await r.delete(f"session:{session_id}:closing_asked_at")
 
+    # 心得環節開始時 current_round 已經推進到 4（見 session_respond 對
+    # end_session 的處理），期間 Kinect 送來的感測幀會分桶進
+    # session:{id}:round:4:emotion／signals，這裡比照回合1-3收尾時的做法
+    # （session_respond 的 result.get("state") is None 分支）把這桶資料取出、
+    # 寫進 rounds.emotion／engagement_pct／happiness_pct／agitation_pct／
+    # signal_codes，心得回合才會跟其他回合一樣有「判斷依據」可以在治療師端
+    # 展開（2026-09-07 稽核：心得卡片原本完全沒有這幾個欄位，因為從來沒有
+    # 任何地方呼叫過這兩支函式處理 round_number=4）。不管長者這題有沒有
+    # 說話都要收尾，理由跟回合1-3一致：這兩支函式反映的是整段時間感測到的
+    # 狀態，不是「有沒有講出心得」決定的。
+    await _finalize_round_emotion(db, r, session_id, 4, patient_id=patient_id, therapist_id=therapist_id)
+    await _finalize_round_signals(db, r, session_id, 4, patient_id=patient_id, therapist_id=therapist_id)
+
     # 2026-08-17起：承接語＋系統整合肯定＋感謝語已經在心得環節「開場」那一步
     # 呼應回合3的回答講完了（見 app/services/closing_templates.py
     # build_closing_invitation、app/routers/session.py session_respond 對
@@ -1925,10 +1938,15 @@ async def session_closing_confirm_response(
     await _update_live_view(
         r, session_id, elder_response=body.elder_response, review_status="awaiting_closing_submit",
     )
-    await ws_registry.send_message(session_id, {
+    delivered = await ws_registry.send_message(session_id, {
         "type": "confirmed_closing_text",
         "elder_response": body.elder_response,
     })
+    # 同 session_confirm_response：狀態已經寫進 _update_live_view，長者端
+    # Unity 之後 polling /metrics 還是撈得到（見 ShareController.cs
+    # PollForConfirmedText），這裡只是讓治療師網頁知道要不要重試。
+    if not delivered:
+        raise HTTPException(status_code=503, detail="長者端連線中斷，可能還沒收到，請重試")
     return {"ok": True}
 
 
@@ -2048,6 +2066,14 @@ async def _finalize_elder_response(
                     f"session:{state.session_id}:closing_asked_at",
                     str(int(time.time() * 1000)), ex=3600,
                 )
+                # current_round 推進到 4（心得）：sensor.py _update_session_stats
+                # 是靠這個值把感測幀分桶進 session:{id}:round:{n}:emotion／signals
+                # （見該函式說明）。沒有這行的話，心得環節長者答題時 Kinect 送來的
+                # 幀會一直被算進 round 3 的桶子裡（current_round 卡在最後一次
+                # /session/round 設的值，從沒被推進過），導致心得回合自己完全沒有
+                # 情緒/判斷依據資料可用（2026-09-07 稽核：治療師反映歷史活動的心得
+                # 卡片沒有「判斷依據」可以展開）。
+                await _update_live_view(r, state.session_id, current_round=4)
                 # 心得環節開場邀請語是純規則模板（見 app/services/closing_
                 # templates.py），orchestrator._end_action 對 end_session 只回
                 # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
@@ -2301,8 +2327,14 @@ async def session_confirm_response(
     await _update_live_view(
         r, session_id, elder_response=body.elder_response, review_status="awaiting_round_submit",
     )
-    await ws_registry.send_message(session_id, {
+    delivered = await ws_registry.send_message(session_id, {
         "type": "confirmed_text",
         "elder_response": body.elder_response,
     })
+    # 上面 _update_live_view 已經寫進去了，長者端 Unity 之後 polling /metrics
+    # 還是撈得到這次確認結果（見 GameController.cs PollForConfirmedText），
+    # 這裡回 503 單純是讓治療師網頁知道「WS 沒送達」要不要重試，不是說這次
+    # 確認整個失敗、需要重新整套再做一次。
+    if not delivered:
+        raise HTTPException(status_code=503, detail="長者端連線中斷，可能還沒收到，請重試")
     return {"ok": True}

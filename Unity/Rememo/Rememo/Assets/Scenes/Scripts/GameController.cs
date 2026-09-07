@@ -73,6 +73,12 @@ public class GameController : MonoBehaviour
     // 生成一定會被用到，代價是長者按送出後要重新等一次生成時間）。
     private bool isPendingTherapistReview = false;
     private string pendingConfirmedText = null;
+    // /ws/stt 連線在回合間（治療師審核那段）容易被判定逾時斷線、推播漏接
+    // （見 app/routers/session.py session_confirm_response 的說明）——這條
+    // coroutine 是保底：isPendingTherapistReview 期間定時輪詢 /metrics，
+    // WS 沒送達的話，靠這裡把確認後文字追回來，不用一直卡在「等待輔導員
+    // 確認中」。
+    private Coroutine reviewPollCoroutine;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
     private const string NoResponseMarker = "（長者未回應）";
@@ -98,6 +104,9 @@ public class GameController : MonoBehaviour
 
     [System.Serializable]
     private class STTMessage { public string type; public string text; public bool isFinal; public string action; public string elder_response; }
+
+    [System.Serializable]
+    private class MetricsResponse { public string review_status; public string elder_response; }
 
     void Start()
     {
@@ -411,16 +420,13 @@ public class GameController : MonoBehaviour
             // 生圖那些耗時流程延後到長者真的按下送出才觸發（見 OnSubmit／
             // SendResponse，取代原本的 ApplyConfirmedResponse），避免長者還沒
             // 按送出、療程就被結束時，已經算好的結果（含生成的圖片）被整份丟棄。
-            isPendingTherapistReview = false;
-            pendingConfirmedText = msg.elder_response;
-            displayedText = msg.elder_response;
-            inputText.text = msg.elder_response;
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            // 麥克風維持鎖定，避免長者在按送出前又開始新錄音——這會讓
-            // pendingConfirmedText 跟一段還在錄的新音訊互相打架。等
-            // SendResponse 進到下一題/下一回合時才解鎖（見該函式呼叫的
-            // ApplyFinalResponse）。
-            RefreshSubmitButton();
+            //
+            // 治療師在長者按送出前可以重新編輯、再確認一次（pending_review 支援
+            // 重複覆蓋，見 session.py session_confirm_response），所以這裡不能只在
+            // isPendingTherapistReview 還是 true 時才套用——那樣會擋掉「已經確認
+            // 過一次、治療師又改了一次」的後續推播。無條件套用，跟 PollForConfirmedText
+            // 共用同一份文字比對邏輯（見該函式），避免舊文字蓋掉新文字。
+            ApplyConfirmedText(msg.elder_response);
             return;
         }
 
@@ -443,6 +449,8 @@ public class GameController : MonoBehaviour
                 RefreshSubmitButton();
                 StartCoroutine(PostTranscript(msg.text));   // 統計用途，維持不變
                 StartCoroutine(RequestReview(msg.text));
+                if (reviewPollCoroutine != null) StopCoroutine(reviewPollCoroutine);
+                reviewPollCoroutine = StartCoroutine(PollForConfirmedText());
             }
             else
             {
@@ -450,6 +458,62 @@ public class GameController : MonoBehaviour
                 // 不需要治療師介入。
                 OnSttFinal();
             }
+        }
+    }
+
+    // 治療師確認（可能編輯過）這一題的回答後，套用到長者畫面——不管是從
+    // /ws/stt 收到 "confirmed_text" 推播（正常路徑），還是 PollForConfirmedText
+    // 輪詢追回來的（WS 推播漏接時的保底），都走這支，兩邊行為才不會分岔。
+    void ApplyConfirmedText(string text)
+    {
+        isPendingTherapistReview = false;
+        pendingConfirmedText = text;
+        displayedText = text;
+        inputText.text = text;
+        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+        // 麥克風維持鎖定，避免長者在按送出前又開始新錄音——這會讓
+        // pendingConfirmedText 跟一段還在錄的新音訊互相打架。等
+        // SendResponse 進到下一題/下一回合時才解鎖（見該函式呼叫的
+        // ApplyFinalResponse）。
+        RefreshSubmitButton();
+    }
+
+    // /ws/stt 連線在治療師審核這段常常閒置、容易被判定逾時斷線（見
+    // KinectAudioSender.cs TickKeepAlive 說明），"confirmed_text" 這種推播
+    // 如果剛好撞上斷線空窗就直接漏接、沒有補送機制，長者會卡在「等待輔導員
+    // 確認中」直到治療師發現、自己重按一次。這裡定時改用 HTTP 輪詢 /metrics
+    // （跟治療師網頁 polling 同一支 API，見 session.py session_metrics）當
+    // 保底，review_status 變成 awaiting_round_submit 就代表治療師已經確認
+    // 過、只是 WS 沒送到，直接把 elder_response 追回來。
+    //
+    // 存活範圍蓋 isPendingTherapistReview（等第一次確認）跟 pendingConfirmedText
+    // != null（已經確認過、長者還沒按送出，治療師隨時可能重新編輯再送一次）
+    // 兩個階段——重新編輯那次推播一樣可能撞上斷線空窗，只保第一次確認的話，
+    // 治療師改第二次時反而沒有保底。用文字比對（跟目前畫面上的
+    // pendingConfirmedText 不同才套用）避免把治療師剛編輯的新版本蓋回舊版本。
+    IEnumerator PollForConfirmedText()
+    {
+        string sessionId = AuthSession.SessionId ?? "";
+        if (string.IsNullOrEmpty(sessionId)) yield break;
+        var wait = new WaitForSeconds(3f);
+        while (isPendingTherapistReview || pendingConfirmedText != null)
+        {
+            yield return wait;
+            if (!(isPendingTherapistReview || pendingConfirmedText != null)) yield break;
+
+            using var req = UnityWebRequest.Get($"{backendUrl}/session/{sessionId}/metrics");
+            AuthService.AttachAuthHeader(req);
+            yield return req.SendWebRequest();
+            if (req.result != UnityWebRequest.Result.Success) continue;
+            if (!(isPendingTherapistReview || pendingConfirmedText != null)) yield break;   // 長者這時候已經按送出了
+
+            MetricsResponse resp;
+            try { resp = JsonUtility.FromJson<MetricsResponse>(req.downloadHandler.text); }
+            catch { continue; }
+            bool hasConfirmed = resp != null && resp.review_status == "awaiting_round_submit"
+                && !string.IsNullOrEmpty(resp.elder_response);
+            if (hasConfirmed && resp.elder_response != pendingConfirmedText)
+                ApplyConfirmedText(resp.elder_response);
         }
     }
 
