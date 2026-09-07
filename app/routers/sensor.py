@@ -127,6 +127,14 @@ class SensorPayload(BaseModel):
     # 其他
     response_time_ms: int         = -1    # -1 = 本次不更新 Redis 反應時間
     timestamp:        float | None = None
+    # 2026-09-08新增：是否已進入「長者該回答」的等待期（narration播完/估算
+    # 閱讀時間到才算開始，見 KinectSensorSender.OnQuestionAsked／
+    # OnNewQuestionDisplayed 說明）。新問題剛顯示、語音還在播的這段期間長者
+    # 本來就不該開口，這段沉默不該被 _ema_classify／_update_session_stats
+    # 當成投入度低的證據。預設 True（沒送這個欄位的舊版 Unity/測試腳本維持
+    # 原本「每一幀都採計」的行為，不會因為欄位缺席而被誤判成「還沒開始
+    # 回答」，反而把整場都排除在統計之外）。
+    awaiting_response: bool = True
 
     @field_validator(
         "skel_head_drop", "skel_lean_forward", "skel_shoulder_raise", "skel_spinebase_z",
@@ -423,7 +431,6 @@ _SIGNAL_DEFS: list[tuple[str, str]] = [
     ("body_sway_high", "body"),
     ("body_left_seat", "body"),
     ("speaker_speaking", "speaker"),
-    ("speaker_quiet", "speaker"),
     ("speaker_pitch_var_high", "speaker"),
 ]
 
@@ -479,11 +486,18 @@ def _reasoning_signals(
     if p.skel_spinebase_z is not None and p.skel_spinebase_z > SPINEBASE_LEAVING_Z:
         codes.append("body_left_seat")
 
+    # 2026-09-08 拿掉 speaker_quiet：撈歷史資料發現這個標籤在有紀錄的回合裡
+    # 100% 都出現（見稽核討論），不管那個回合實際情緒/投入度高低都一樣，
+    # 對治療師來說沒有鑑別度，反而佔掉「頻率最高前4名」的名額、排擠掉真正
+    # 有意義的訊號（例如 face_frown／body_constricted）。speaker_speaking
+    # 留著——它是稀有事件（音量真的超過個人化門檻），出現時才是有意義的
+    # 正向證據，不受這個問題影響。
     if p.audio_rms > _audio_threshold(calib):
         codes.append("speaker_speaking")
-    else:
-        codes.append("speaker_quiet")
-    if p.audio_pitch_variance > _pitch_threshold(calib):
+    # narration期間/還沒進入回答等待期時，音高變異可能是殘留值或環境雜音誤觸發
+    # 自相關演算法算出的雜訊，不是長者真的情緒激動，見 _ema_classify 的
+    # awaiting_response 分支說明，這裡同樣排除。
+    if p.awaiting_response and p.audio_pitch_variance > _pitch_threshold(calib):
         codes.append("speaker_pitch_var_high")
 
     return codes
@@ -631,14 +645,29 @@ async def _ema_classify(
     # 計算本次原始三維分數
     audio_eng = 1.0 if p.audio_rms > _audio_threshold(calib) else 0.0
     skel_eng  = _skel_engagement(p)  # None＝兩個骨架關節都完全追丟，見該函式說明
-    # B 階段：音高變異混入焦躁計算（門檻＝個人校正基準 + k×標準差，見 _pitch_threshold）
-    pitch_agi   = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))
+    # B 階段：音高變異混入焦躁計算（門檻＝個人校正基準 + k×標準差，見 _pitch_threshold）。
+    # KinectAudioSender.UpdatePitch() 在音量低於 0.005 時整個跳過、不更新
+    # CurrentPitchVariance（沿用上一次的殘留值），narration 播放中/回答等待期
+    # 還沒開始時長者不該開口，這段期間量到的音高變異可能只是殘留值或環境
+    # 雜音誤觸發自相關演算法算出的雜訊，不是長者真的情緒激動的證據——跟
+    # audio_eng 是同一個「narration期間音量訊號沒有意義」的問題（見上面
+    # awaiting_response 分支說明），這裡一併排除。
+    body_sway_agi = max(0.0, min(1.0, p.body_sway / max(SWAY_AGITATION_MIN, 1e-6) - 1.0))
     tension_agi = min(1.0, _skel_tension(p) / 2.0)  # _skel_tension 上界是 2.0，正規化成 [0,1]
-    raw_agi     = (
-        max(0.0, min(1.0, p.body_sway / max(SWAY_AGITATION_MIN, 1e-6) - 1.0)) * 0.60
-        + pitch_agi   * 0.25
-        + tension_agi * 0.15  # 聳肩，權重刻意壓低，見 _skel_tension 的已知限制說明
-    )
+    if p.awaiting_response:
+        pitch_agi = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))
+        raw_agi   = (
+            body_sway_agi * 0.60
+            + pitch_agi   * 0.25
+            + tension_agi * 0.15  # 聳肩，權重刻意壓低，見 _skel_tension 的已知限制說明
+        )
+    else:
+        # 不採計音高變異，身體晃動＋聳肩權重依原比例（0.60:0.15）重新正規化
+        # 回總和1.0，跟 raw_eng 的 narration 分支同一套處理方式。
+        raw_agi = (
+            body_sway_agi * (0.60 / 0.75)
+            + tension_agi  * (0.15 / 0.75)
+        )
     new_agi = prev_agi + EMA_ALPHA * (raw_agi - prev_agi)
 
     # EMA 更新：agitation 每一幀都更新，但 engagement／happiness 只在真的有對應
@@ -652,11 +681,25 @@ async def _ema_classify(
     # 處理，但因為 engagement 還有臉部（30%）／音量（20%）兩個獨立來源，
     # 影響比 100% 只靠臉部的 happiness 小很多。
     if skel_eng is not None:
-        raw_eng = (
-            _face_engagement(au, pose) * 0.30 +   # 臉部注意力（老年人較弱，權重 30%）
-            skel_eng                    * 0.50 +   # 骨架姿勢（更可靠，權重 50%）
-            audio_eng                   * 0.20     # 音量（說話 = 有參與，權重 20%）
-        )
+        if p.awaiting_response:
+            raw_eng = (
+                _face_engagement(au, pose) * 0.30 +   # 臉部注意力（老年人較弱，權重 30%）
+                skel_eng                    * 0.50 +   # 骨架姿勢（更可靠，權重 50%）
+                audio_eng                   * 0.20     # 音量（說話 = 有參與，權重 20%）
+            )
+        else:
+            # 2026-09-08：narration 播放中／估算閱讀時間還沒過（awaiting_
+            # response=False），長者本來就不該開口，這一幀的 audio_eng
+            # 幾乎一定是 0，但這不代表投入度低——如果仍套用原本三源加權，
+            # 這 20% 音量權重每一幀都會白白拉低分數，等於長者「乖乖安靜聽
+            # 題目」反而被扣分。這裡不採計音量這個訊號，只用臉部+骨架，
+            # 兩者權重依原比例（0.30:0.50）重新正規化回總和1.0，維持跟
+            # 有采計音量時同一個量尺，不是砍掉20%權重不用、讓分數整體被
+            # 系統性壓低。
+            raw_eng = (
+                _face_engagement(au, pose) * (0.30 / 0.80) +
+                skel_eng                    * (0.50 / 0.80)
+            )
         # 套用個人校正基準（補償天生習慣，避免誤判）
         if calib:
             # 若長者校正時視線自然偏移，降低 looking_away 懲罰
@@ -768,7 +811,20 @@ async def _update_session_stats(
         pipe.hincrby(key, "looking_away_n", 1)
     if _au_eyes_closed(au):
         pipe.hincrby(key, "eye_closed_n", 1)
-    if _au_mouth_active(au):
+    # mouth_moved_n／mouth_window_n 只在長者已經進入回答等待期（awaiting_
+    # response，見 SensorPayload 該欄位說明）才計入——narration 播放中/估算
+    # 閱讀時間還沒過的這段期間長者本來就不該開口，嘴巴沒動不是「沒有主動
+    # 說話」的證據。mouth_window_n 是這個分母專用的計數（只算「有臉部資料
+    # 且已進入回答等待期」的幀數），不能沿用 face_detected_n（那個分母含
+    # narration 期間的幀）——否則分子排除了 narration 幀、分母卻沒有同步
+    # 排除，比率會被 narration 幀稀釋到不合理地低（2026-09-08 稽核：長者
+    # 聽題目時嘴巴沒動，被算成「主動說話」比率變低，參與度被拉低）。
+    # looking_away/eye_closed 這兩項不受影響：narration 期間長者有沒有看向
+    # 別處、閉眼，仍是有意義的注意力觀察，不用跟著排除，繼續用 face_
+    # detected_n 當分母。
+    if p.awaiting_response and face_detected:
+        pipe.hincrby(key, "mouth_window_n", 1)
+    if p.awaiting_response and _au_mouth_active(au):
         pipe.hincrby(key, "mouth_moved_n", 1)
     if p.body_sway > SWAY_AGITATION_MIN:
         pipe.hincrby(key, "high_sway_n", 1)
@@ -785,9 +841,15 @@ async def _update_session_stats(
         if p.skel_spinebase_z > SPINEBASE_LEAVING_Z:
             pipe.hincrby(key, "far_n", 1)
 
-    # B 階段：音高變異（焦躁/亢奮的聲學特徵，門檻見 _pitch_threshold）
-    if p.audio_pitch_variance > _pitch_threshold(calib):
-        pipe.hincrby(key, "high_pitch_var_n", 1)
+    # B 階段：音高變異（焦躁/亢奮的聲學特徵，門檻見 _pitch_threshold）。跟
+    # mouth_moved_n／mouth_window_n 同一種分子分母要一起排除 narration 幀的
+    # 問題（見 _ema_classify awaiting_response 分支說明）：pitch_window_n
+    # 只算「已進入回答等待期」的幀數，不能沿用 frame_count，否則分子已經
+    # 排除 narration 幀、分母卻沒排除，high_pitch_rate 會被稀釋失真。
+    if p.awaiting_response:
+        pipe.hincrby(key, "pitch_window_n", 1)
+        if p.audio_pitch_variance > _pitch_threshold(calib):
+            pipe.hincrby(key, "high_pitch_var_n", 1)
 
     # B 階段：手部主動動作（遊戲互動肢體指標）
     if p.skel_handtip_velocity > HANDTIP_ACTIVE_MIN:

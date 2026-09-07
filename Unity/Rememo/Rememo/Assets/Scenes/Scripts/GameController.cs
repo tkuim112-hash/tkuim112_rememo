@@ -442,6 +442,14 @@ public class GameController : MonoBehaviour
             if (hasText)
             {
                 // 有辨識到文字：不再直接開放長者送出，改成鎖畫面送治療師平板審核。
+                // StopRecording 啟動的 sttTimeoutCoroutine（5秒後跳「辨識完成，請按
+                // 送出」）是給「沒進審核流程」的舊路徑用的，這裡一定要順手取消——
+                // 沒取消的話，就算治療師在5秒內就確認完、畫面已經正確顯示確認後的
+                // 文字，5秒一到 OnSttFinal 還是會準時觸發，把畫面蓋回「辨識完成，
+                // 請按送出」，看起來像剛剛的確認整個沒生效，治療師常常因此又點一次
+                // 確認（2026-09-07 稽核：治療師反映有時候要按兩次確認才成功，但
+                // 後端/WS都沒有任何錯誤或漏接紀錄，追下來是這裡的計時器沒取消）。
+                if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
                 isPendingTherapistReview = true;
                 inputText.text = "等待輔導員確認中";
                 inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
@@ -623,6 +631,10 @@ public class GameController : MonoBehaviour
         currentState = resp.state;
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
+        // 新問題剛顯示，語音/估讀秒數還沒開始算，長者本來就不該開口——見
+        // KinectSensorSender.OnNewQuestionDisplayed 說明，跟下面 OnQuestionAsked
+        // 成對，避免這段合理的沉默被算成投入度低。
+        kinectSensorSender?.OnNewQuestionDisplayed();
 
         // /session/start 回傳時 image_path 一定是空字串（見 StartRound 下方註解），
         // 圖片要等長者答完生圖前引導問題、/session/respond 才第一次真的生出來。
@@ -847,6 +859,9 @@ public class GameController : MonoBehaviour
         currentState = resp.state;
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
+        // 同 ApplyRoundResponse：新問題（追問/下一題）剛顯示，先標記還沒進入
+        // 回答等待期。
+        kinectSensorSender?.OnNewQuestionDisplayed();
 
         // /session/start、/session/round 回傳時 image_path 一定是空字串（見
         // ApplyRoundResponse 上方註解），圖片是長者答完生圖前引導問題、這支
