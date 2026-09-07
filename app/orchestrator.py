@@ -2626,32 +2626,8 @@ class TherapyOrchestrator:
             # 非決定性的判斷互相矛盾，把已經查到的內容誤判成沒答，錯把
             # 情境2 判成情境1。
             covered_w = _map_basic_checks_to_w(basic_checks, elder_detail)
-            theme_data = _FIVE_W1H_BANK[category]
-            sub_item = None
-            sub_item_ready = False
             if not covered_w:
-                # 這句話三個基本維度都沒查到證據，才需要呼叫
-                # _detect_pre_image_w_coverage 做完整四維度判斷。這裡如果
-                # 這個主題是 sub_item 細分類，順便把「情境2成立時才用得到」
-                # 的 _classify_pre_image_sub_item 用 asyncio.gather 併發送出
-                # （不是序列 await）——兩個判斷彼此獨立，sub_item分類只看
-                # category/elder_detail，不看 covered_w 的判斷結果，併發
-                # 送出不會改變任何一邊的答案，只是把兩趟LLM網路往返時間
-                # 重疊起來（2026-09-08 實測：循序約2~2.5秒，併發約1.5秒，
-                # 且輸出跟循序完全一致；曾測過改成把兩個問題塞進同一個
-                # prompt省成一次呼叫更快，但本地量化模型的W維度偵測會
-                # 明顯漏判、答案不可靠，故意不合併prompt，只合併「送出的
-                # 時間點」）。如果最後判定情境1（covered_w空），這次併發
-                # 跑的sub_item分類結果就直接丟棄不用，等於多付一次不一定
-                # 用得到的LLM呼叫成本，換取情境2時的整體延遲下降。
-                if theme_data["granularity"] == "sub_item":
-                    covered_w, sub_item = await asyncio.gather(
-                        self._detect_pre_image_w_coverage(elder_detail),
-                        self._classify_pre_image_sub_item(category, elder_detail),
-                    )
-                    sub_item_ready = True
-                else:
-                    covered_w = await self._detect_pre_image_w_coverage(elder_detail)
+                covered_w = await self._detect_pre_image_w_coverage(elder_detail)
             if not covered_w:
                 q2_question = _PRE_IMAGE_Q2_SCENARIO1_TEMPLATES.get(category)
                 if not q2_question:
@@ -2673,13 +2649,11 @@ class TherapyOrchestrator:
                     "state": new_state,
                 }
             # 情境2：Q1已經有內容，只缺特定維度，直接問缺的那個維度，不重複
-            # 給範例。sub_item只分類一次（見 _classify_pre_image_sub_item
-            # 說明），之後每一輪迴圈都複用同一個值，不重新分類——上面
-            # covered_w 分支若已經跟 _detect_pre_image_w_coverage 併發問過
-            # 一次（sub_item_ready=True），這裡直接沿用那次結果，不重問；
-            # 只有 covered_w 從 _map_basic_checks_to_w 直接算出來（沒機會
-            # 併發）時，才在這裡第一次問。
-            if not sub_item_ready and theme_data["granularity"] == "sub_item":
+            # 給範例。sub_item只在這裡才分類一次（見 _classify_pre_image_
+            # sub_item 說明），之後每一輪迴圈都複用同一個值，不重新分類。
+            theme_data = _FIVE_W1H_BANK[category]
+            sub_item = None
+            if theme_data["granularity"] == "sub_item":
                 sub_item = await self._classify_pre_image_sub_item(category, elder_detail)
             named_person = _extract_named_person(elder_detail)
             picked = get_scenario2_followup(category, sub_item, covered_w, named_person)

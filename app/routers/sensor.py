@@ -125,7 +125,10 @@ class SensorPayload(BaseModel):
     audio_pitch_variance:  float = 0.0   # 音高變異 Hz²（eGeMAPS 特徵）
     skel_handtip_velocity: float = 0.0   # 手部末梢速度 m/s（HandTip 動作量）
     # 其他
-    response_time_ms: int         = -1    # -1 = 本次不更新 Redis 反應時間
+    # 2026-09-08起改由 OnMicPressed() 當下呼叫 /sensor/response_time 立即
+    # 送出（見該端點說明），這裡永遠是 -1、後端不再處理，欄位保留只是
+    # 維持 Unity 端 JsonUtility 序列化的既有 schema，避免另外改payload結構。
+    response_time_ms: int         = -1
     timestamp:        float | None = None
     # 2026-09-08新增：是否已進入「長者該回答」的等待期（narration播完/估算
     # 閱讀時間到才算開始，見 KinectSensorSender.OnQuestionAsked／
@@ -855,26 +858,13 @@ async def _update_session_stats(
     if p.skel_handtip_velocity > HANDTIP_ACTIVE_MIN:
         pipe.hincrby(key, "hand_active_n", 1)
 
-    # A 階段：反應延遲累計（計算平均反應時間，供 _score_interaction 用）。
-    # response_time_ms 是 Unity 自己用本地計時器量的，起點是 GameController/
-    # ShareController 呼叫 OnQuestionAsked() 的那一刻（等語音真的播完/估算的
-    # 閱讀時間過去才呼叫，見 KinectSensorSender.cs、LocalAudioPlayer.cs 說明）——
-    # 比伺服器自己用 question_asked_at 算時間差準，因為伺服器那個起點在
-    # 語音合成/播放之前，會把這段時間也算進反應時間裡。
-    #
-    # 同一個值也同時累加進這個回合自己的 session:{id}:round:{n}:timing
-    # （欄位名沿用 session.py _finalize_round_response_time 原本讀的
-    # sum_ms/count），讓「歷史活動」顯示的 rounds.response_time 跟這裡的
-    # 互動頻率評分，用的是同一套 Unity 量出來的定義，不是兩條各自獨立、
-    # 起點不同的邏輯（2026-09-06 稽核後改版：原本 rounds.response_time
-    # 是伺服器自己算的，跟這裡完全不同套）。
-    if p.response_time_ms >= 0:
-        pipe.hincrby(key, "response_time_sum",   p.response_time_ms)
-        pipe.hincrby(key, "response_time_count", 1)
-        round_timing_key = f"session:{session_id}:round:{current_round}:timing"
-        pipe.hincrby(round_timing_key, "sum_ms", p.response_time_ms)
-        pipe.hincrby(round_timing_key, "count", 1)
-        pipe.expire(round_timing_key, 86400)
+    # A 階段：反應延遲累計已搬到 /sensor/response_time（見該端點說明），
+    # 這裡不再處理 response_time_ms——2026-09-08 稽核發現，原本靠這支週期性
+    # （sendInterval=2秒）payload 夾帶 response_time_ms 送到後端，回合可能在
+    # 長者按下麥克風後很快就結束（_finalize_round_response_time 在回合結束
+    # 當下同步讀 Redis），比這顆 2 秒心跳先到，讀到 count=0，導致
+    # rounds.response_time 永遠是 NULL、治療師端誤顯示成「0秒」，長者其實
+    # 有正常回答。改成 OnMicPressed() 當下就直接呼叫獨立端點送出，不等這裡。
 
     await pipe.execute()
     await r.expire(key, 86400)
@@ -978,8 +968,8 @@ async def receive_sensor(
         "agitation_pct":  str(_pct(agi, *AGITATION_RANGE)),
         "signal_codes":   json.dumps(signals, ensure_ascii=False),
     }
-    if body.response_time_ms >= 0:
-        updates["response_time"] = f"{round(body.response_time_ms / 1000)}s"
+    # response_time 不再由這支週期性端點更新——已改成 OnMicPressed() 當下
+    # 呼叫 /sensor/response_time 立即回報，見該端點說明。
 
     key = f"session:{body.session_id}:metrics"
     await r.hset(key, mapping=updates)
@@ -989,3 +979,62 @@ async def receive_sensor(
     await r.set(f"session:{body.session_id}:latest:emotion", emotion_label, ex=5)
 
     return {"ok": True, "emotion": emotion_label}
+
+
+class ResponseTimePayload(BaseModel):
+    session_id: str
+    response_time_ms: int
+
+
+@router.post(
+    "/response_time",
+    summary="長者按下麥克風當下立即回報反應時間，不等待週期性感測心跳",
+)
+async def receive_response_time(
+    body: ResponseTimePayload,
+    request: Request,
+    therapist_id: int = Depends(get_current_therapist_id),
+):
+    """
+    KinectSensorSender.OnMicPressed() 當下就直接呼叫這支端點，不像
+    /sensor/emotion 那樣要等 CollectAndSend 的 2 秒定時器（sendInterval）
+    才把 response_time_ms 夾帶出去。
+
+    2026-09-08 稽核：治療師端某回合反應時間顯示「0秒」，長者其實有正常
+    回答——追下來是回合結束時 session.py _finalize_round_response_time 在
+    /session/respond 這個請求裡「同步」讀 Redis 算平均，比 Unity 那顆 2 秒
+    心跳先到，讀到 count=0 就直接跳過不寫，rounds.response_time 留在
+    NULL，前端又把 NULL 用 `?? 0` 顯示成「0」。STT 辨識＋治療師審核確認＋
+    長者按送出，這整段路徑通常都比 2 秒長，但沒辦法保證一定夠長，所以
+    直接把「送出反應時間」這件事從週期性 payload 裡拆出來，改成按鍵當下
+    立即送，讓它穩定跑在「回合真正結束」前面，不再是碰運氣。
+
+    寫進 Redis 的欄位、累加方式跟原本 _update_session_stats 那段完全一樣，
+    只是觸發時機提前；session:{id}:metrics 的 response_time_sum/count 是
+    供 _score_interaction 算整場平均用，session:{id}:round:{n}:timing 的
+    sum_ms/count 才是 _finalize_round_response_time 讀的那組，兩者用途
+    不同、缺一不可。
+    """
+    if body.response_time_ms < 0:
+        return {"ok": True}
+
+    r = request.app.state.redis
+    metrics_key = f"session:{body.session_id}:metrics"
+    current_round = await r.hget(metrics_key, "current_round") or "1"
+    round_timing_key = f"session:{body.session_id}:round:{current_round}:timing"
+
+    pipe = r.pipeline(transaction=False)
+    pipe.hincrby(metrics_key, "response_time_sum",   body.response_time_ms)
+    pipe.hincrby(metrics_key, "response_time_count", 1)
+    pipe.hincrby(round_timing_key, "sum_ms", body.response_time_ms)
+    pipe.hincrby(round_timing_key, "count", 1)
+    pipe.expire(round_timing_key, 86400)
+    # 治療師端即時畫面顯示用，見 session.py _update_live_view 的
+    # response_time="--" 重置說明；改用一位小數，避免不到 0.5 秒的真實
+    # 快速反應被 round() 到整數秒直接顯示成「0s」，跟這支端點要解決的
+    # 「看起來像沒反應」問題是同一類混淆。
+    pipe.hset(metrics_key, "response_time", f"{round(body.response_time_ms / 1000, 1)}s")
+    pipe.expire(metrics_key, 86400)
+    await pipe.execute()
+
+    return {"ok": True}

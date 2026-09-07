@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
 using Windows.Kinect;
@@ -59,11 +60,12 @@ public class KinectSensorSender : MonoBehaviour
     // 保持 false，讓後端不要把這段合理的沉默/嘴巴沒動當成「投入度低」的證據
     // （2026-09-08 稽核：長者聽題目時本來就不會開口，投入度卻被拉低）。
     private bool  _awaitingResponse = false;
-    // OnMicPressed() 當下直接算好存這裡，CollectAndSend() 只負責讀走、送出、
-    // 歸零——實際按鈕觸發跟送出頻率脫鉤（後者每 sendInterval 才跑一次），
-    // 不能反過來在 CollectAndSend 裡才用「現在」去算時間差，那樣算出來的
-    // 會是「按下麥克風到下一次送出感測資料」的間隔，不是真正的反應時間。
-    private int _pendingResponseMs = -1;
+    // 2026-09-08前：OnMicPressed() 算好存個 _pendingResponseMs，等
+    // CollectAndSend() 每 sendInterval（2秒）跑一次才讀走送出。改成
+    // OnMicPressed() 當下直接呼叫 PostResponseTime() 送給後端（見該方法
+    // 說明），不再需要這個緩衝欄位——回合可能在長者按下麥克風後很快就
+    // 結束，等下一次 CollectAndSend 常常來不及趕在回合結算前送到後端，
+    // 導致那個回合的反應時間永遠讀到 0 筆樣本、被治療師端誤顯示成「0秒」。
 
     // HandTip 速度（B 階段）
     private float   _latestHandTipVelocity = 0f;
@@ -93,7 +95,6 @@ public class KinectSensorSender : MonoBehaviour
     {
         questionAskedTime = Time.realtimeSinceStartup;
         responseTimeSent  = false;
-        _pendingResponseMs = -1;
         _awaitingResponse  = true;
     }
 
@@ -119,13 +120,22 @@ public class KinectSensorSender : MonoBehaviour
     /// 決定要回答、按下麥克風」這段真正有意義的反應時間短很多，跟按鈕動作
     /// 完全脫鉤。改回對齊「按下麥克風」這個長者主動的操作，量測的才是使用者
     /// 真正想回答的反應時間，不會被環境噪音誤觸發。
+    ///
+    /// 2026-09-08 稽核（治療師反映某回合反應時間顯示「0秒」，長者其實有
+    /// 正常回答）：這裡算出反應時間後，改成當下直接呼叫 PostResponseTime()
+    /// 送給後端，不再等 CollectAndSend() 的 2 秒定時器——STT辨識＋治療師
+    /// 審核確認＋長者按送出，這整段路徑通常都比 2 秒長，但沒辦法保證一定
+    /// 夠長；回合一旦在這之前結束，後端 _finalize_round_response_time 會
+    /// 在算平均時讀到 0 筆樣本，直接跳過不寫，這個回合的反應時間就永遠是
+    /// 空的，被治療師端誤顯示成「0秒」。
     /// </summary>
     public void OnMicPressed()
     {
         if (!responseTimeSent && questionAskedTime >= 0f)
         {
-            _pendingResponseMs = Mathf.RoundToInt((Time.realtimeSinceStartup - questionAskedTime) * 1000f);
-            responseTimeSent   = true;
+            int ms = Mathf.RoundToInt((Time.realtimeSinceStartup - questionAskedTime) * 1000f);
+            responseTimeSent = true;
+            StartCoroutine(PostResponseTime(ms));
         }
     }
 
@@ -191,13 +201,11 @@ public class KinectSensorSender : MonoBehaviour
 
     void CollectAndSend(long userId)
     {
-        // ── 反應時間讀取（Unity 端計時，後端不做）──────────────────
-        // 真正的計時/停表在 OnMicPressed()（長者按下麥克風那一刻），這裡只是
-        // 把算好的值讀走、送給後端，送完歸零，避免同一個值被下一次
-        // CollectAndSend 重複送出。
+        // ── 反應時間（Unity 端計時，後端不做）──────────────────────
+        // 計時/停表在 OnMicPressed()，算好當下就直接呼叫 PostResponseTime()
+        // 送出（見該方法說明），不再靠這支週期性 payload 夾帶，所以這裡
+        // response_time_ms 固定填 -1，後端收到會直接略過。
         float audioRms = audioSender != null ? audioSender.CurrentAudioRms : 0f;
-        int responseMs = _pendingResponseMs;
-        _pendingResponseMs = -1;
 
         // ── 骨架量測（純算術，不做分類）────────────────────────────
         float headDrop        = userId != 0 ? MeasureHeadDrop(userId)             : -999f;
@@ -225,7 +233,7 @@ public class KinectSensorSender : MonoBehaviour
             audio_rms              = audioRms,
             audio_pitch_variance   = audioSender != null ? audioSender.CurrentPitchVariance : 0f,
             skel_handtip_velocity  = _latestHandTipVelocity,
-            response_time_ms       = responseMs,
+            response_time_ms       = -1,
             timestamp              = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             awaiting_response      = _awaitingResponse,
         };
@@ -349,6 +357,32 @@ public class KinectSensorSender : MonoBehaviour
             Debug.LogWarning($"[Emotion] POST 失敗: {req.error}");
     }
 
+    /// <summary>
+    /// OnMicPressed() 當下呼叫，把剛算好的反應時間立即送給後端，不跟主要的
+    /// 骨架/語音 payload 混在一起送、也不等 CollectAndSend 的 2 秒定時器——
+    /// 見 OnMicPressed 說明，這裡要搶在回合結算前送到。
+    /// </summary>
+    IEnumerator PostResponseTime(int responseMs)
+    {
+        string sid = gameController != null
+            ? gameController.sessionId
+            : (AuthSession.SessionId ?? "unknown");
+        string json = JsonUtility.ToJson(new ResponseTimePayload
+        {
+            session_id       = sid,
+            response_time_ms = responseMs,
+        });
+
+        using var req = new UnityWebRequest($"{backendUrl}/sensor/response_time", "POST");
+        req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success)
+            Debug.LogWarning($"[Emotion] 反應時間即時回報失敗: {req.error}");
+    }
+
     void OnDestroy()
     {
         sensor?.Close();
@@ -381,4 +415,12 @@ class SensorPayload
     // false = 新問題剛顯示、還在播語音或估讀時間內，長者本來就不該開口，
     // 見 KinectSensorSender.OnNewQuestionDisplayed／OnQuestionAsked 說明。
     public bool   awaiting_response;
+}
+
+/// <summary>OnMicPressed() 立即回報反應時間用，見 PostResponseTime 說明。</summary>
+[Serializable]
+class ResponseTimePayload
+{
+    public string session_id;
+    public int    response_time_ms;
 }
