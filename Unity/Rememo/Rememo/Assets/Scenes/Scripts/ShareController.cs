@@ -142,6 +142,9 @@ public class ShareController : MonoBehaviour
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingSceneAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingThanksAudioKeys")));
         closingAudioUris.AddRange(LocalAudioPlayer.BuildUris(null, SplitAudioKeys("ClosingQuestionAudioKeys")));
+        // 心得環節的內容剛顯示，同 GameController.ApplyRoundResponse：先標記
+        // 還沒進入回答等待期，語音播完/估讀時間到（OnQuestionAsked）才算開始。
+        kinectSensorSender?.OnNewQuestionDisplayed();
         // 反應時間計時要等長者真的看完/聽完這幾段內容才開始，理由同
         // GameController.ApplyRoundResponse——播放中的那幾秒不該算進反應時間；
         // 萬一這幾段剛好都沒有對應音檔（closingAudioUris 是空的），改用估算
@@ -505,6 +508,13 @@ public class ShareController : MonoBehaviour
         {
             if (hasText)
             {
+                // 同 GameController.cs HandleSTTMessage：StopRecording 啟動的
+                // sttTimeoutCoroutine（5秒後跳「辨識完成，請按送出」）是給沒進
+                // 審核流程的舊路徑用的，進審核流程一定要取消，否則就算治療師
+                // 很快確認完、畫面已經套用正確文字，5秒一到還是會被 OnSttFinal
+                // 蓋回「辨識完成，請按送出」，治療師常誤以為確認沒生效又點一次
+                // （2026-09-07 稽核：心得回合反映的「按兩次才成功」同一根因）。
+                if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
                 isPendingTherapistReview = true;
                 inputText.text = "等待輔導員確認中";
                 inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);

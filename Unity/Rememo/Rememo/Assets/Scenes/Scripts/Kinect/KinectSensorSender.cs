@@ -53,6 +53,12 @@ public class KinectSensorSender : MonoBehaviour
     // 反應時間
     private float questionAskedTime = -1f;
     private bool  responseTimeSent  = false;
+    // 是否已進入「長者該回答」的等待期（narration播完/估算閱讀時間到才算開始）。
+    // 見 OnQuestionAsked／OnNewQuestionDisplayed 說明——新問題文字剛顯示、
+    // 語音還在播放/估算閱讀時間還沒過的這段期間，長者本來就不該開口，這裡
+    // 保持 false，讓後端不要把這段合理的沉默/嘴巴沒動當成「投入度低」的證據
+    // （2026-09-08 稽核：長者聽題目時本來就不會開口，投入度卻被拉低）。
+    private bool  _awaitingResponse = false;
     // OnMicPressed() 當下直接算好存這裡，CollectAndSend() 只負責讀走、送出、
     // 歸零——實際按鈕觸發跟送出頻率脫鉤（後者每 sendInterval 才跑一次），
     // 不能反過來在 CollectAndSend 裡才用「現在」去算時間差，那樣算出來的
@@ -88,6 +94,19 @@ public class KinectSensorSender : MonoBehaviour
         questionAskedTime = Time.realtimeSinceStartup;
         responseTimeSent  = false;
         _pendingResponseMs = -1;
+        _awaitingResponse  = true;
+    }
+
+    /// <summary>
+    /// GameController/ShareController 在新一題的文字剛顯示、準備開始播語音/
+    /// 起算估讀秒數之前呼叫，跟 OnQuestionAsked() 成對——這裡標記「narration
+    /// 開始，長者還不該開口」，OnQuestionAsked() 觸發時（語音播完或估讀時間
+    /// 到）才標記「進入回答等待期」。兩者中間送出的感測幀，後端會知道這段
+    /// 沉默/嘴巴沒動是正常的，不當成投入度低的證據。
+    /// </summary>
+    public void OnNewQuestionDisplayed()
+    {
+        _awaitingResponse = false;
     }
 
     /// <summary>
@@ -208,6 +227,7 @@ public class KinectSensorSender : MonoBehaviour
             skel_handtip_velocity  = _latestHandTipVelocity,
             response_time_ms       = responseMs,
             timestamp              = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            awaiting_response      = _awaitingResponse,
         };
 
         byte[] jpegFrame = CaptureFacialFrameJpeg();
@@ -357,4 +377,8 @@ class SensorPayload
     public float  skel_handtip_velocity;
     public int    response_time_ms;
     public double timestamp;
+    // true = 已進入長者該回答的等待期（narration播完/估讀時間到）；
+    // false = 新問題剛顯示、還在播語音或估讀時間內，長者本來就不該開口，
+    // 見 KinectSensorSender.OnNewQuestionDisplayed／OnQuestionAsked 說明。
+    public bool   awaiting_response;
 }

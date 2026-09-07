@@ -940,27 +940,36 @@ async def session_start(
         result["state"]["question_asked_at"] = int(time.time() * 1000)
         tts = request.app.state.tts_service
         scene_audio_path = scene_audio_key = None
-        if result.get("scene_text"):
-            scene_audio_path, scene_audio_key = await _synthesize_or_key(
-                tts,
-                result["scene_text"],
-                session_id=session_id,
-                round_number=1,
-                turn_number=None,
-            )
         # Q1邀請語帶著治療師自由輸入的今日主題，orchestrator.start_round
         # 已經拆好 question_tts_text（該即時TTS的動態部分，用edge-tts／
         # HsiaoYu生成——這段治療師自由輸入、沒辦法預錄）跟 question_audio_key
         # （後半段邀請語的預錄音檔key，見 orchestrator.py _build_pre_image_
         # question 說明）——沒有這兩個欄位（理論上不會，round 1 一定是走 Q1）
         # 才退回對整句 question 即時TTS。
-        question_audio_path = await _synthesize_edge_safe(
+        # scene 跟 question 這兩段語音彼此獨立（不同文字、甚至不同TTS引擎），
+        # 原本序列 await 會讓長者多等一段合成時間，改用 asyncio.gather 同時
+        # 送出（2026-09-08：跟 orchestrator.py 併發LLM判斷同一次稽核），
+        # 不影響任一段的合成結果。
+        question_task = _synthesize_edge_safe(
             tts,
             text=result.get("question_tts_text", result["question"]),
             session_id=session_id,
             round_number=1,
             turn_number=1,
         )
+        if result.get("scene_text"):
+            (scene_audio_path, scene_audio_key), question_audio_path = await asyncio.gather(
+                _synthesize_or_key(
+                    tts,
+                    result["scene_text"],
+                    session_id=session_id,
+                    round_number=1,
+                    turn_number=None,
+                ),
+                question_task,
+            )
+        else:
+            question_audio_path = await question_task
         question_audio_key = result.get("question_audio_key")
         result["scene_audio_path"] = scene_audio_path
         result["scene_audio_key"] = scene_audio_key
@@ -976,6 +985,14 @@ async def session_start(
             ai_suggestions=[result["question"]] if result.get("question") else [],
             current_round=1,
             total_rounds=3,
+            # response_time 是 sensor.py 直接累加 Unity 送來的 response_time_ms
+            # 寫進同一份 metrics hash，跟這裡的場景/問題資訊共用同一個 key，欄位
+            # 本身沒有「屬於哪一題」的概念——不重置的話，新問題一出現，治療師
+            # 頁面在長者按下麥克風之前，會一直沿用上一題量到的舊反應時間，看
+            # 起來像長者還沒回答就已經有數字（2026-09-07 稽核：治療師反映長者
+            # 還沒回答、反應時間卻顯示數字）。這裡重置回 "--"，等這一題長者
+            # 真的按下麥克風、sensor.py 收到新的 response_time_ms 才會覆蓋掉。
+            response_time="--",
         )
         await log_access(
             therapist_id=therapist_id,
@@ -1046,24 +1063,30 @@ async def session_round(
         if result.get("question") and round_number not in (2, 3):
             tts = request.app.state.tts_service
             scene_audio_path = scene_audio_key = None
-            if result.get("scene_text"):
-                scene_audio_path, scene_audio_key = await _synthesize_or_key(
-                    tts,
-                    result["scene_text"],
-                    session_id=session_id,
-                    round_number=round_number,
-                    turn_number=None,
-                )
             # 這個分支 round_number 一定是 1（round 2/3 被上面的
             # not in (2, 3) 擋掉），一定是 Q1 邀請語，見 session_start 那份
-            # 一樣的說明。
-            question_audio_path = await _synthesize_edge_safe(
+            # 一樣的說明。scene/question 兩段語音彼此獨立，見 session_start
+            # 同樣的 asyncio.gather 說明，這裡用一樣的做法。
+            question_task = _synthesize_edge_safe(
                 tts,
                 text=result.get("question_tts_text", result["question"]),
                 session_id=session_id,
                 round_number=round_number,
                 turn_number=1,
             )
+            if result.get("scene_text"):
+                (scene_audio_path, scene_audio_key), question_audio_path = await asyncio.gather(
+                    _synthesize_or_key(
+                        tts,
+                        result["scene_text"],
+                        session_id=session_id,
+                        round_number=round_number,
+                        turn_number=None,
+                    ),
+                    question_task,
+                )
+            else:
+                question_audio_path = await question_task
             question_audio_key = result.get("question_audio_key")
             result["scene_audio_path"] = scene_audio_path
             result["scene_audio_key"] = scene_audio_key
@@ -1078,6 +1101,8 @@ async def session_round(
             ai_suggestions=[result["question"]] if result.get("question") else [],
             current_round=round_number,
             total_rounds=3,
+            # 同 session_start：換題就把上一題殘留的反應時間清掉，見該處說明。
+            response_time="--",
         )
         await _save_round_image(
             db, session_id, round_number, result.get("image_path", ""),
@@ -1540,6 +1565,7 @@ async def _compute_and_save_assessment(
     looking_away_n    = int(raw.get("looking_away_n",        0))
     eye_closed_n      = int(raw.get("eye_closed_n",          0))
     mouth_moved_n     = int(raw.get("mouth_moved_n",         0))
+    mouth_window_n    = int(raw.get("mouth_window_n",        0))
     high_sway_n       = int(raw.get("high_sway_n",           0))
     skel_absent_n     = int(raw.get("skel_absent_n",         0))
     response_count    = int(raw.get("response_count",        0))
@@ -1551,6 +1577,7 @@ async def _compute_and_save_assessment(
     far_n             = int(raw.get("far_n",                 0))
     spinebase_valid_n = int(raw.get("spinebase_valid_n",     0))
     high_pitch_var_n  = int(raw.get("high_pitch_var_n",      0))
+    pitch_window_n    = int(raw.get("pitch_window_n",        0))
     hand_active_n     = int(raw.get("hand_active_n",         0))
     emo_valid_n       = int(raw.get("emo_valid_n",           0))
     emo = {
@@ -1568,8 +1595,15 @@ async def _compute_and_save_assessment(
     face_valid_n      = max(face_detected_n, 1)
     looking_away_rate = looking_away_n   / face_valid_n
     eye_closed_rate   = eye_closed_n     / face_valid_n
-    mouth_moved_rate  = mouth_moved_n    / face_valid_n
-    # 臉部偵測率過低時（face_detected_n 只佔 frame_count 一小部分），上面三個
+    # mouth_moved_rate 分母改用 mouth_window_n（只算「已進入回答等待期、且
+    # 有臉部資料」的幀數），不能沿用 face_valid_n——narration 播放中/估算
+    # 閱讀時間還沒過時長者本來就不該開口，那段期間的幀不該算進「有沒有主動
+    # 說話」這個比率的分母，否則分子已經排除 narration 幀、分母卻沒排除，
+    # 比率會被稀釋到不合理地低（見 sensor.py mouth_window_n 說明，2026-09-08
+    # 稽核：長者聽題目本來就不開口，參與度被拉低）。
+    mouth_valid_n     = max(mouth_window_n, 1)
+    mouth_moved_rate  = mouth_moved_n    / mouth_valid_n
+    # 臉部偵測率過低時（face_detected_n 只佔 frame_count 一小部分），上面兩個
     # 比率是小樣本統計，容易失真（例如整場只有 3 幀有臉，剛好都判成看向別處
     # 就變成 100%）。歸零讓依賴它們的分項退回各自「沒有負面訊號」的預設分支
     # ——參與度／持續力的公式在輸入 0 時本來就會落到中性判斷，不需要另外
@@ -1578,7 +1612,13 @@ async def _compute_and_save_assessment(
     face_data_sufficient = face_detected_n / frame_count >= MIN_VALID_SAMPLE_RATIO
     if not face_data_sufficient:
         looking_away_rate = 0.0
-        mouth_moved_rate  = 0.0
+    # mouth_moved_rate 用自己的分母（mouth_window_n）判斷樣本是否足夠，不
+    # 沿用 face_data_sufficient——一場長者大多在聽長篇 narration 的回合，
+    # face_detected_n 可能很充足，但 mouth_window_n（回答等待期內的幀）仍
+    # 可能偏少，兩者是獨立的樣本量問題。
+    mouth_data_sufficient = mouth_window_n / frame_count >= MIN_VALID_SAMPLE_RATIO
+    if not mouth_data_sufficient:
+        mouth_moved_rate = 0.0
     skel_absent_rate  = skel_absent_n    / frame_count
     # sad_rate／angry_rate 分母是 emo_valid_n，不是 frame_count——emo_* 計數
     # 只在這一幀臉部或骨架至少有一個真的偵測到時才累加（見 sensor.py
@@ -1607,7 +1647,9 @@ async def _compute_and_save_assessment(
     # 已經會單獨反映「長者可能不在座位上」，這裡只是不讓 far_rate 本身被
     # 追丟的幀稀釋掉。
     far_rate          = far_n / max(spinebase_valid_n, 1)
-    high_pitch_rate   = high_pitch_var_n / frame_count
+    # 分母改用 pitch_window_n（只算「已進入回答等待期」的幀數），理由同
+    # mouth_moved_rate 改用 mouth_window_n——見 sensor.py pitch_window_n 說明。
+    high_pitch_rate   = high_pitch_var_n / max(pitch_window_n, 1)
     hand_active_rate  = hand_active_n    / frame_count
     avg_response_ms   = rt_sum / rt_count if rt_count > 0 else None
 
@@ -2143,16 +2185,21 @@ async def _finalize_elder_response(
             # 全部不需要語音，只當畫面上的文字。
             if state.round != 2 and result.get("action") != "end_session":
                 tts = request.app.state.tts_service
+                # scene_text 跟 question 這兩段是各自獨立的 _synthesize_or_key
+                # 呼叫（各自先查 audio_bank，查無才即時TTS），原本序列 await
+                # 會讓長者多等一段合成時間，這裡改用 asyncio.gather 同時送出
+                # （2026-09-08：跟 session_start／session_round 同一次稽核），
+                # 只在兩段都真的需要即時TTS時才有平行的意義，其餘組合維持
+                # 原本各自的判斷邏輯。
+                scene_task = None
                 if result.get("scene_text"):
-                    scene_audio_path, scene_audio_key = await _synthesize_or_key(
+                    scene_task = _synthesize_or_key(
                         tts,
                         result["scene_text"],
                         session_id=state.session_id,
                         round_number=state.round,
                         turn_number=None,
                     )
-                    result["scene_audio_path"] = scene_audio_path
-                    result["scene_audio_key"] = scene_audio_key
                 # orchestrator.process_response 的生圖前Q2情境2分支（
                 # get_scenario2_followup，_FIVE_W1H_BANK 題庫）已經直接算好
                 # question_audio_key 放進 result 了（同一句話在不同主題下
@@ -2162,14 +2209,26 @@ async def _finalize_elder_response(
                 existing_question_key = result.get("question_audio_key")
                 if existing_question_key:
                     question_audio_path, question_audio_key = None, existing_question_key
+                    if scene_task is not None:
+                        scene_audio_path, scene_audio_key = await scene_task
+                        result["scene_audio_path"] = scene_audio_path
+                        result["scene_audio_key"] = scene_audio_key
                 else:
-                    question_audio_path, question_audio_key = await _synthesize_or_key(
+                    question_task = _synthesize_or_key(
                         tts,
                         result["question"],
                         session_id=state.session_id,
                         round_number=state.round,
                         turn_number=next_qn if result.get("state") is not None else None,
                     )
+                    if scene_task is not None:
+                        (scene_audio_path, scene_audio_key), (question_audio_path, question_audio_key) = (
+                            await asyncio.gather(scene_task, question_task)
+                        )
+                        result["scene_audio_path"] = scene_audio_path
+                        result["scene_audio_key"] = scene_audio_key
+                    else:
+                        question_audio_path, question_audio_key = await question_task
                 result["question_audio_path"] = question_audio_path
                 result["question_audio_key"] = question_audio_key
                 result["audio_path"] = question_audio_path  # 向下相容
@@ -2177,6 +2236,9 @@ async def _finalize_elder_response(
                 request.app.state.redis, state.session_id,
                 current_scene=result.get("scene_text", "") + result["question"],
                 ai_suggestions=[result["question"]],
+                # 同 session_start 的說明：這裡涵蓋回合內追問（Q2/Q3）跟心得
+                # 環節開場邀請語，只要是換題就要清掉上一題殘留的反應時間。
+                response_time="--",
             )
             if result.get("state") is not None:
                 result["state"]["question_number"] = next_qn

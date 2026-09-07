@@ -37,7 +37,6 @@ export const SIGNAL_TEXT: Record<string, { category: SignalCategory; text: strin
   body_sway_high: { category: "body", text: "身體晃動明顯" },
   body_left_seat: { category: "body", text: "已離開偵測範圍，可能離座" },
   speaker_speaking: { category: "speaker", text: "有開口說話" },
-  speaker_quiet: { category: "speaker", text: "很少開口" },
   speaker_pitch_var_high: { category: "speaker", text: "語調起伏明顯" },
 };
 
@@ -106,7 +105,6 @@ export const SIGNAL_DIMENSION: Record<string, Dimension> = {
   body_head_drop: "engagement",
   face_mouth_moved: "engagement",
   speaker_speaking: "engagement",
-  speaker_quiet: "engagement",
   // 離座不是加權公式的一部分（見 sensor.py _reasoning_signals 的說明），但
   // 對「為什麼專注度這麼低」是關鍵情境資訊，歸進專注度底下一起顯示。
   body_left_seat: "engagement",
