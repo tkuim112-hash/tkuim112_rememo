@@ -940,36 +940,27 @@ async def session_start(
         result["state"]["question_asked_at"] = int(time.time() * 1000)
         tts = request.app.state.tts_service
         scene_audio_path = scene_audio_key = None
+        if result.get("scene_text"):
+            scene_audio_path, scene_audio_key = await _synthesize_or_key(
+                tts,
+                result["scene_text"],
+                session_id=session_id,
+                round_number=1,
+                turn_number=None,
+            )
         # Q1邀請語帶著治療師自由輸入的今日主題，orchestrator.start_round
         # 已經拆好 question_tts_text（該即時TTS的動態部分，用edge-tts／
         # HsiaoYu生成——這段治療師自由輸入、沒辦法預錄）跟 question_audio_key
         # （後半段邀請語的預錄音檔key，見 orchestrator.py _build_pre_image_
         # question 說明）——沒有這兩個欄位（理論上不會，round 1 一定是走 Q1）
         # 才退回對整句 question 即時TTS。
-        # scene 跟 question 這兩段語音彼此獨立（不同文字、甚至不同TTS引擎），
-        # 原本序列 await 會讓長者多等一段合成時間，改用 asyncio.gather 同時
-        # 送出（2026-09-08：跟 orchestrator.py 併發LLM判斷同一次稽核），
-        # 不影響任一段的合成結果。
-        question_task = _synthesize_edge_safe(
+        question_audio_path = await _synthesize_edge_safe(
             tts,
             text=result.get("question_tts_text", result["question"]),
             session_id=session_id,
             round_number=1,
             turn_number=1,
         )
-        if result.get("scene_text"):
-            (scene_audio_path, scene_audio_key), question_audio_path = await asyncio.gather(
-                _synthesize_or_key(
-                    tts,
-                    result["scene_text"],
-                    session_id=session_id,
-                    round_number=1,
-                    turn_number=None,
-                ),
-                question_task,
-            )
-        else:
-            question_audio_path = await question_task
         question_audio_key = result.get("question_audio_key")
         result["scene_audio_path"] = scene_audio_path
         result["scene_audio_key"] = scene_audio_key
@@ -1063,30 +1054,24 @@ async def session_round(
         if result.get("question") and round_number not in (2, 3):
             tts = request.app.state.tts_service
             scene_audio_path = scene_audio_key = None
+            if result.get("scene_text"):
+                scene_audio_path, scene_audio_key = await _synthesize_or_key(
+                    tts,
+                    result["scene_text"],
+                    session_id=session_id,
+                    round_number=round_number,
+                    turn_number=None,
+                )
             # 這個分支 round_number 一定是 1（round 2/3 被上面的
             # not in (2, 3) 擋掉），一定是 Q1 邀請語，見 session_start 那份
-            # 一樣的說明。scene/question 兩段語音彼此獨立，見 session_start
-            # 同樣的 asyncio.gather 說明，這裡用一樣的做法。
-            question_task = _synthesize_edge_safe(
+            # 一樣的說明。
+            question_audio_path = await _synthesize_edge_safe(
                 tts,
                 text=result.get("question_tts_text", result["question"]),
                 session_id=session_id,
                 round_number=round_number,
                 turn_number=1,
             )
-            if result.get("scene_text"):
-                (scene_audio_path, scene_audio_key), question_audio_path = await asyncio.gather(
-                    _synthesize_or_key(
-                        tts,
-                        result["scene_text"],
-                        session_id=session_id,
-                        round_number=round_number,
-                        turn_number=None,
-                    ),
-                    question_task,
-                )
-            else:
-                question_audio_path = await question_task
             question_audio_key = result.get("question_audio_key")
             result["scene_audio_path"] = scene_audio_path
             result["scene_audio_key"] = scene_audio_key
@@ -2185,21 +2170,16 @@ async def _finalize_elder_response(
             # 全部不需要語音，只當畫面上的文字。
             if state.round != 2 and result.get("action") != "end_session":
                 tts = request.app.state.tts_service
-                # scene_text 跟 question 這兩段是各自獨立的 _synthesize_or_key
-                # 呼叫（各自先查 audio_bank，查無才即時TTS），原本序列 await
-                # 會讓長者多等一段合成時間，這裡改用 asyncio.gather 同時送出
-                # （2026-09-08：跟 session_start／session_round 同一次稽核），
-                # 只在兩段都真的需要即時TTS時才有平行的意義，其餘組合維持
-                # 原本各自的判斷邏輯。
-                scene_task = None
                 if result.get("scene_text"):
-                    scene_task = _synthesize_or_key(
+                    scene_audio_path, scene_audio_key = await _synthesize_or_key(
                         tts,
                         result["scene_text"],
                         session_id=state.session_id,
                         round_number=state.round,
                         turn_number=None,
                     )
+                    result["scene_audio_path"] = scene_audio_path
+                    result["scene_audio_key"] = scene_audio_key
                 # orchestrator.process_response 的生圖前Q2情境2分支（
                 # get_scenario2_followup，_FIVE_W1H_BANK 題庫）已經直接算好
                 # question_audio_key 放進 result 了（同一句話在不同主題下
@@ -2209,26 +2189,14 @@ async def _finalize_elder_response(
                 existing_question_key = result.get("question_audio_key")
                 if existing_question_key:
                     question_audio_path, question_audio_key = None, existing_question_key
-                    if scene_task is not None:
-                        scene_audio_path, scene_audio_key = await scene_task
-                        result["scene_audio_path"] = scene_audio_path
-                        result["scene_audio_key"] = scene_audio_key
                 else:
-                    question_task = _synthesize_or_key(
+                    question_audio_path, question_audio_key = await _synthesize_or_key(
                         tts,
                         result["question"],
                         session_id=state.session_id,
                         round_number=state.round,
                         turn_number=next_qn if result.get("state") is not None else None,
                     )
-                    if scene_task is not None:
-                        (scene_audio_path, scene_audio_key), (question_audio_path, question_audio_key) = (
-                            await asyncio.gather(scene_task, question_task)
-                        )
-                        result["scene_audio_path"] = scene_audio_path
-                        result["scene_audio_key"] = scene_audio_key
-                    else:
-                        question_audio_path, question_audio_key = await question_task
                 result["question_audio_path"] = question_audio_path
                 result["question_audio_key"] = question_audio_key
                 result["audio_path"] = question_audio_path  # 向下相容
