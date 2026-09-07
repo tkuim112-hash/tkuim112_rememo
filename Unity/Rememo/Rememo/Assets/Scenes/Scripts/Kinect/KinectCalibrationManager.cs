@@ -36,9 +36,16 @@ public class KinectCalibrationManager : MonoBehaviour
     private float calibrationTimer = 0f;
 
     private List<Dictionary<string, float[]>> skeletonBuffer = new List<Dictionary<string, float[]>>();
-    private List<float> happyBuffer = new List<float>();
     private List<float> lookingAwayBuffer = new List<float>();
     private List<float> mouthMovedBuffer = new List<float>();
+    // 表情正負向判斷用到的 AU（AU06/AU12 微笑、AU01/04/05/07/15/23 皺眉），
+    // 校正期間逐一 AU 收集個人靜止時的強度基準，供後端 sensor.py _au_baseline/
+    // _au_c 逐一扣除——不是像舊版 happyBaseline/frownBaseline 那樣把好幾個 AU
+    // 混成一個籠統的數字，長者臉部因皮膚鬆弛、法令紋只會讓特定 AU（例如
+    // AU04）天生偏高，逐一對應才不會連帶稀釋其他 AU 的訊號。key 是 AU 代碼
+    // （跟後端 face_calibration_sample 回傳的 au_codes 一致），value 是這場
+    // 校正期間收到的所有樣本，最後在 SendCalibrationData 取平均。
+    private Dictionary<string, List<float>> auIntensityBuffers = new Dictionary<string, List<float>>();
     private List<float> _pitchVarBuffer  = new List<float>();
     private List<float> _rmsBuffer       = new List<float>();
 
@@ -274,9 +281,9 @@ public class KinectCalibrationManager : MonoBehaviour
     {
         Debug.Log($"[Calibration] {reason}");
         skeletonBuffer.Clear();
-        happyBuffer.Clear();
         lookingAwayBuffer.Clear();
         mouthMovedBuffer.Clear();
+        auIntensityBuffers.Clear();
         if (_emotionSamplingLoop != null)
         {
             StopCoroutine(_emotionSamplingLoop);
@@ -414,9 +421,23 @@ public class KinectCalibrationManager : MonoBehaviour
             yield break;
         }
 
-        happyBuffer.Add(sample.happy);
         lookingAwayBuffer.Add(sample.looking_away);
         mouthMovedBuffer.Add(sample.mouth_moved);
+
+        if (sample.au_codes != null && sample.au_values != null
+            && sample.au_codes.Length == sample.au_values.Length)
+        {
+            for (int i = 0; i < sample.au_codes.Length; i++)
+            {
+                string code = sample.au_codes[i];
+                if (!auIntensityBuffers.TryGetValue(code, out var list))
+                {
+                    list = new List<float>();
+                    auIntensityBuffers[code] = list;
+                }
+                list.Add(sample.au_values[i]);
+            }
+        }
     }
 
     bool CheckStability()
@@ -563,13 +584,25 @@ public class KinectCalibrationManager : MonoBehaviour
         float pitchVarMean = Average(_pitchVarBuffer);
         float rmsMean = Average(_rmsBuffer);
 
+        // 表情正負向的個人 AU 基準：逐一 AU 取平均，供後端 _au_baseline 比對
+        // （見 auIntensityBuffers 宣告處說明），取代舊版 happyBaseline/
+        // frownBaseline 那種把好幾個 AU 混成一個籠統數字的做法。
+        var auBaselineCodes = new List<string>();
+        var auBaselineValues = new List<float>();
+        foreach (var kvp in auIntensityBuffers)
+        {
+            auBaselineCodes.Add(kvp.Key);
+            auBaselineValues.Add(Average(kvp.Value));
+        }
+
         var payload = new CalibrationPayload
         {
             type = "calibration",
             duration = calibrationDuration,
-            happyBaseline = Average(happyBuffer),
             lookingAwayBaseline = Average(lookingAwayBuffer),
             mouthMovedBaseline = Average(mouthMovedBuffer),
+            auBaselineCodes = auBaselineCodes.ToArray(),
+            auBaselineValues = auBaselineValues.ToArray(),
             pitchVarianceBaseline = pitchVarMean,
             // 後端門檻公式用 baseline + k×標準差（見 app/routers/sensor.py
             // _pitch_threshold），比單純乘固定倍數更能反映每個人音高變異本身的
@@ -668,9 +701,10 @@ public class CalibrationPayload
 {
     public string type;
     public float duration;
-    public float happyBaseline;
     public float lookingAwayBaseline;
     public float mouthMovedBaseline;
+    public string[] auBaselineCodes;
+    public float[] auBaselineValues;
     public float pitchVarianceBaseline;
     public float pitchVarianceStdDev;
     public float audioRmsBaseline;
@@ -690,7 +724,8 @@ public class CalibrationAck
 [System.Serializable]
 class FaceCalibrationSample
 {
-    public float happy;
     public float looking_away;
     public float mouth_moved;
+    public string[] au_codes;
+    public float[] au_values;
 }

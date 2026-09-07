@@ -74,12 +74,19 @@ public class ShareController : MonoBehaviour
     // 療程就被結束時，已經算好的結果被整份丟棄）。
     private bool isPendingTherapistReview = false;
     private string pendingConfirmedText = null;
+    // 跟 GameController.cs 同一套保底邏輯：/ws/stt 在治療師審核心得回答那段
+    // 容易閒置逾時斷線、"confirmed_closing_text" 推播漏接就沒有補送機制，
+    // 這裡定時輪詢 /metrics 把確認結果追回來（見 PollForConfirmedText）。
+    private Coroutine reviewPollCoroutine;
 
     [System.Serializable]
     private class ControlPayload { public string type; }
 
     [System.Serializable]
     private class STTMessage { public string type; public string text; public bool isFinal; public string action; public string elder_response; }
+
+    [System.Serializable]
+    private class MetricsResponse { public string review_status; public string elder_response; }
 
     [System.Serializable]
     private class ClosingResponse { public bool ok; public string closing_message; }
@@ -479,13 +486,12 @@ public class ShareController : MonoBehaviour
             // 文字——2026-09-06 改版後，資料庫寫入／評估計算延後到長者真的按下
             // 送出才觸發（見 OnSubmit／SubmitClosing，取代原本的
             // ApplyFinalClosingResponse），這裡只是把確認後的文字顯示給長者看。
-            isPendingTherapistReview = false;
-            pendingConfirmedText = msg.elder_response;
-            displayedText = msg.elder_response;
-            inputText.text = msg.elder_response;
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            hasRecordedOnce = true;
-            RefreshSubmitButton();
+            //
+            // 治療師在長者按送出前可以重新編輯、再確認一次（pending_closing_review
+            // 支援重複覆蓋，見 session.py session_closing_confirm_response），所以
+            // 不能只在 isPendingTherapistReview 還是 true 時才套用——無條件套用，
+            // 跟 PollForConfirmedText 共用同一份文字比對邏輯（見該函式）。
+            ApplyConfirmedText(msg.elder_response);
             return;
         }
 
@@ -506,12 +512,64 @@ public class ShareController : MonoBehaviour
                 RefreshSubmitButton();
                 StartCoroutine(PostTranscript(msg.text));   // 統計用途，維持不變
                 StartCoroutine(RequestReview(msg.text));
+                if (reviewPollCoroutine != null) StopCoroutine(reviewPollCoroutine);
+                reviewPollCoroutine = StartCoroutine(PollForConfirmedText());
             }
             else
             {
                 // 沒說話：維持原本允許沉默直接送出空字串的行為，不需要治療師介入。
                 OnSttFinal();
             }
+        }
+    }
+
+    // 治療師確認（可能編輯過）心得回答後，套用到長者畫面——不管是從
+    // /ws/stt 收到 "confirmed_closing_text" 推播（正常路徑），還是
+    // PollForConfirmedText 輪詢追回來的（WS 推播漏接時的保底），都走這支，
+    // 兩邊行為才不會分岔（比照 GameController.cs 的 ApplyConfirmedText）。
+    void ApplyConfirmedText(string text)
+    {
+        isPendingTherapistReview = false;
+        pendingConfirmedText = text;
+        displayedText = text;
+        inputText.text = text;
+        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+        hasRecordedOnce = true;
+        RefreshSubmitButton();
+    }
+
+    // 比照 GameController.cs 的 PollForConfirmedText：定時輪詢 /metrics
+    // （跟治療師網頁 polling 同一支 API）當保底，review_status 變成
+    // awaiting_closing_submit 就代表治療師已經確認過、只是 WS 沒送到。
+    // 存活範圍蓋 isPendingTherapistReview（等第一次確認）跟 pendingConfirmedText
+    // != null（已經確認過、長者還沒按送出，治療師隨時可能重新編輯再送一次）
+    // 兩個階段，理由跟 GameController.cs 的 PollForConfirmedText 一樣：重新編輯
+    // 那次推播一樣可能撞上斷線空窗，只保第一次確認的話，治療師改第二次時反而
+    // 沒有保底。用文字比對（跟目前畫面上的 pendingConfirmedText 不同才套用）
+    // 避免把治療師剛編輯的新版本蓋回舊版本。
+    IEnumerator PollForConfirmedText()
+    {
+        string sessionId = AuthSession.SessionId ?? "";
+        if (string.IsNullOrEmpty(sessionId)) yield break;
+        var wait = new WaitForSeconds(3f);
+        while (isPendingTherapistReview || pendingConfirmedText != null)
+        {
+            yield return wait;
+            if (!(isPendingTherapistReview || pendingConfirmedText != null)) yield break;
+
+            using var req = UnityWebRequest.Get($"{backendUrl}/session/{sessionId}/metrics");
+            AuthService.AttachAuthHeader(req);
+            yield return req.SendWebRequest();
+            if (req.result != UnityWebRequest.Result.Success) continue;
+            if (!(isPendingTherapistReview || pendingConfirmedText != null)) yield break;   // 長者這時候已經按送出了
+
+            MetricsResponse resp;
+            try { resp = JsonUtility.FromJson<MetricsResponse>(req.downloadHandler.text); }
+            catch { continue; }
+            bool hasConfirmed = resp != null && resp.review_status == "awaiting_closing_submit"
+                && !string.IsNullOrEmpty(resp.elder_response);
+            if (hasConfirmed && resp.elder_response != pendingConfirmedText)
+                ApplyConfirmedText(resp.elder_response);
         }
     }
 

@@ -53,6 +53,13 @@ YAW_AWAY_YES   = 25.0   # 度：頭部偏轉角度，視線「確定」離開畫
 # API 完全沒有這幾個 AU。
 AU_VALENCE_NEGATIVE = ("AU01", "AU04", "AU05", "AU07", "AU15", "AU23")
 
+# 正向表情 AU 集合：AU06（臉頰上提）+ AU12（嘴角上揚）決定真笑/社交笑的區分
+# （見 _au_duchenne_smile/_au_social_smile）。跟 AU_VALENCE_NEGATIVE 合併起來
+# 是校正期間要逐一收集個人基準的完整 AU 集合（見 AU_CALIBRATED_CODES、
+# _au_baseline）。
+AU_VALENCE_POSITIVE = ("AU06", "AU12")
+AU_CALIBRATED_CODES = AU_VALENCE_POSITIVE + AU_VALENCE_NEGATIVE
+
 # Circumplex Model（Russell 1980）的低激動門檻：agitation 低於此值視為安靜/
 # 低能量狀態，這時 valence（happiness）中性、engagement 也偏低，光看
 # valence×arousal 分不出是「安穩參與」還是「放空退縮」，見 _classify_from_scores。
@@ -143,23 +150,72 @@ def _au(au: dict, code: str) -> float:
     return au.get(code, 0.0)
 
 
-def _au_duchenne_smile(au: dict) -> bool:
+def _au_baseline(calib: dict | None, code: str) -> float:
+    """
+    個人 AU 強度基準（校正時 15 秒收集的平均值）。用 key/value 平行陣列格式
+    （auBaselineCodes/auBaselineValues）而不是 dict，跟 _shoulder_width_baseline
+    的 jointKeys/jointX 是同一種繞法——JsonUtility（Unity 端）不支援直接
+    序列化 Dictionary。找不到、或校正資料不存在時回傳 0.0（沒有基準可扣，
+    等同沒校正過的舊行為）。
+
+    每個 AU 各自存一份基準，不是像舊版 happyBaseline/frownBaseline 那樣整包
+    混成一個數字：老年人常見的皮膚鬆弛/法令紋通常只讓特定 AU（例如 AU04）
+    天生偏高，不代表其他 AU 也偏高，混在一起平均會連帶稀釋/污染其他 AU
+    真正的訊號。
+    """
+    if not calib:
+        return 0.0
+    codes = calib.get("auBaselineCodes")
+    vals = calib.get("auBaselineValues")
+    if not codes or not vals or len(codes) != len(vals):
+        return 0.0
+    return dict(zip(codes, vals)).get(code, 0.0)
+
+
+def _au_c(au: dict, code: str, calib: dict | None) -> float:
+    """扣掉個人基準後的 AU 強度。基準代表「這個人靜止時這個 AU 本來就有多強」，
+    量到比基準還低不代表額外的負向證據，夾在 0 下限，不會反過來加分。"""
+    return max(0.0, _au(au, code) - _au_baseline(calib, code))
+
+
+def _au_graded(au: dict, code: str, calib: dict | None) -> float:
+    """
+    AU 強度換算成 [0,1] 的漸進分數，取代單純的「有沒有過門檻」二元判斷——
+    剛好卡在 AU_PRESENT_MIN 邊緣、跟大幅超過門檻，證據力理應不同，不該給
+    同樣的分數（查證 PSPI 疼痛強度公式等臉部強度量測文獻後採用同一套精神：
+    AU 強度是連續量，用漸進計分比二元門檻更準確反映證據強弱）。
+
+    沒有另外定義一個新的「飽和點」常數：py-feat 輸出的實際數值範圍依模型
+    版本而定（見 AU_PRESENT_MIN 定義處說明），沒有實測依據就硬訂一個上限
+    不夠嚴謹，改用 2×AU_PRESENT_MIN 當滿分點——這個常數本身已經是校準過的
+    「有出現」基準，往上抓一倍當「明顯出現」，是目前唯一有實際依據的錨點。
+    """
+    v = _au_c(au, code, calib)
+    if v <= AU_PRESENT_MIN:
+        return 0.0
+    return min(1.0, (v - AU_PRESENT_MIN) / AU_PRESENT_MIN)
+
+
+def _au_duchenne_smile(au: dict, calib: dict | None = None) -> bool:
     """AU06（臉頰上提）+ AU12（嘴角上揚）同時出現＝真笑（Duchenne marker）。
     Kinect 內建 Face API 沒有 AU06，判斷不出這個區別，是換成 py-feat 的
-    主要理由之一。"""
-    return _au(au, "AU06") >= AU_PRESENT_MIN and _au(au, "AU12") >= AU_PRESENT_MIN
+    主要理由之一。calib 有給的話，門檻判斷用扣過個人基準的強度（_au_c），
+    不是原始強度——校正資料還沒收集完成（例如校正端點 face_calibration_sample
+    自己取樣時）calib 為 None，退回原始強度判斷，等同沒校正過的行為。"""
+    return _au_c(au, "AU06", calib) >= AU_PRESENT_MIN and _au_c(au, "AU12", calib) >= AU_PRESENT_MIN
 
 
-def _au_social_smile(au: dict) -> bool:
+def _au_social_smile(au: dict, calib: dict | None = None) -> bool:
     """只有 AU12、沒有 AU06：社交性微笑，正向程度給得比真笑低。"""
-    return _au(au, "AU12") >= AU_PRESENT_MIN and not _au_duchenne_smile(au)
+    return _au_c(au, "AU12", calib) >= AU_PRESENT_MIN and not _au_duchenne_smile(au, calib)
 
 
-def _au_frown(au: dict) -> bool:
-    """AU_VALENCE_NEGATIVE 裡任一個 AU 明顯出現、且沒有微笑訊號＝負向表情
-    （悲傷型或憤怒型皺眉都算，兩者的區分交給 arousal，見 _classify_from_scores）。"""
-    negative = any(_au(au, code) >= AU_PRESENT_MIN for code in AU_VALENCE_NEGATIVE)
-    return negative and _au(au, "AU12") < AU_PRESENT_MIN
+def _au_frown(au: dict, calib: dict | None = None) -> bool:
+    """AU_VALENCE_NEGATIVE 裡任一個 AU（扣過個人基準後）明顯出現、且沒有
+    微笑訊號＝負向表情（悲傷型或憤怒型皺眉都算，兩者的區分交給 arousal，
+    見 _classify_from_scores）。"""
+    negative = any(_au_c(au, code, calib) >= AU_PRESENT_MIN for code in AU_VALENCE_NEGATIVE)
+    return negative and _au_c(au, "AU12", calib) < AU_PRESENT_MIN
 
 
 def _au_mouth_active(au: dict) -> bool:
@@ -204,15 +260,29 @@ def _face_engagement(au: dict, pose: dict) -> float:
     return max(-3.0, min(2.0, score))
 
 
-def _face_happiness(au: dict) -> float:
+def _face_happiness(au: dict, calib: dict | None = None) -> float:
     """
     臉部情緒效價 [−2, +3]。
     MCI 長者面部肌肉活動較弱，社交性微笑（只有 AU12）也給正面加分，
     只是力度比真笑（AU06+AU12）低。
+
+    分支判斷（哪一種表情）維持不變，但分支內的分數改用 _au_graded 漸進
+    計分，不是寫死的常數——同樣過門檻，AU 強度剛好卡邊緣跟大幅超過，
+    證據力不該一樣（見 _au_graded 的文獻依據說明）。真笑落在 [1.0,3.0]、
+    社交笑落在 [0,1.0]、皺眉落在 [−2.0,0]，範圍分別內縮在舊版固定值以內，
+    是既有範圍內的精細化，不會超出 HAPPINESS_RANGE。
+
+    calib 傳給每個分支判斷函式跟 _au_graded，個人校正基準逐一 AU 扣除
+    （見 _au_c），取代舊版整包 happyBaseline／frownBaseline 純量套用。
     """
-    if _au_duchenne_smile(au):  return  3.0
-    if _au_social_smile(au):    return  1.0
-    if _au_frown(au):           return -2.0
+    if _au_duchenne_smile(au, calib):
+        intensity = (_au_graded(au, "AU06", calib) + _au_graded(au, "AU12", calib)) / 2.0
+        return 1.0 + intensity * 2.0
+    if _au_social_smile(au, calib):
+        return _au_graded(au, "AU12", calib) * 1.0
+    if _au_frown(au, calib):
+        intensity = max(_au_graded(au, code, calib) for code in AU_VALENCE_NEGATIVE)
+        return -intensity * 2.0
     return 0.0  # 沒有明確訊號（沒偵測到臉、或表情中性）
 
 
@@ -373,11 +443,11 @@ def _reasoning_signals(
 
     if not face_detected:
         codes.append("face_not_detected")
-    elif _au_duchenne_smile(au):
+    elif _au_duchenne_smile(au, calib):
         codes.append("face_smile")
-    elif _au_social_smile(au):
+    elif _au_social_smile(au, calib):
         codes.append("face_smile_slight")
-    elif _au_frown(au):
+    elif _au_frown(au, calib):
         codes.append("face_frown")
 
     if _au_mouth_active(au):
@@ -455,7 +525,7 @@ def _classify_from_scores(
     這裡刻意不讓 happiness<0 單獨繞過驗證直接判低落，是討論過的取捨：
     聳肩（_skel_tension）2026-09-05 定案改進 agitation 的加權項（見上方
     ENGAGEMENT_RANGE 等常數說明），不再是 happiness 的一部分，happiness<0
-    現在幾乎只會是 AU 明確偵測到皺眉（或校正基準 happyBaseline 的扣分）造成
+    現在幾乎只會是 AU 明確偵測到皺眉（扣過個人校正基準後，見 _au_c）造成
     的。維持這個分支要求額外驗證，理由是長者臉部肌肉活動本來就弱、AU 單一
     管道的雜訊仍然偏高（見專案文獻查證），寧可漏掉一些安靜但確實低落的
     案例（假陰性），也不要把還在正常參與的長者誤判成低落（假陽性）——
@@ -601,10 +671,9 @@ async def _ema_classify(
     else:
         new_eng = prev_eng
     if au:
-        raw_hap = _face_happiness(au)  # 純粹是臉部表情，聳肩不影響這裡（見上方 raw_agi）
-        if calib:
-            # 校正期間的快樂基準反映靜止表情，從當前分數扣除避免虛高
-            raw_hap -= calib.get("happyBaseline", 0.0) * 1.5
+        # 個人校正基準已經在 _face_happiness 內部逐一 AU 處理（見 _au_c／
+        # _au_baseline），不用在這裡再額外套用一次籠統的係數。
+        raw_hap = _face_happiness(au, calib)  # 純粹是臉部表情，聳肩不影響這裡（見上方 raw_agi）
         raw_hap = max(HAPPINESS_RANGE[0], min(HAPPINESS_RANGE[1], raw_hap))
         new_hap = prev_hap + EMA_ALPHA * (raw_hap - prev_hap)
     else:
@@ -763,13 +832,20 @@ async def face_calibration_sample(
     KinectSensorSender.LastHappy/LastLookingAway/LastMouthMoved（Kinect Face
     API 本地即時值）的做法——臉部分析移到 face-service 之後，Unity 端沒有
     本地資料可以直接取樣，改成校正期間定期（不需要逐幀）拍一張畫面呼叫這支
-    端點，Unity 收到後照舊塞進 happyBuffer/lookingAwayBuffer/mouthMovedBuffer
-    取平均，WebSocket 送出去的 CalibrationPayload 格式不變。
+    端點，Unity 收到後塞進對應的 buffer 取平均，WebSocket 送出去的
+    CalibrationPayload 供 _au_baseline 逐一 AU 比對用。
 
-    回傳分數刻意對齊舊版 ToFloat(DetectionResult) 的尺度（Yes=1 / Maybe=0.5 /
-    No,Unknown=0），跟 _face_engagement/_face_happiness 用的是同一套
-    _au_duchenne_smile/_looking_away_level/_au_mouth_active 判斷邏輯，
-    確保「校正基準」跟「正式判斷」用的是同一套門檻。
+    looking_away/mouth_moved 刻意對齊舊版 ToFloat(DetectionResult) 的尺度
+    （Yes=1 / Maybe=0.5 / No,Unknown=0），跟 _face_engagement 用同一套
+    _looking_away_level/_au_mouth_active 判斷邏輯，這兩個訊號不校正個人基準
+    （見專案文獻查證：這類動作/朝向訊號跟表情正負向是不同類別的問題，
+    沒有天生臉部紋路造成系統性偏差的疑慮）。
+
+    au_codes/au_values 是 AU_CALIBRATED_CODES（正向 AU06/AU12＋負向 6 個 AU）
+    這一幀各自的原始強度（未扣基準——這裡本身就是在收集基準，沒有基準可
+    扣），Unity 端逐一 AU 累積成 auBaselineCodes/auBaselineValues 平均值，
+    取代舊版單一 happy/frown 純量欄位（見 _au_baseline、_face_happiness 的
+    校正邏輯說明）。
     """
     image_bytes = await frame.read()
     face_result = await request.app.state.face_emotion_service.analyze_bytes(
@@ -781,17 +857,16 @@ async def face_calibration_sample(
         au = face_result.get("aus", {})
         pose = face_result.get("pose", {})
 
-    if _au_duchenne_smile(au):
-        happy = 1.0
-    elif _au_social_smile(au):
-        happy = 0.5
-    else:
-        happy = 0.0
-
     looking_away = {"yes": 1.0, "maybe": 0.5, "no": 0.0}[_looking_away_level(pose)]
     mouth_moved  = 1.0 if _au_mouth_active(au) else 0.0
+    au_values = [_au(au, code) for code in AU_CALIBRATED_CODES]
 
-    return {"happy": happy, "looking_away": looking_away, "mouth_moved": mouth_moved}
+    return {
+        "looking_away": looking_away,
+        "mouth_moved": mouth_moved,
+        "au_codes": list(AU_CALIBRATED_CODES),
+        "au_values": au_values,
+    }
 
 
 # ════════════ 端點 ════════════════════════════════════════════════════

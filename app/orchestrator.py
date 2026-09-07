@@ -329,6 +329,15 @@ def _strip_trailing_anchor_leak(text: str) -> str:
     return _TRAILING_ANCHOR_LEAK_RE.sub("", text).strip()
 
 
+# 「問題」欄偶爾會把「錨點」欄該有的引號習慣（見 _ANCHOR_FIELD_SPEC）滲透
+# 帶進來，只拔掉引號符號本身、保留裡面的內容。
+_LEAK_QUOTE_RE = re.compile(r"[「」『』]")
+
+
+def _strip_leaked_quotes(text: str) -> str:
+    return _LEAK_QUOTE_RE.sub("", text).strip()
+
+
 # 清洗後若整段變空（代表 LLM 那一行輸出「整句」都是洩漏出來的格式說明，不是真的
 # 在回答），退回這句通用、任何情境都安全的開放式問題，而不是把空字串送給長者。
 # 開放式、非是非題，適用任何上下文，符合 question_5w1h.txt 的規則。
@@ -2844,20 +2853,17 @@ class TherapyOrchestrator:
         last_sense_asked = state.get("last_sense_asked", "")
 
         # ── 補問路徑：先確認上一個 W 是否被回答 ─────────────────
+        # 跟下面 covered_senses 那段同一套邏輯：只要不是 quick_end 就算已回答。
         if last_type == "supplement_w" and last_w:
-            w_answered = await self._check_w_answered(elder_response, last_w)
-            print(f"  → W({last_w}) 是否被回答: {w_answered}")
-
-            if w_answered:
-                if last_w not in covered_w:
-                    covered_w.append(last_w)
-                # 繼續往下走偵測 W + 決定下一步
-            else:
+            if quick_end:
                 skipped_w.append(last_w)
                 return await self._next_step_or_end(
                     user, scene_els, covered_w, skipped_w, elder_response, state, emotion,
                     question_count, supplement_count, scene_composition=scene_comp,
                 )
+            if last_w not in covered_w:
+                covered_w.append(last_w)
+            print(f"  → W({last_w}) 視為已回答（追問+非quick_end），covered_w={covered_w}")
 
         # ── STEP2：自由對話中背景追蹤 W 覆蓋 ────────────────────
         if not quick_end:
@@ -3711,20 +3717,6 @@ class TherapyOrchestrator:
         raw = await self.llm.ask(prompt, temperature=0)
         senses = [s.strip() for s in raw.split("、")]
         return [s for s in senses if s in _SENSE_DESC]
-
-    async def _check_w_answered(self, elder_response: str, w_dimension: str) -> bool:
-        """判斷長者是否回答了指定的 W 維度問題。"""
-        desc = _W_DESC.get(w_dimension, w_dimension)
-        prompt = (
-            f"長者被問到一個關於「{desc}」的問題後，回答了：\n"
-            f"「{elder_response}」\n\n"
-            f"長者的回答是否有提到「{desc}」的相關資訊？\n"
-            "YES：有提到。\n"
-            "NO：沒有提到，或回應與問題無關。\n"
-            "只回 YES 或 NO，不要任何說明。"
-        )
-        raw = await self.llm.ask(prompt, temperature=0)
-        return raw.strip().upper().startswith("Y")
 
     async def _classify_question_dimension(self, question_text: str) -> str | None:
         """
@@ -4685,9 +4677,9 @@ class TherapyOrchestrator:
                 result["question"] = f"{result['question']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
-        result["question"] = _strip_leaked_brackets(
+        result["question"] = _strip_leaked_quotes(_strip_leaked_brackets(
             _strip_trailing_anchor_leak(_strip_trailing_covered_w_leak(result["question"]))
-        )
+        ))
         if not result["question"]:
             first_element = (scene_elements or [None])[0]
             result["question"] = f"{first_element}，讓你想到什麼？" if first_element else _FALLBACK_QUESTION
@@ -4975,9 +4967,9 @@ class TherapyOrchestrator:
                 result["question"] = f"{result['question']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
-        result["question"] = _strip_leaked_brackets(
+        result["question"] = _strip_leaked_quotes(_strip_leaked_brackets(
             _strip_trailing_anchor_leak(_strip_trailing_covered_w_leak(result["question"]))
-        )
+        ))
         if not result["question"]:
             first_element = (scene_elements or [None])[0]
             result["question"] = f"{first_element}，讓你想到什麼？" if first_element else _FALLBACK_QUESTION
@@ -5491,9 +5483,9 @@ class TherapyOrchestrator:
                 result["anchor"] = f"{result['anchor']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
-        result["question"] = _strip_leaked_brackets(
+        result["question"] = _strip_leaked_quotes(_strip_leaked_brackets(
             _strip_trailing_anchor_leak(_strip_trailing_covered_w_leak(result["question"]))
-        )
+        ))
         if not result["question"]:
             first_element = (scene_elements or [None])[0]
             print(f"[Orchestrator] ⚠ 問題欄位清洗後是空的（本地模型把格式範本原封不動echo回來），"
@@ -5542,9 +5534,9 @@ class TherapyOrchestrator:
                 thinking = f"{thinking} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
-        result["question"] = _strip_leaked_brackets(
+        result["question"] = _strip_leaked_quotes(_strip_leaked_brackets(
             _strip_trailing_anchor_leak(_strip_trailing_covered_w_leak(result["question"]))
-        )
+        ))
         if thinking:
             print(f"  → 思考: {thinking}")
         if not result["question"]:
