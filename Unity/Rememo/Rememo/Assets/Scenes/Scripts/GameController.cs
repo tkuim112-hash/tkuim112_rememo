@@ -831,13 +831,11 @@ public class GameController : MonoBehaviour
 
         if (resp.action == "end_session")
         {
-            PlayerPrefs.SetString("ClosingText", resp.scene_text ?? "");
             PlayerPrefs.SetString("ClosingThanks", resp.thanks_text ?? "");
             PlayerPrefs.SetString("ClosingQuestion", resp.question ?? "");
             // PlayerPrefs 沒有陣列型別，key 本身不含 '|'（都是英數字+底線的
             // audio_bank.py key 名稱），用它當分隔符安全串成一個字串，
             // ShareController 讀出來後用同一個字元切回陣列。
-            PlayerPrefs.SetString("ClosingSceneAudioKeys", JoinAudioKeys(resp.scene_audio_keys));
             PlayerPrefs.SetString("ClosingThanksAudioKeys", JoinAudioKeys(resp.thanks_audio_keys));
             PlayerPrefs.SetString("ClosingQuestionAudioKeys", JoinAudioKeys(resp.question_audio_keys));
             AuthSession.SessionId = sessionId;
@@ -938,12 +936,9 @@ public class GameController : MonoBehaviour
         public string image_path;
         public string scene_audio_path;
         public string scene_audio_key;
-        // scene_audio_keys／thanks_audio_keys／question_audio_keys：只有
-        // action=="end_session"（心得環節開場）才會有值，見
-        // app/services/closing_templates.py build_closing_invitation——
-        // 那三段固定句全部是前端內建預錄音檔，可能不只一個 key（例如
-        // 承接語＋系統整合肯定是兩句拼接，要接續播放兩個音檔）。
-        public string[] scene_audio_keys;
+        // thanks_audio_keys／question_audio_keys：只有 action=="end_session"
+        // （心得環節開場）才會有值，見 app/services/closing_templates.py
+        // build_closing_invitation——這兩段固定句是前端內建預錄音檔。
         public string thanks_text;
         public string[] thanks_audio_keys;
         public string question;

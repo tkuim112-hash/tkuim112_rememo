@@ -224,10 +224,6 @@ async def _append_session_topic(r, session_id: str, topic_category: str | None) 
     await r.expire(key, 86400)
 
 
-async def _get_session_topics(r, session_id: str) -> list[str]:
-    return await r.lrange(f"session:{session_id}:topics", 0, -1)
-
-
 async def _update_live_view(r, session_id: str, **fields) -> None:
     """把場景/長者回應/AI建議寫進 metrics hash，供治療師 live 頁每 2 秒 polling。"""
     try:
@@ -2103,22 +2099,16 @@ async def _finalize_elder_response(
                 await _update_live_view(r, state.session_id, current_round=4)
                 # 心得環節開場邀請語是純規則模板（見 app/services/closing_
                 # templates.py），orchestrator._end_action 對 end_session 只回
-                # 空字串，這裡才是真正填入內容的地方——topics 用這場療程三回合
-                # 實際分類到的16大主題（見 _append_session_topic）。收尾語呼應
-                # 長者剛才在回合3的回答（elder_response 就是那句），emotion
-                # 沿用這次respond一開始讀到的Kinect情緒。
-                topics = await _get_session_topics(r, state.session_id)
-                invitation = await build_closing_invitation(
-                    topics, elder_response, emotion, request.app.state.llm_service,
-                )
-                result["scene_text"] = invitation["scene_text"]
+                # 空字串，這裡才是真正填入內容的地方——固定是「感謝語＋問題」
+                # 兩段（2026-09-08起拿掉了原本呼應回合3回答的承接語，見
+                # closing_templates.py build_closing_invitation 說明）。
+                invitation = await build_closing_invitation()
                 result["thanks_text"] = invitation["thanks_text"]
                 result["question"] = invitation["question"]
                 # 心得環節的音檔全部是前端內建預錄音檔（見 audio_bank.py／
                 # closing_templates.py），不用即時TTS，直接把 key 列表帶過去
                 # 給前端；下面 1233 行那個 action=="end_session" 就跳過TTS的
-                # 分支維持不動，這裡是唯一填入這三個欄位的地方。
-                result["scene_audio_keys"] = invitation["scene_audio_keys"]
+                # 分支維持不動，這裡是唯一填入這兩個欄位的地方。
                 result["thanks_audio_keys"] = invitation["thanks_audio_keys"]
                 result["question_audio_keys"] = invitation["question_audio_keys"]
             if result.get("action") == "end_round" and state.round in (1, 2):
@@ -2165,9 +2155,10 @@ async def _finalize_elder_response(
             # /session/{id}/closing 處理，這裡只負責播音檔。
             next_qn = state.question_number + 1
             # 第二回合（自由追問）全程不合成語音，STT 仍照常。end_session 的
-            # scene_text/question 是 build_closing_invitation 補上的心得環節
+            # thanks_text/question 是 build_closing_invitation 補上的心得環節
             # 收尾語＋開場問題（見上面 action=="end_session" 分支），這一段
-            # 全部不需要語音，只當畫面上的文字。
+            # 全部不需要即時TTS，音檔走前端內建預錄檔（thanks_audio_keys／
+            # question_audio_keys），這裡只當畫面上的文字。
             if state.round != 2 and result.get("action") != "end_session":
                 tts = request.app.state.tts_service
                 if result.get("scene_text"):
