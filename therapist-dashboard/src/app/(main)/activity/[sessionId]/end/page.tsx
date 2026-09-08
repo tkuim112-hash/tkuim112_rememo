@@ -16,21 +16,6 @@ const CRITERIA = [
 
 const DEFAULT_SCORES = [2, 3, 2, 3, 3];
 
-// 持續力（row 2）跟互動頻率（row 4）有些分數背後其實是兩種完全不同的原因
-// 觸發（見 app/routers/session.py _score_persistence／_score_interaction），
-// CRITERIA 裡固定寫死的文字只能反映其中一種，這裡依後端回傳的 reason 覆蓋
-// 成正確的敘述；沒有對應 reason（例如舊資料、或治療師已經手動改過分數）
-// 就照舊顯示 CRITERIA 的預設文字。
-const REASON_LABELS: Record<number, Record<number, Record<string, string>>> = {
-  2: {
-    0: { left: "擅自離開", sad: "情緒極度低落" },
-    1: { sad: "情緒偏低落", distracted: "經常看向別處" },
-  },
-  4: {
-    1: { no_speech: "完全無語音回應", short_replies: "僅指令回應" },
-  },
-};
-
 
 export default function SessionEndPage({ params }: { params: Promise<{ sessionId: string }> }) {
  const { sessionId } = use(params);
@@ -43,8 +28,6 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const [sessionNumber, setSessionNumber] = useState<number | null>(null);
  const [sessionDate, setSessionDate] = useState("—");
  const [scores, setScores] = useState<number[]>(DEFAULT_SCORES);
- const [enduranceReason, setEnduranceReason] = useState<string | null>(null);
- const [interactionReason, setInteractionReason] = useState<string | null>(null);
  const [notes, setNotes] = useState("");
  const [isEditing, setIsEditing] = useState(false);
  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -69,8 +52,6 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
            s.scoreEmotion - 1,
            s.scoreInteraction - 1,
          ]);
-         setEnduranceReason(s.enduranceReason ?? null);
-         setInteractionReason(s.interactionReason ?? null);
        }
        if (s.caseId) {
          const c = await fetch(`/api/cases/${s.caseId}`).then((r) => r.json());
@@ -95,14 +76,8 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const total = scores.reduce((sum, s) => sum + (s + 1), 0);
  const maxScore = CRITERIA.length * 4;
 
- // 只有「目前選中的那一格」才套用 reason 覆蓋文字——其他格子只是還沒被
- // 選到的假設分數，沒有對應的觸發原因可以顯示，照舊用 CRITERIA 的預設文字。
  function cellLabel(rowIdx: number, colIdx: number): string {
-   const defaultLabel = CRITERIA[rowIdx].options[colIdx];
-   if (scores[rowIdx] !== colIdx) return defaultLabel;
-   const reason = rowIdx === 2 ? enduranceReason : rowIdx === 4 ? interactionReason : null;
-   if (!reason) return defaultLabel;
-   return REASON_LABELS[rowIdx]?.[colIdx]?.[reason] ?? defaultLabel;
+   return CRITERIA[rowIdx].options[colIdx];
  }
 
  function handleSelect(rowIdx: number, colIdx: number) {
