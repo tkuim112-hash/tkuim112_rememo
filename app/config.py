@@ -13,8 +13,11 @@ class Settings(BaseSettings):
     ollama_host: str = "http://ollama:11434"
     ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:q4_k_m"
     # 128k版模型的Modelfile預設num_ctx=131072，需要19.7GB記憶體，會讓Ollama
-    # OOM回500（踩過一次正式環境中斷）——換128k模型時務必同時把這個值調低
-    # （例如32768，實測安全）。
+    # OOM回500（踩過一次正式環境中斷）——換128k模型時務必同時把這個值調低。
+    # 2026-09-08實測：16GB顯卡上這個值超過~24576，模型就會被擠出GPU、部分
+    # 改用CPU算，單次生成從1.5-3.6秒拖慢到5-7秒；24576是目前prompt實際
+    # 用量（約14000 tokens）之上留足安全餘裕、又能維持整個模型留在GPU的
+    # 上限，調高前請先用 ollama ps 確認 PROCESSOR 欄位仍是 100% GPU。
     ollama_num_ctx: int = 8192
 
     # === STT (faster-whisper-server) ===

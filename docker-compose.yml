@@ -229,10 +229,16 @@ services:
     container_name: tku-care-face-service-1
     volumes:
       # py-feat 部分模型透過 huggingface_hub 下載，預設快取在 HF_HOME；掛 volume
-      # 避免每次重建容器都重下。注意：py-feat 也有一部分模型是存在套件安裝目錄
-      # 本身（不是使用者快取路徑），實際跑起來後如果發現還是每次重下，要另外
-      # 找到那個路徑再補一條 volume mount，這裡先掛最常見的 HF 快取位置。
+      # 避免每次重建容器都重下。
       - ./models/py_feat_cache:/root/.cache/huggingface
+      # 2026-09-08 稽核（實測發現臉部分析整段時間連不上，追下去發現容器一直在
+      # 重下模型）：py-feat 主要的模型權重（ResMaskNet／mobilenet0.25／
+      # img2pose／AU XGBoost 等，共 784MB）不是存在上面那個 HF 快取路徑，是
+      # 存在套件安裝目錄本身（site-packages/feat/resources），上面那條 volume
+      # 完全沒蓋到，導致每次容器重建/重啟這 784MB 就整包消失、下次啟動要重新
+      # 下載一次——網速不快時要 40~60 分鐘，這段期間 /sensor/emotion 的臉部
+      # 分析請求全部連線失敗，被當成「沒偵測到臉」，跟門檻/校正/距離都無關。
+      - ./models/py_feat_resources:/opt/conda/lib/python3.11/site-packages/feat/resources
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

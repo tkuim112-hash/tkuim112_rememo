@@ -228,7 +228,7 @@ public class ShareController : MonoBehaviour
     IEnumerator RequestReview(string text)
     {
         string sessionId = AuthSession.SessionId ?? "";
-        if (string.IsNullOrEmpty(sessionId)) { isPendingTherapistReview = false; OnSttFinal(); yield break; }
+        if (string.IsNullOrEmpty(sessionId)) { isPendingTherapistReview = false; hasRecordedOnce = true; OnSttFinal(); yield break; }
 
         byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new TextPayload { text = text }));
 
@@ -264,6 +264,7 @@ public class ShareController : MonoBehaviour
             inputText.text = displayedText;
             inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
             if (!isPaused && micButton != null) micButton.interactable = true;
+            hasRecordedOnce = true;
             OnSttFinal();
         }
     }
@@ -526,8 +527,11 @@ public class ShareController : MonoBehaviour
             }
             else
             {
-                // 沒說話：維持原本允許沉默直接送出空字串的行為，不需要治療師介入。
-                OnSttFinal();
+                // 沒說話（或 Kinect 收音太小聲被 VAD 判定成整段靜音）：提示長者再試
+                // 一次，並把 hasRecordedOnce 收回去鎖住送出鍵（見 RefreshSubmitButton），
+                // 強制長者重新錄音才能送出，不再允許直接送出空字串。
+                hasRecordedOnce = false;
+                OnSttFinal("請大聲一點再試一次");
             }
         }
     }
@@ -585,15 +589,15 @@ public class ShareController : MonoBehaviour
     IEnumerator SttTimeout()
     {
         yield return sttTimeoutWait;
+        hasRecordedOnce = true;
         OnSttFinal();
     }
 
-    void OnSttFinal()
+    void OnSttFinal(string message = "辨識完成，請按送出")
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        hasRecordedOnce = true;
-        inputText.text = "辨識完成，請按送出";
+        inputText.text = message;
         RefreshSubmitButton();
     }
 

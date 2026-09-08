@@ -1338,6 +1338,12 @@ async def session_metrics(
         if patient_id:
             await r.expire(f"patient:{patient_id}:active", _ACTIVE_HEARTBEAT_TTL)
 
+    # session_completed 要看明確的 completed 旗標（見 _compute_and_save_assessment
+    # 設定該旗標處的說明），不能用「meta 不存在」推斷——/session/start 設好
+    # requested 旗標後、_init_session_meta 真正寫入 meta 前還有一段 LLM/RAG/
+    # 生圖/TTS 生成時間，這段期間 meta 同樣不存在但療程根本還沒開始。
+    completed = bool(await r.exists(f"session:{session_id}:completed"))
+
     data: dict = await r.hgetall(f"session:{session_id}:metrics")
     try:
         suggestions = json.loads(data.get("ai_suggestions", "[]"))
@@ -1367,11 +1373,11 @@ async def session_metrics(
         # 跟上面已確認的 elder_response 分開存，確認前後兩者不會互相覆蓋。
         "review_status": data.get("review_status", ""),
         "elder_response_draft": data.get("elder_response_draft", ""),
-        # session:{id}:meta 只有在 _compute_and_save_assessment 算完評估分數、
-        # 療程真正結束時才會被清掉（見該函式），前端「活動觀察頁」還在 polling
-        # 的當下 meta 一定存在，一旦這裡變 false 就代表心得已經答完、評估算完了，
-        # 可以自動跳轉到結束頁面，不用等治療師自己按「結束活動」。
-        "session_completed": not meta_raw,
+        # completed 旗標只有在 _compute_and_save_assessment 算完評估分數、療程
+        # 真正結束時才會被設起來（見該函式），一旦這裡是 true 就代表心得已經
+        # 答完、評估算完了，可以自動跳轉到結束頁面，不用等治療師自己按
+        # 「結束活動」。
+        "session_completed": completed,
     }
 
 
@@ -1736,6 +1742,13 @@ async def _compute_and_save_assessment(
         )
         if meta.get("patient_id"):
             await r.delete(f"patient:{meta['patient_id']}:active")
+        # 療程真正結束的明確旗標，供 session_metrics 判斷 session_completed 用。
+        # 不能只靠「meta 不存在」推斷完成——/session/start 把 requested 旗標設好
+        # 之後、_init_session_meta 真正寫入 meta 之前還有一段 LLM/RAG/生圖/TTS
+        # 的生成時間，這段期間 meta 同樣不存在，若長者暖身動作做得比生成快，
+        # 治療師端一進活動頁就會被誤判成「已結束」直接跳去結束量表頁
+        # （2026-09-08 稽核：暖身進活動誤跳量表頁）。
+        await r.set(f"session:{session_id}:completed", "1", ex=3600)
     except Exception as e:
         print(f"[DB] 療程寫入失敗 ({session_id}): {e}")
         await db.rollback()
@@ -2208,7 +2221,9 @@ async def _finalize_elder_response(
                 result["audio_path"] = question_audio_path  # 向下相容
             await _update_live_view(
                 request.app.state.redis, state.session_id,
-                current_scene=result.get("scene_text", "") + result["question"],
+                # scene_text／thanks_text 互斥，兩者都要拼上去（thanks_text 只在
+                # end_session 才有值，見上面 build_closing_invitation 分支）。
+                current_scene=result.get("scene_text", "") + result.get("thanks_text", "") + result["question"],
                 ai_suggestions=[result["question"]],
                 # 同 session_start 的說明：這裡涵蓋回合內追問（Q2/Q3）跟心得
                 # 環節開場邀請語，只要是換題就要清掉上一題殘留的反應時間。

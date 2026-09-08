@@ -229,11 +229,11 @@ public class GameController : MonoBehaviour
         OnSttFinal();
     }
 
-    void OnSttFinal()
+    void OnSttFinal(string message = "辨識完成，請按送出")
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        inputText.text = "辨識完成，請按送出";
+        inputText.text = message;
         RefreshSubmitButton();
     }
 
@@ -462,9 +462,12 @@ public class GameController : MonoBehaviour
             }
             else
             {
-                // 沒辨識到任何文字（例如長者沒說話）：維持原本可直接送出空字串的行為，
-                // 不需要治療師介入。
-                OnSttFinal();
+                // 沒辨識到任何文字（例如長者沒說話，或 Kinect 收音太小聲被 VAD 判定成
+                // 整段靜音）：提示長者再試一次，並把 hasSpeechInput 收回去鎖住送出鍵
+                // （見 RefreshSubmitButton），強制長者重新錄音才能送出，不再允許直接
+                // 送出空字串。
+                hasSpeechInput = false;
+                OnSttFinal("請大聲一點再試一次");
             }
         }
     }

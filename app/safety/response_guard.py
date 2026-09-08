@@ -628,12 +628,19 @@ _BOOKISH_VC_RE = re.compile(r"做下來|說下去")
 # 完全不會讓人誤解的常用語，一併擋掉會誤傷正常講法。來源範例句已經同步改成
 # 「好熱鬧」（見 question_5w1h.txt 與下面 _KNOWN_PROMPT_EXAMPLES）。
 _HAOBU_RE = re.compile(r"好不熱鬧")
-# 2026-08-17稽核（實測後補）：closing.txt【收尾語規則】早就明文禁止「好了」
+# 2026-08-17稽核（實測後補）：closing.txt【收尾語生成流程】早就明文禁止「好了」
 # 「就先聊到這裡」「就到這邊」這類聽起來想結束對話、打發人的轉折語，但只有
 # prompt文字、從沒有對應的事後防護——這次實測抓到同一種毛病的變形：「不過
 # 現在時間不早了，我們也該回去了」，用「時間到了要送客」當藉口，一樣是趕人
 # 語氣，只是沒用到「好了」這幾個字，沒被口頭規則的具體例句涵蓋到。
 _RUSHING_CLOSING_RE = re.compile(r"時間不早|該回去了|該走了|該回家了")
+
+# question_5w1h.txt【禁止事項】禁止聊到與畫面無關的現代生活細節，但沒有
+# 對應的事後防護。只抓「今晚／今天晚上／今天早上／今天中午／昨天／明天」
+# 這類指向特定日曆日期的詞，不抓單獨的「今天」或「現在」——這兩個字在
+# 收尾語裡有合法用法（「謝謝你今天的分享」指今天這場療程；「現在想起
+# 那些精彩的料理時」是規則鼓勵的回想橋接句型），抓了會誤傷。
+_PRESENT_DAY_TIME_RE = re.compile(r"今晚|今天晚上|今天早上|今天中午|昨天|明天")
 
 # 2026-08-17稽核（實測後補）：長者看完AI示意圖、指出跟記憶不一樣（分類2/3，
 # 見 orchestrator.py _generate_image_reveal_reaction）時，實測案例承接語寫成
@@ -668,13 +675,14 @@ _TRIVIALIZE_DISCREPANCY_RE = re.compile(
 # question_only_retry_fn 機制（見該函式說明）靠這份清單判斷「這個違規原因
 # 是不是保證跟其他欄位無關」，安全地只重新生成 question、不用讓已經驗證過的
 # 承接語跟著陪葬重生。double_question/memory_test/precise_fact/image_
-# description/comparison_trap/vague_association 都跟 too_long 一樣只查 q
-# （見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
+# description/comparison_trap/vague_association/present_day_time_reference
+# 都跟 too_long 一樣只查 q（見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
 # scene_text+q 的 combined，不在此列——沒辦法排除是 scene_text 那邊的問題。
 _QUESTION_ONLY_FORMAT_RULES = frozenset({
     "too_long", "double_question", "memory_test", "precise_fact",
     "image_description", "comparison_trap", "vague_association",
     "sense_as_method", "confused_tone", "inanimate_subject_misread",
+    "present_day_time_reference",
 })
 
 _PRECISE_FACT_RE = re.compile(r"哪一?年|什麼時候|幾點|叫什麼|哪一?位")
@@ -930,6 +938,14 @@ def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] |
             "要送客的講法，聽起來像在趕長者走，跟「好了，就先聊到這裡」是同一種毛病。"
             "這次請拿掉跟時間有關的藉口，直接用「回到現在」的感受或問題自然銜接，"
             "不要暗示長者耽誤了時間、該被送走了。"
+        )
+    if _PRESENT_DAY_TIME_RE.search(q):
+        return "present_day_time_reference", (
+            f"上一次的問題「{q}」問的是「今晚／今天／昨天／明天」這種指向現實日曆"
+            "時間的具體事，長者這一輪聊的是「以前」「小時候」這種過去的回憶，這樣問"
+            "會把話題硬拉回現在或未來，跟懷舊治療要留在過去時空裡的原則矛盾。這次"
+            "請把時間詞改成「以前」「那時候」「那個時候」這類指向長者回憶裡那個"
+            "年代的講法，不要問長者今天/昨天/明天實際發生或會發生的事。"
         )
     if _TRIVIALIZE_DISCREPANCY_RE.search(combined):
         return "trivialize_discrepancy_wording", (

@@ -302,6 +302,23 @@ _LEAK_BRACKET_RE = re.compile(r"[（(][^）)]*[）)]")
 # 找不到對應閉括號的開括號（含開括號後面到結尾的殘餘文字）。
 _UNMATCHED_LEAK_BRACKET_RE = re.compile(r"[（(][^）)]*$")
 
+# 2026-09-08：本地模型偶爾會把「判斷依據：」「承接語：」這類欄位名自己
+# 多包一層全形方括號輸出成「【承接語】：」，即使prompt範例明明是不帶括號
+# 的裸欄位名——猜測是被同一份prompt裡到處都是的【眼前畫面元素】【任務】
+# 【輸出格式】這類段落標題格式帶偏，模仿了外層的方括號寫法。
+# _parse_image_reveal_response 逐行比對 line.startswith("承接語：") 這類
+# 裸欄位名，比對不到就整段視為解析失敗、退回保底句（見該函式呼叫處），
+# 明明LLM這次回得完全正確，卻因為多包一層括號被整句丟棄。這裡在逐行比對
+# 前先把「【欄位名】：」正規化成「欄位名：」，需求任兩者其中一種寫法
+# 都能命中，不需要每次多一種格式就再加一組 startswith 分支。
+_LEAKED_FIELD_LABEL_RE = re.compile(r"^【([^】]{1,20})】(?=[：:])")
+
+# 本地模型偶爾會把多步驟輸出寫成編號清單（「1. 判斷依據：」）或加項目符號
+# （「- 承接語：」），逐行比對 line.startswith("承接語：") 就完全比對不到、
+# 整段解析失敗退回保底句。跟上面 _LEAKED_FIELD_LABEL_RE 同一種處理方式：
+# 逐行比對前先把行首的編號／項目符號去掉。
+_LEAKED_LIST_MARKER_RE = re.compile(r"^(?:\d{1,2}[.\)、]|[-•*])\s*")
+
 # 本地弱模型偶爾會忘記在「問題：」那一行結尾換行，直接接著寫「本回合已
 # 涵蓋的W：...」，導致逐行解析（raw.splitlines()）時兩個欄位擠在同一行、
 # 沒有換行可以切開，後面那段整個被當成問題文字吞進去（例如變成「烤肉的
@@ -1669,17 +1686,18 @@ def _load_prompt(filename: str) -> str:
 
 def _load_prompt_modules(*filenames: str) -> str:
     """
-    從 app/prompts/modules/ 讀取多個 prompt 片段檔案，依序串接成一份
-    system_content——供只需要 question_5w1h.txt 一部分內容的呼叫端使用
-    （例如 _generate_image_reveal_reaction 只需要語氣人設跟禁止事項，
-    不需要 STEP1/STEP2/STEP3 的5步驟生成流程、提問規則、輸出格式跟範例，
-    那些是給「生成一個開放式問題」的任務用的，這支函式只生成一句承接語，
-    自己的任務/規則/格式全部寫在 user_content 裡，見該函式 docstring
-    2026-09-08 稽核說明：question_5w1h.txt 全文超過8000 token，逼近甚至
-    超過模型 num_ctx=8192 的上限，導致每次呼叫都可能發生前段內容被截斷，
-    不需要的內容不該白白佔用這個已經很緊繃的context budget）。
+    從 app/prompts/modules/ 依序讀取多個 prompt 片段檔案、串接成一份
+    system_content。每個片段都是從 question_5w1h.txt 原封不動切出來的，
+    不是重寫，也不新增內容。
 
-    每個片段檔案內容不變，原封不動從 question_5w1h.txt 切出來，不是重寫，
+    挑選片段給哪支函式用時要守兩條規則：
+    1. 只有真的會輸出「思考：」欄位的函式才帶 format_and_examples.txt——
+       這個模組裡的範例反覆示範「思考：／問題：／問題類型：」這組STEP1/2/3
+       專用格式，帶給不用這個格式的函式會把輸出帶偏。
+    2. 【提問規則】【禁止事項】【思考欄位／輸出格式／範例】要嘛整段一起載入，
+       要嘛都不載入，不要單獨抽走【禁止事項】跟別的片段接在一起——原始
+       檔案裡它刻意緊貼在「思考：」欄位之前，抽離會削弱約束力。
+
     找不到的檔案直接跳過（回傳空字串），不中斷其餘片段的組合。片段之間
     用空行隔開，避免上一個檔案的最後一行跟下一個檔案的第一行黏在一起。
     """
@@ -1793,7 +1811,7 @@ class TherapyOrchestrator:
         # 邏輯不變（撈3筆候選、依 round_number 挑一筆），只是呼叫時機提前。
         cached_rag_memories = await self._retrieve_candidate_memories(user, round_number)
 
-        category = await self._classify_topic_category(user["today_topic"])
+        category = await self._classify_topic_category(user)
         # topic_senses：見 _classify_topic_senses docstring 與
         # _SENSE_EXCLUDED_TOPIC_CATEGORIES 說明——哀傷之事／人生目標／生命
         # 中特殊的事件這三類刻意不給感官，硬性覆寫成空list，不交給分類器
@@ -3766,7 +3784,7 @@ class TherapyOrchestrator:
         print(f"  → 子項目分類: {result!r}（候選: {sub_items}）")
         return result
 
-    async def _classify_topic_category(self, today_topic: str) -> str | None:
+    async def _classify_topic_category(self, user: dict) -> str | None:
         """
         判斷 today_topic（治療師輸入的自由文字，例如「中秋節」「工廠上班的
         日子」）最接近懷舊治療16大主題分類（_TOPIC_CATEGORIES）裡的哪一類，
@@ -3785,7 +3803,21 @@ class TherapyOrchestrator:
         回傳值必須完全比對 _TOPIC_CATEGORIES 裡的16個名稱之一才算分類成功；
         LLM 輸出稍微跑題、多加說明文字等情況一律視為分類失敗回傳 None，
         呼叫端會直接退回用 Q1 的回答生圖，不勉強瞎猜分類、問錯方向的 Q2。
+
+        2026-09-08：today_topic 跟【興趣】欄位裡某個項目字面完全對得上時
+        （例如 preferences「做料理」、today_topic 直接沿用同一個字），不再
+        交給LLM猜——跟 _decide_scene_anchor 8/21 那次修正同一個道理，
+        temperature=0 只保證同樣輸入得到一致答案，不保證答案正確，實測
+        「做料理」這種字面上偏家庭情境的興趣項目，LLM 穩定猜成「家庭」，
+        生出跟長者實際興趣無關的破冰問句。這種字面精準命中的情況用程式
+        判斷直接鎖定「興趣」，不需要LLM介入判斷。
         """
+        today_topic = user["today_topic"]
+        if user.get("preferences"):
+            pref_items = [p.strip() for p in re.split(r"[、,，/\s]+", user["preferences"]) if p.strip()]
+            if any(item in today_topic or today_topic in item for item in pref_items):
+                return "興趣"
+
         options = "、".join(_TOPIC_CATEGORIES)
         prompt = (
             f"今日主題：「{today_topic}」\n\n"
@@ -4073,6 +4105,7 @@ class TherapyOrchestrator:
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("收尾語："):
                 result["closing_text"] = line[len("收尾語："):].strip()
                 current_field = "closing_text"
@@ -4151,6 +4184,7 @@ class TherapyOrchestrator:
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("情緒回應："):
                 result["emotional_text"] = line[len("情緒回應："):].strip()
                 current_field = "emotional_text"
@@ -4701,19 +4735,14 @@ class TherapyOrchestrator:
         記憶→畫面元素這條路徑達成（有驗證過、且元素本來就走模型訓練過的
         elements_str 格式），這裡不需要再重複做一次，故拿掉。
 
-        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
-        （超過8000 token，逼近model num_ctx=8192上限，見 _generate_image_
-        reveal_reaction 那次稽核發現的context截斷問題）。這支函式只生成
-        STEP1開場問題，用不到【STEP2自由追問／STEP3補問：生成流程】那段
-        （105-144行，STEP2/3專用），改成只組合真正用得到的片段——角色人設、
-        16大主題、STEP1五步驟流程、提問規則庫、禁止事項、思考欄位格式、
-        輸出格式、範例，原文字句不變，只是不夾帶STEP2/3專用的那一段。
+        system_content 只組合 STEP1 用得到的片段（不含 STEP2/3流程），
+        見 _load_prompt_modules 說明。這支函式輸出「思考：」欄位，所以要
+        帶上 format_and_examples.txt。
         """
         system_content = _load_prompt_modules(
-            "role_and_prohibitions.txt",
-            "topics_and_format.txt",
-            "step1_process.txt",
-            "question_rules_and_examples.txt",
+            "role_and_topics.txt", "step1_flow.txt",
+            "question_wording_rules.txt", "prohibitions.txt",
+            "format_and_examples.txt",
         ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
@@ -4781,6 +4810,7 @@ class TherapyOrchestrator:
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("問題："):
                 result["question"] = line[len("問題："):].strip()
                 current_field = "question"
@@ -4859,30 +4889,20 @@ class TherapyOrchestrator:
         反應本身是在評論AI示意圖畫得準不準，不是回憶敘述，不拿去跑
         _detect_covered_w，避免讓5W1H追蹤失真。
 
-        system_content 跟 _generate_supplement_question（STEP3）一樣載入
-        整份 question_5w1h.txt，任務細節（反應分類）放在 user_content 的
-        【任務】欄位覆蓋——檔案描述的是STEP1/STEP2/STEP3格式，跟這裡實際
-        產出格式不完全一樣沒關係，user_content 自己的【輸出格式】會蓋過去。
+        system_content 只組合 role_only.txt＋prohibitions.txt（角色守則＋
+        禁止事項），不含STEP1/STEP2/STEP3流程、提問規則庫或思考欄位／
+        範例，見 _load_prompt_modules 說明。這支函式輸出的是「判斷依據／
+        分類／承接語」，不是「思考／問題」，帶上STEP1/2/3的思考欄位／範例
+        反而會把輸出格式帶偏，任務細節放在 user_content 的【任務】欄位
+        定義，那裡的【輸出格式】才是唯一的格式依據。
 
         emotion: Kinect 即時偵測的情緒（見 process_response 同名參數），
             讓分類措辭也能參考長者當下情緒，跟STEP1/STEP2/STEP3/收尾語
             一致都會注入 _emotion_guidance()。
         retry_feedback: 見 _generate_question 的同名參數說明。
-
-        2026-09-08稽核：system_content 原本跟 STEP1/2/3 共用整份
-        question_5w1h.txt（超過8000 token，逼近model num_ctx=8192上限，
-        會排擠掉這次呼叫真正需要的user_content，見_ema_classify旁那次
-        稽核發現的context截斷問題）——但這支函式的任務（3分類+承接語）
-        完全自成一套規則、範例、輸出格式，全部寫在下面的user_content裡，
-        不需要STEP1/STEP2/STEP3的5步驟生成流程、【提問規則】問句措辭
-        規則庫、或那三步驟的輸出格式範例（這些是「生成一個開放式問題」
-        專用的，這支函式不生成問題，STEP1問題由另一支_regenerate_image_
-        reveal_question負責，那支才需要完整檔案）。改成只載入語氣人設跟
-        禁止事項合併後的 role_and_prohibitions.txt 這一個真正用得到的
-        片段，原文字句不變，只是不夾帶用不到的四百多行。
         """
         system_content = _load_prompt_modules(
-            "role_and_prohibitions.txt",
+            "role_only.txt", "prohibitions.txt",
         ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
@@ -4972,11 +4992,13 @@ class TherapyOrchestrator:
             f"分類：2\n"
             f"承接語：這張圖確實沒辦法把每個細節都畫得剛剛好，你記得的畫面"
             f"一定比圖裡的還要豐富。\n"
-            f"範例2（長者反應：「阿嬤以前常在灶前聽收音機，看到這個我好"
-            f"想她」）\n"
-            f"判斷依據：長者提到已故的阿嬤，語氣裡有明顯的想念與情緒。\n"
+            f"範例2（長者反應：「看到這個，我心裡酸酸的，好多事情都想起"
+            f"來了」）\n"
+            f"判斷依據：長者用「心裡酸酸的」「好多事情都想起來」表達明顯"
+            f"被觸動的情緒。\n"
             f"分類：3\n"
-            f"承接語：聽你這樣說，感覺阿嬤陪你的那些時光都還在心裡。\n"
+            f"承接語：這些回憶對你來說真的很珍貴，謝謝你願意讓我看到這一"
+            f"面。\n"
             f"（以上2句分類例句跟上面2個範例的所有內容——判斷依據、承接語——"
             f"都只是示範語氣跟格式用，情境也跟這次任務無關，不是可以"
             f"直接照抄的答案。這次的判斷依據、承接語必須根據長者這次"
@@ -5034,22 +5056,16 @@ class TherapyOrchestrator:
         reaction 相同的一組參數，方便維護），但這支函式的 user_content
         故意不使用它——這是刻意設計，不是疏漏。
 
-        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
-        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
-        這支函式的【任務】用的是 _STEP1_OPEN_DIRECTION_HINT，內容是
-        「依【STEP2自由追問／STEP3補問：生成流程】的選角度、選錨點方式
-        生成」——實際套用的是STEP2/3那套流程，不是STEP1的5步驟流程；
-        輸出格式也只有「問題／本回合已涵蓋的W」兩行，沒有「思考：」欄位，
-        不需要16大主題分類（沒有主題判斷這個步驟）、STEP1流程、思考欄位
-        格式規則、也不需要共用的【輸出格式】說明（那段講的是含思考欄位的
-        STEP1/STEP2/STEP3格式，跟這支函式實際只要兩行的格式不同，留著
-        反而可能誤導模型多寫欄位）。改成只組合角色人設、STEP2/3生成流程、
-        提問規則庫、禁止事項、範例這五塊，原文字句不變。
+        套用的是STEP2/3流程的「先選角度、後選錨點」邏輯，不是STEP1。
+        system_content 組合：角色守則、STEP2/3流程（借用其選角度/錨點的
+        推理過程）、提問規則庫（這支函式要輸出「問題：」）、禁止事項——
+        不含16大主題（不輸出主題判斷），也不含 format_and_examples.txt
+        （這支函式的【輸出格式】只有「問題／錨點／本回合已涵蓋的W」，
+        沒有「思考：」，帶那個模組會把輸出格式帶偏）。
         """
         system_content = _load_prompt_modules(
-            "role_and_prohibitions.txt",
-            "step23_process.txt",
-            "question_rules_and_examples.txt",
+            "role_only.txt", "step23_flow.txt",
+            "question_wording_rules.txt", "prohibitions.txt",
         ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
@@ -5079,6 +5095,7 @@ class TherapyOrchestrator:
             f"\n【輸出格式】\n"
             f"問題：（≤25字，開放式，開頭要有具體錨點，畫面物件或長者生圖前分享的"
             f"內容皆可）\n"
+            f"{_ANCHOR_FIELD_SPEC}\n"
             f"本回合已涵蓋的W：（只能填 Where／Who／What／When／How／Why 這6個"
             f"W維度名稱本身，不要自創其他詞彙、不要加括號說明）"
         )
@@ -5093,16 +5110,28 @@ class TherapyOrchestrator:
     def _parse_question_only_response(
         self, raw: str, scene_elements: list[str] | None = None,
     ) -> dict:
-        """解析 _regenerate_image_reveal_question 的輸出（問題＋涵蓋的W，沒有承接語欄位）。"""
-        result: dict = {"question": "", "covered_w": []}
+        """解析 _regenerate_image_reveal_question 的輸出（問題＋錨點＋涵蓋的W，
+        沒有承接語欄位）。
+
+        2026-09-08：補上「錨點：」欄位解析——這支函式原本沒有要求LLM輸出
+        _ANCHOR_FIELD_SPEC，讓 response_guard.py 的 question_anchor_
+        unsupported 防編造檢查對這條路徑形同虛設（result.get("anchor","")
+        永遠拿到空字串，guard直接放行），實測出現過長者只講過籠統的「東西」，
+        問題卻無中生有具體化成「這道家常菜」也沒被攔下來。現在補上跟
+        STEP2/STEP3同一套 _ANCHOR_FIELD_SPEC，接上既有防護機制。"""
+        result: dict = {"question": "", "covered_w": [], "anchor": ""}
         current_field: str | None = None
         for line in raw.splitlines():
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("問題："):
                 result["question"] = line[len("問題："):].strip()
                 current_field = "question"
+            elif line.startswith("錨點："):
+                result["anchor"] = line[len("錨點："):].strip()
+                current_field = "anchor"
             elif line.startswith("本回合已涵蓋的W："):
                 w_raw = _strip_leaked_brackets(line[len("本回合已涵蓋的W："):].strip())
                 result["covered_w"] = [
@@ -5120,6 +5149,8 @@ class TherapyOrchestrator:
                 current_field = None
             elif current_field == "question":
                 result["question"] = f"{result['question']} {line}".strip()
+            elif current_field == "anchor":
+                result["anchor"] = f"{result['anchor']} {line}".strip()
         if not result["question"]:
             result["question"] = raw.strip()
         result["question"] = _strip_leaked_quotes(_strip_leaked_brackets(
@@ -5164,19 +5195,13 @@ class TherapyOrchestrator:
         輸出格式跟 _generate_image_reveal_reaction 相同（承接語／問題／
         本回合已涵蓋的W），沿用同一支 parser；【任務】套用的是【STEP2自由
         追問／STEP3補問：生成流程】的「先選角度、後選錨點」邏輯，不是
-        STEP1流程。
-
-        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
-        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
-        跟 _regenerate_image_reveal_question 同一個道理——這支函式套用的
-        是STEP2/3流程，輸出格式沒有「思考：」欄位，不需要16大主題分類、
-        STEP1流程、思考欄位格式規則、共用的【輸出格式】說明，只需要角色
-        人設、STEP2/3生成流程、提問規則庫、禁止事項、範例，原文字句不變。
+        STEP1流程。system_content 組合跟 _regenerate_image_reveal_question
+        同一套邏輯：不含16大主題、不含 format_and_examples.txt（這支函式
+        沒有「思考：」欄位，帶那個模組會把輸出格式帶偏）。
         """
         system_content = _load_prompt_modules(
-            "role_and_prohibitions.txt",
-            "step23_process.txt",
-            "question_rules_and_examples.txt",
+            "role_only.txt", "step23_flow.txt",
+            "question_wording_rules.txt", "prohibitions.txt",
         ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
@@ -5265,6 +5290,8 @@ class TherapyOrchestrator:
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_FIELD_LABEL_RE.sub(r"\1", line)
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("判斷依據："):
                 result["judgment_evidence"] = line[len("判斷依據："):].strip()
                 current_field = "judgment_evidence"
@@ -5360,18 +5387,13 @@ class TherapyOrchestrator:
         剛才這一句）當生成材料；後續嘗試的生成後核對＋重打機制也一併移除，
         回到「生成一次就直接用」。
 
-        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
-        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
-        這支函式輸出格式要求「思考：（主題判斷；切入角度）」，需要16大
-        主題分類；【任務】套用的是【STEP2自由追問／STEP3補問：生成流程】，
-        不需要STEP1流程那一段。改成只組合用得到的片段，原文字句不變。
+        這是 STEP2，system_content 只組合STEP2/3用得到的片段（含
+        format_and_examples.txt，這支函式要輸出「思考：」欄位）。
         """
         system_content = _load_prompt_modules(
-            "role_and_prohibitions.txt",
-            "topics_and_format.txt",
-            "step23_process.txt",
-            "question_rules_and_examples.txt",
-            "examples_step2.txt",
+            "role_and_topics.txt", "step23_flow.txt",
+            "question_wording_rules.txt", "prohibitions.txt",
+            "format_and_examples.txt",
         ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
@@ -5503,19 +5525,13 @@ class TherapyOrchestrator:
         階段用旁白語氣描述長者、問題又沿用同樣的人稱與語氣（事後防護見
         response_guard.py 的 third_person_elder_wording）。
 
-        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
-        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
-        這支函式輸出格式要求「思考：」（含主題判斷）、「問題類型：STEP3
-        補問」，需要16大主題分類；【任務】套用的是【STEP2自由追問／STEP3
-        補問：生成流程】，不需要STEP1流程那一段。改成只組合用得到的
-        片段，原文字句不變。
+        這是 STEP3，system_content 只組合STEP2/3用得到的片段（含
+        format_and_examples.txt，這支函式要輸出「思考：」欄位）。
         """
         system_content = _load_prompt_modules(
-            "role_and_prohibitions.txt",
-            "topics_and_format.txt",
-            "step23_process.txt",
-            "question_rules_and_examples.txt",
-            "examples_step3.txt",
+            "role_and_topics.txt", "step23_flow.txt",
+            "question_wording_rules.txt", "prohibitions.txt",
+            "format_and_examples.txt",
         ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
@@ -5639,6 +5655,7 @@ class TherapyOrchestrator:
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("思考："):
                 # CoT 草稿行：question_5w1h.txt 的【思考欄位】規則要求模型先在這裡
                 # 判斷主題方向、選錨點，再輸出正式內容。這行故意不進 result、不會
@@ -5698,6 +5715,7 @@ class TherapyOrchestrator:
             line = line.strip()
             if not line:
                 continue
+            line = _LEAKED_LIST_MARKER_RE.sub("", line)
             if line.startswith("思考："):
                 # 同 _parse_question_response：CoT草稿行，不會念給長者聽，只印出來
                 # 方便觀察模型的選題邏輯。
