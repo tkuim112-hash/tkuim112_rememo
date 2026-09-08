@@ -957,6 +957,15 @@ async def receive_sensor(
         if face_detected:
             au = face_result.get("aus", {})
             pose = face_result.get("pose", {})
+            # 暫時稽核用 log（查微笑 AU06/AU12 完全沒被偵測到的問題，驗證完
+            # 就移除）：印出原始強度、個人基準、扣完基準後的值，方便對照
+            # AU_PRESENT_MIN=0.5 這條線到底過不過得了。
+            print(
+                f"[AU-DEBUG] session={body.session_id} "
+                f"AU06 raw={_au(au, 'AU06'):.3f} baseline={_au_baseline(calib, 'AU06'):.3f} c={_au_c(au, 'AU06', calib):.3f} | "
+                f"AU12 raw={_au(au, 'AU12'):.3f} baseline={_au_baseline(calib, 'AU12'):.3f} c={_au_c(au, 'AU12', calib):.3f} | "
+                f"duchenne={_au_duchenne_smile(au, calib)} social={_au_social_smile(au, calib)}"
+            )
 
     emotion_raw, eng, hap, agi = await _ema_classify(r, body.session_id, body, au, pose, calib)
     signals = _reasoning_signals(body, au, pose, calib, face_detected)

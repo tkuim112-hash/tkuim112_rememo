@@ -19,6 +19,15 @@ public class KinectAudioSender : MonoBehaviour
     /// <summary>音高變異（Hz²，B 階段）。靜音或尚無足夠歷史時為 0。</summary>
     public float CurrentPitchVariance { get; private set; } = 0f;
 
+    // 2026-09-08 稽核（實測心得回合沒收到語音）：KinectSensorSender 每 2 秒
+    // 才送一次 audio_rms 給後端判斷 speaker_speaking，如果直接送當下那一瞬間
+    // 的 CurrentAudioRms，長者講得快（尤其等很久才回一句很短的答案）很容易
+    // 整句話都講完了、EMA 又衰減回底噪，剛好卡在兩次送出的中間，snapshot
+    // 抓到的當下音量已經掉回去了——跟 UpdatePitch() 靠持續累積 15 筆歷史、
+    // 不受單一瞬間快照影響是同一個問題的兩種呈現。改成記錄「自上次送出以來
+    // 看過的最大值」，讓這 2 秒內只要有講話就會被抓到，不只看送出那一瞬間。
+    private float _peakAudioRms = 0f;
+
     private WebSocket wsStt;
 
     // 斷線重連（見 ConnectWebSocket 內的 OnClose/OnError）：治療師的暫停/跳過/重播/
@@ -94,6 +103,20 @@ public class KinectAudioSender : MonoBehaviour
         wsStt.OnClose   += (s, e) => { Debug.Log("[STT WS Kinect] 已關閉"); if (!isQuitting) needsReconnect = true; };
         wsStt.OnMessage += (s, e) => { if (e.IsText) OnSttMessage?.Invoke(e.Data); };
         wsStt.ConnectAsync();
+    }
+
+    /// <summary>
+    /// KinectSensorSender 每 sendInterval（2秒）呼叫一次，取「這段時間內看過
+    /// 的最大音量」送給後端判斷 speaker_speaking，取代直接送當下那一瞬間的
+    /// CurrentAudioRms（見 _peakAudioRms 宣告處的說明）。重置成目前值而不是
+    /// 0，是因為講話可能剛好橫跨這次呼叫的當下還沒停，歸零的話下一輪的峰值
+    /// 會從 0 開始爬，等於把還在進行中的這段語音音量憑空砍掉一截。
+    /// </summary>
+    public float ConsumePeakAudioRms()
+    {
+        float peak = _peakAudioRms;
+        _peakAudioRms = CurrentAudioRms;
+        return peak;
     }
 
     // ── 公開 API，讓 MicController 在按下/放開麥克風時呼叫 ──
@@ -208,6 +231,7 @@ public class KinectAudioSender : MonoBehaviour
                 subFrame.CopyFrameDataToArray(floatBuffer);
 
                 CurrentAudioRms = Mathf.Lerp(CurrentAudioRms, ComputeRms(floatBuffer), 0.4f);
+                if (CurrentAudioRms > _peakAudioRms) _peakAudioRms = CurrentAudioRms;
 
                 // B 階段：音高偵測樣本累積
                 int sCount = (int)(frameBytes / 4);
