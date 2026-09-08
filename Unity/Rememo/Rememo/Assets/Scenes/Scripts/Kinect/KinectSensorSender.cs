@@ -237,7 +237,10 @@ public class KinectSensorSender : MonoBehaviour
         // 計時/停表在 OnMicPressed()，算好當下就直接呼叫 PostResponseTime()
         // 送出（見該方法說明），不再靠這支週期性 payload 夾帶，所以這裡
         // response_time_ms 固定填 -1，後端收到會直接略過。
-        float audioRms = audioSender != null ? audioSender.CurrentAudioRms : 0f;
+        // 2026-09-08 稽核：改送「上次送出以來看過的最大音量」而非當下瞬間值，
+        // 避免長者講得快、EMA 已經衰減回底噪，剛好卡在兩次送出中間漏抓，
+        // 見 KinectAudioSender.ConsumePeakAudioRms 說明。
+        float audioRms = audioSender != null ? audioSender.ConsumePeakAudioRms() : 0f;
 
         // ── 骨架量測（純算術，不做分類）────────────────────────────
         float headDrop        = userId != 0 ? MeasureHeadDrop(userId)             : -999f;

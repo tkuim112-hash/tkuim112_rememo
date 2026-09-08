@@ -55,7 +55,10 @@ class LLMService:
                 "messages": messages,
                 "stream": False,
                 "options": {
-                    "temperature": TEMPERATURE if temperature is None else temperature
+                    "temperature": TEMPERATURE if temperature is None else temperature,
+                    # 明確指定，不吃模型Modelfile自己的預設值（見 config.py
+                    # ollama_num_ctx 註解）
+                    "num_ctx": settings.ollama_num_ctx,
                 },
             },
         )

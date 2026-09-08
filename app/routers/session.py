@@ -2074,6 +2074,21 @@ async def _finalize_elder_response(
                 db, r, state.session_id, state.round,
                 patient_id=_to_int(state.user_id), therapist_id=therapist_id,
             )
+            # 2026-09-08 稽核：上面三支 _finalize_round_* 結算完當下就把
+            # Redis 的回合桶子清掉，但 current_round 原本要等前端另外呼叫
+            # /session/round 才會推進到下一回合——中間這段生圖/TTS的空窗期
+            # （可能長達數秒），Unity 照常送來的感測幀讀到的 current_round
+            # 還是剛結束的舊值，會在已結算的桶子裡重新開一個「幽靈」桶子，
+            # 這幾幀資料最後不會被任何回合採計到（實測 session 1162 round1
+            # 出現：結算前 80 幀正常寫進 DB，結算後又冒出幾幀從頭計數，
+            # 從沒再被結算過）。這裡結算完就立刻把 current_round 推進，
+            # 讓「結算」跟「回合切換」在同一個請求裡完成，不留空窗期；
+            # /session/round 稍後還是會再寫一次同樣的值，冪等、不衝突。
+            if result.get("action") == "end_round":
+                await _update_live_view(
+                    r, state.session_id,
+                    current_round=state.round + 1,
+                )
             if result.get("action") == "end_session":
                 # 三回合正常跑完、準備轉場到 ShareScene 問心得——GameController 的
                 # /ws/stt 連線會在轉場時斷線（ShareController 開的是另一條沒帶

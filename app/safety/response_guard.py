@@ -674,7 +674,7 @@ _TRIVIALIZE_DISCREPANCY_RE = re.compile(
 _QUESTION_ONLY_FORMAT_RULES = frozenset({
     "too_long", "double_question", "memory_test", "precise_fact",
     "image_description", "comparison_trap", "vague_association",
-    "sense_as_method", "confused_tone",
+    "sense_as_method", "confused_tone", "inanimate_subject_misread",
 })
 
 _PRECISE_FACT_RE = re.compile(r"哪一?年|什麼時候|幾點|叫什麼|哪一?位")
@@ -751,6 +751,25 @@ _SENSE_METHOD_EXAMPLES = (
 # 上（例如「那個時候的舊式爐灶是怎麼回事？」）會顯得像在質問，不像老朋友
 # 聊天，跟其他「用詞規則」（您/長者/先/咱們等）同一類問題，補上同一套防護。
 _CONFUSED_TONE_RE = re.compile(r"是怎麼回事|怎麼一回事")
+
+# 「工具/地點被誤讀成動詞的主詞」，例如「鐮刀收工前」——鐮刀不會收工。
+# 用已知工具/地點名詞當白名單，不籠統比對「名詞後面接這幾個動詞」：中文
+# 「動詞＋受詞」活動短語（例如「耙鹽收工前」，耙鹽＝工作本身）緊接收工/
+# 下田完全合理，只看動詞前有沒有人稱代名詞會誤傷這種合法用法。
+_INANIMATE_SUBJECT_NOUNS = ("長耙", "鐮刀", "鋤頭", "大石頭", "石頭", "扁擔")
+_INANIMATE_SUBJECT_VERBS = r"收工|下田|出門|跳(?:下去)?|走|爬"
+_INANIMATE_SUBJECT_RE = re.compile(
+    r"(?:" + "|".join(_INANIMATE_SUBJECT_NOUNS) + r")(?:" + _INANIMATE_SUBJECT_VERBS + r")"
+)
+
+
+def has_inanimate_subject_misread(text: str) -> bool:
+    """True 代表問題把工具/地點類名詞直接接在只有人才做得到的動詞前面
+    （例如「鐮刀收工前」——鐮刀不會收工），把工具/地點誤讀成動詞的主詞，
+    需要重新生成。"""
+    if not text:
+        return False
+    return bool(_INANIMATE_SUBJECT_RE.search(text))
 
 # 「您」：question_5w1h.txt 明文規定「稱呼長者一律用「你」...不要用「您」——
 # 「您」念起來太正式，會破壞老朋友聊天的溫暖感」，但這條規則之前也只有口頭
@@ -845,6 +864,15 @@ def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] |
             "「發生了什麼意外／異常狀況」才會用的語氣，拿來問單純懷舊的舊物件、"
             "舊生活方式會顯得像在質問，不像老朋友聊天。這次請改用「是什麼樣子的"
             "呢」「是什麼樣的情形呢」這類自然問法，不要用「怎麼回事」。"
+        )
+
+    if has_inanimate_subject_misread(q):
+        return "inanimate_subject_misread", (
+            f"上一次的問題「{q}」把工具或地點類名詞直接接在只有人才做得到的動詞"
+            "前面（例如「鐮刀收工前」——鐮刀不會自己收工，「大石頭跳下去前」——"
+            "大石頭不會自己跳），把工具/地點誤讀成動詞的主詞了。這次請把「你」"
+            "或「你們」放回動作真正的主詞位置（例如改問「耙鹽收工前，你都會做"
+            "什麼？」），不要讓物件或地點變成動詞的執行者。"
         )
 
     if _NIN_RE.search(combined):

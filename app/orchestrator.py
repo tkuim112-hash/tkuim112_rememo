@@ -1667,6 +1667,26 @@ def _load_prompt(filename: str) -> str:
     return ""
 
 
+def _load_prompt_modules(*filenames: str) -> str:
+    """
+    從 app/prompts/modules/ 讀取多個 prompt 片段檔案，依序串接成一份
+    system_content——供只需要 question_5w1h.txt 一部分內容的呼叫端使用
+    （例如 _generate_image_reveal_reaction 只需要語氣人設跟禁止事項，
+    不需要 STEP1/STEP2/STEP3 的5步驟生成流程、提問規則、輸出格式跟範例，
+    那些是給「生成一個開放式問題」的任務用的，這支函式只生成一句承接語，
+    自己的任務/規則/格式全部寫在 user_content 裡，見該函式 docstring
+    2026-09-08 稽核說明：question_5w1h.txt 全文超過8000 token，逼近甚至
+    超過模型 num_ctx=8192 的上限，導致每次呼叫都可能發生前段內容被截斷，
+    不需要的內容不該白白佔用這個已經很緊繃的context budget）。
+
+    每個片段檔案內容不變，原封不動從 question_5w1h.txt 切出來，不是重寫，
+    找不到的檔案直接跳過（回傳空字串），不中斷其餘片段的組合。片段之間
+    用空行隔開，避免上一個檔案的最後一行跟下一個檔案的第一行黏在一起。
+    """
+    parts = [_load_prompt(f"modules/{name}") for name in filenames]
+    return "\n\n".join(p for p in parts if p)
+
+
 class TherapyOrchestrator:
     """指揮所有 service，實作懷舊療法完整狀態機。"""
 
@@ -2382,6 +2402,45 @@ class TherapyOrchestrator:
                 "明顯情緒字眼，寫出具體的判斷依據（看不出明確線索就老實"
                 "寫「反應內容簡短，看不出明確線索」），再根據這個依據決定"
                 "分類與承接語。"
+            )
+            result = await guarded_generate(
+                self._generate_image_reveal_reaction,
+                taboo_words=user["taboos"],
+                llm_service=self.llm,
+                max_retry=3,
+                text_keys=("reaction_text",),
+                fallback={"reaction_text": ""},
+                user=user, scene_elements=scene_els, elder_response=elder_response,
+                scene_composition=scene_comp, covered_w=covered_w,
+                pre_image_detail=pre_image_detail, emotion=emotion,
+                retry_feedback=retry_feedback,
+            )
+            print(f"  → 重打後：出示圖片反應分類: {result.get('classification', '')!r}"
+                  f"（依據: {result.get('judgment_evidence', '')!r}）")
+        # 另一種失效模式：判斷依據不是空的，模型是真的針對這句話寫了理由，
+        # 但理由本身誤用了prompt自己教的規則——prompt明講「單純正面、沒有
+        # 提到任何具體差異，不能因為長者沒有明確說『像』或『一致』就判成
+        # 分類2」，這裡剛好相反：長者明確用了「像/很像/差不多」這類肯定詞，
+        # 判斷依據卻寫「只籠統說像，沒有具體講出哪裡相似」，把「沒講細節」
+        # 當成分類2的理由（2026-09-08稽核第二次：同一句「很像當時的氛圍」，
+        # 這次判斷依據不是空的，上面那條「空白才重打」的檢查攔不住，只能
+        # 另外用關鍵字複查：長者這句話裡如果有肯定/相似詞、且沒有否定詞
+        # 或比較級差異詞，分類卻是2，大機率是這種誤用規則的情況）。
+        _positive_match = re.search(r"(?<!不)(?:很像|蠻像|滿像|差不多|一致|沒錯|就是這樣|像)", elder_response)
+        _comparative_diff = re.search(r"更(?:大|小|多|少|高|矮|快|慢)|比較(?:大|小|高|矮|多|少)|沒有那麼", elder_response)
+        if result.get("classification") == "2" and _positive_match and not _comparative_diff:
+            print(f"  → 出示圖片反應分類疑似誤判(長者反應含肯定/相似詞、"
+                  f"無比較級差異詞，卻判成分類2)，帶 retry_feedback 重打一次: "
+                  f"{elder_response!r}")
+            retry_feedback = (
+                f"長者這句反應「{elder_response}」裡有明確的肯定/相似詞"
+                "（像/很像/蠻像/滿像/差不多），且沒有出現「不像/不一樣」這類"
+                "否定詞、也沒有「更大/更小/比較高/比較矮/沒有那麼X」這類比較"
+                "級差異詞，這種情況依規則屬於分類1（覺得圖跟自己記得的一致），"
+                "不能因為長者沒有具體講出「哪裡」相似，就當成分類2的理由——"
+                "分類2成立的前提是反應裡真的有差異/落差的訊號，單純的肯定詞"
+                "本身不構成差異訊號。請改判分類1，用溫暖肯定的語氣呼應這份"
+                "正面評價。"
             )
             result = await guarded_generate(
                 self._generate_image_reveal_reaction,
@@ -4641,8 +4700,21 @@ class TherapyOrchestrator:
         訓練資料，train/serve本來就不對齊。個人化已經由 _plan_image 的
         記憶→畫面元素這條路徑達成（有驗證過、且元素本來就走模型訓練過的
         elements_str 格式），這裡不需要再重複做一次，故拿掉。
+
+        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
+        （超過8000 token，逼近model num_ctx=8192上限，見 _generate_image_
+        reveal_reaction 那次稽核發現的context截斷問題）。這支函式只生成
+        STEP1開場問題，用不到【STEP2自由追問／STEP3補問：生成流程】那段
+        （105-144行，STEP2/3專用），改成只組合真正用得到的片段——角色人設、
+        16大主題、STEP1五步驟流程、提問規則庫、禁止事項、思考欄位格式、
+        輸出格式、範例，原文字句不變，只是不夾帶STEP2/3專用的那一段。
         """
-        system_content = _load_prompt("question_5w1h.txt") or (
+        system_content = _load_prompt_modules(
+            "role_and_prohibitions.txt",
+            "topics_and_format.txt",
+            "step1_process.txt",
+            "question_rules_and_examples.txt",
+        ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
@@ -4796,8 +4868,22 @@ class TherapyOrchestrator:
             讓分類措辭也能參考長者當下情緒，跟STEP1/STEP2/STEP3/收尾語
             一致都會注入 _emotion_guidance()。
         retry_feedback: 見 _generate_question 的同名參數說明。
+
+        2026-09-08稽核：system_content 原本跟 STEP1/2/3 共用整份
+        question_5w1h.txt（超過8000 token，逼近model num_ctx=8192上限，
+        會排擠掉這次呼叫真正需要的user_content，見_ema_classify旁那次
+        稽核發現的context截斷問題）——但這支函式的任務（3分類+承接語）
+        完全自成一套規則、範例、輸出格式，全部寫在下面的user_content裡，
+        不需要STEP1/STEP2/STEP3的5步驟生成流程、【提問規則】問句措辭
+        規則庫、或那三步驟的輸出格式範例（這些是「生成一個開放式問題」
+        專用的，這支函式不生成問題，STEP1問題由另一支_regenerate_image_
+        reveal_question負責，那支才需要完整檔案）。改成只載入語氣人設跟
+        禁止事項合併後的 role_and_prohibitions.txt 這一個真正用得到的
+        片段，原文字句不變，只是不夾帶用不到的四百多行。
         """
-        system_content = _load_prompt("question_5w1h.txt") or (
+        system_content = _load_prompt_modules(
+            "role_and_prohibitions.txt",
+        ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
@@ -4947,8 +5033,24 @@ class TherapyOrchestrator:
         elder_response 參數仍保留（呼叫端傳的是跟 _generate_image_reveal_
         reaction 相同的一組參數，方便維護），但這支函式的 user_content
         故意不使用它——這是刻意設計，不是疏漏。
+
+        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
+        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
+        這支函式的【任務】用的是 _STEP1_OPEN_DIRECTION_HINT，內容是
+        「依【STEP2自由追問／STEP3補問：生成流程】的選角度、選錨點方式
+        生成」——實際套用的是STEP2/3那套流程，不是STEP1的5步驟流程；
+        輸出格式也只有「問題／本回合已涵蓋的W」兩行，沒有「思考：」欄位，
+        不需要16大主題分類（沒有主題判斷這個步驟）、STEP1流程、思考欄位
+        格式規則、也不需要共用的【輸出格式】說明（那段講的是含思考欄位的
+        STEP1/STEP2/STEP3格式，跟這支函式實際只要兩行的格式不同，留著
+        反而可能誤導模型多寫欄位）。改成只組合角色人設、STEP2/3生成流程、
+        提問規則庫、禁止事項、範例這五塊，原文字句不變。
         """
-        system_content = _load_prompt("question_5w1h.txt") or (
+        system_content = _load_prompt_modules(
+            "role_and_prohibitions.txt",
+            "step23_process.txt",
+            "question_rules_and_examples.txt",
+        ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
@@ -5060,11 +5162,22 @@ class TherapyOrchestrator:
         生成函式一致都會注入 _emotion_guidance()。
 
         輸出格式跟 _generate_image_reveal_reaction 相同（承接語／問題／
-        本回合已涵蓋的W），沿用同一支 parser；system_content 同樣載入整份
-        question_5w1h.txt，任務細節移到user_content的【任務】欄位，套用
-        檔案裡「先選角度、後選錨點」的邏輯。
+        本回合已涵蓋的W），沿用同一支 parser；【任務】套用的是【STEP2自由
+        追問／STEP3補問：生成流程】的「先選角度、後選錨點」邏輯，不是
+        STEP1流程。
+
+        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
+        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
+        跟 _regenerate_image_reveal_question 同一個道理——這支函式套用的
+        是STEP2/3流程，輸出格式沒有「思考：」欄位，不需要16大主題分類、
+        STEP1流程、思考欄位格式規則、共用的【輸出格式】說明，只需要角色
+        人設、STEP2/3生成流程、提問規則庫、禁止事項、範例，原文字句不變。
         """
-        system_content = _load_prompt("question_5w1h.txt") or (
+        system_content = _load_prompt_modules(
+            "role_and_prohibitions.txt",
+            "step23_process.txt",
+            "question_rules_and_examples.txt",
+        ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
@@ -5246,8 +5359,20 @@ class TherapyOrchestrator:
         的規則，實測問題品質反而變差，已拿掉，只靠 elder_response（長者
         剛才這一句）當生成材料；後續嘗試的生成後核對＋重打機制也一併移除，
         回到「生成一次就直接用」。
+
+        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
+        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
+        這支函式輸出格式要求「思考：（主題判斷；切入角度）」，需要16大
+        主題分類；【任務】套用的是【STEP2自由追問／STEP3補問：生成流程】，
+        不需要STEP1流程那一段。改成只組合用得到的片段，原文字句不變。
         """
-        system_content = _load_prompt("question_5w1h.txt") or (
+        system_content = _load_prompt_modules(
+            "role_and_prohibitions.txt",
+            "topics_and_format.txt",
+            "step23_process.txt",
+            "question_rules_and_examples.txt",
+            "examples_step2.txt",
+        ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"
@@ -5377,8 +5502,21 @@ class TherapyOrchestrator:
         且問題稱呼一律用「你」、不能用「長者」這個第三人稱——避免模型思考
         階段用旁白語氣描述長者、問題又沿用同樣的人稱與語氣（事後防護見
         response_guard.py 的 third_person_elder_wording）。
+
+        2026-09-08稽核：system_content 原本載入整份 question_5w1h.txt
+        （見 _generate_image_reveal_reaction 那次稽核的context截斷問題）。
+        這支函式輸出格式要求「思考：」（含主題判斷）、「問題類型：STEP3
+        補問」，需要16大主題分類；【任務】套用的是【STEP2自由追問／STEP3
+        補問：生成流程】，不需要STEP1流程那一段。改成只組合用得到的
+        片段，原文字句不變。
         """
-        system_content = _load_prompt("question_5w1h.txt") or (
+        system_content = _load_prompt_modules(
+            "role_and_prohibitions.txt",
+            "topics_and_format.txt",
+            "step23_process.txt",
+            "question_rules_and_examples.txt",
+            "examples_step3.txt",
+        ) or (
             "你是溫柔的懷舊療法引導師，正在透過語音陪伴日間照護中心的長者。"
             "長者可能有輕微認知障礙，你說的話會直接被念出來給長者聽。"
             "稱呼長者一律用「你」，語氣像老朋友聊天。"

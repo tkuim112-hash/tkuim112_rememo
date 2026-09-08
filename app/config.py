@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     # === LLM (Ollama) ===
     ollama_host: str = "http://ollama:11434"
     ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:q4_k_m"
+    # 128k版模型的Modelfile預設num_ctx=131072，需要19.7GB記憶體，會讓Ollama
+    # OOM回500（踩過一次正式環境中斷）——換128k模型時務必同時把這個值調低
+    # （例如32768，實測安全）。
+    ollama_num_ctx: int = 8192
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://stt:8000"
