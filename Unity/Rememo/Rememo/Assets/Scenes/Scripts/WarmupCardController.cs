@@ -398,13 +398,11 @@ public class WarmupCardController : MonoBehaviour
                     stableSeconds: 0.1f);
                 break;
             case PoseType.CountTouchKnees:
-                // 摸膝蓋是唯一一張改成「碰到當下就算數」的卡：長者摸到膝蓋後如果沒
-                // 意識到要站直，會一直卡在等放開穩定，感覺很久才過關。穩定時間原本
-                // 壓到 0.05 秒是為了接住快速輕觸，但實測發現手停在門檻邊緣附近時，
-                // 0.05 秒連邊緣抖動都濾不掉，卡片一開始就送出兩次計數。改回 0.1 秒，
-                // 跟原地踏步、擴胸一致。
+                // 改回跟其他計數卡一致：打開（摸到膝蓋）＋收合（放開站直）都做完
+                // 才 +1。穩定時間縮到 0.1 秒是為了接住快速的觸摸/放開動作，避免
+                // 全域 0.3 秒門檻把太快的一次算漏。
                 UpdateCount(userTracked && KinectPoseChecker.IsTouchingKnees(km, userId), card.requiredCount,
-                    countOnExtend: true, stableSeconds: 0.1f);
+                    stableSeconds: 0.1f);
                 break;
             case PoseType.CountWaistTwist:
                 UpdateCount(userTracked && KinectPoseChecker.IsWaistTwisted(km, userId), card.requiredCount);
@@ -461,13 +459,12 @@ public class WarmupCardController : MonoBehaviour
         }
     }
 
-    // countOnExtend：預設 false，維持原本「打開+收合都做完才 +1」的行為。只有
-    // 摸膝蓋傳 true——碰到膝蓋、穩定 0.3 秒就直接算數，不用等放開；放開穩定後
-    // 只是重新武裝，讓下一次碰觸可以再被算一次，不會因為停在碰觸姿勢就一直
-    // 重複加。
-    // stableSeconds：null 時用全域的 countStableSeconds（0.3 秒）。原地踏步/踢腿
-    // 傳 0.1 秒——長者踏步節奏快，兩腳打平的停留常常不到 0.3 秒，全域門檻太嚴會
-    // 讓收合永遠沒辦法確認，repCount 卡住不動。
+    // countOnExtend：預設 false，維持「打開+收合都做完才 +1」的行為，目前所有
+    // 卡都用這個預設值；保留參數是為了之後如果又需要「碰到當下就算數」的例外
+    // 卡（之前摸膝蓋用過），不用再改函式簽章。
+    // stableSeconds：null 時用全域的 countStableSeconds（0.3 秒）。原地踏步/踢腿/
+    // 擴胸/摸膝蓋傳 0.1 秒——長者動作節奏快，打開或收合常常停不到 0.3 秒，全域
+    // 門檻太嚴會讓那一次沒辦法確認，repCount 卡住不動。
     void UpdateCount(bool isExtendedRaw, int requiredCount, bool countOnExtend = false, float? stableSeconds = null)
     {
         float stable = stableSeconds ?? countStableSeconds;
