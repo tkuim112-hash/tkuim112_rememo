@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
-from db.models import TherapySession, TherapyRound, RoundExchange
+from db.models import TherapySession, TherapyRound, RoundExchange, WarmupCardResult
 from services.closing_templates import build_closing_invitation
 from services.audio_bank import lookup_audio_key
 from routers.sensor import _pct, ENGAGEMENT_RANGE, HAPPINESS_RANGE, AGITATION_RANGE
@@ -1306,6 +1306,106 @@ async def session_warmup_control(
     r = request.app.state.redis
     await r.rpush(f"session:{session_id}:warmup_control_queue", body.action)
     await r.expire(f"session:{session_id}:warmup_control_queue", 3600)
+    return {"ok": True}
+
+
+_WARMUP_RESULT_STATUSES = {"completed", "skipped", "manual"}
+
+
+class WarmupCardResultPayload(BaseModel):
+    card_key: str
+    card_order: int
+    status: str
+    # Unity 的 JsonUtility 無法序列化可為 null 的 int，算不出指標時送 -1
+    # 代表「沒有資料」（見 WarmupCardController.ReportCardResult），這裡收到
+    # 後統一轉成 None 才存進 Postgres。
+    joint_angle_pct: int = -1
+    smoothness_pct: int = -1
+    symmetry_pct: int = -1
+    duration_seconds: float | None = None
+
+
+@router.post("/{session_id}/warmup_card_result", summary="Unity 回報單張暖身動作卡的評估結果（治療師端暖身狀態總覽頁用）")
+async def session_warmup_card_result(
+    session_id: str,
+    body: WarmupCardResultPayload,
+    therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    跟 /warmup_progress（Redis-only，給暖身進行中即時輪詢用）不同，這支是卡片
+    完成／跳過那一刻才呼叫一次，Unity 端已經把整張卡的取樣結果換算成最終
+    0-100 的值，這裡直接寫 Postgres，不需要像回合情緒分數那樣先進 Redis 緩衝
+    （情緒分數是逐幀從 /sensor/emotion 累積、可能跨進程；這裡是 Unity 自己
+    算好的單一最終值，本來就只需要送一次）。
+
+    status 是 'skipped' 時，joint_angle_pct/smoothness_pct/symmetry_pct 應該
+    是 null——沒有真的做動作，沒有指標可以量。
+
+    (session_id, card_order) 有 unique constraint，用 ON CONFLICT DO UPDATE
+    讓 Unity 端萬一重送（例如網路重試）不會產生重複列。
+    """
+    if body.status not in _WARMUP_RESULT_STATUSES:
+        raise HTTPException(status_code=400, detail=f"不支援的暖身卡片狀態: {body.status}")
+
+    joint_angle_pct = body.joint_angle_pct if body.joint_angle_pct >= 0 else None
+    smoothness_pct = body.smoothness_pct if body.smoothness_pct >= 0 else None
+    symmetry_pct = body.symmetry_pct if body.symmetry_pct >= 0 else None
+
+    try:
+        session_stmt = (
+            pg_insert(TherapySession)
+            .values(
+                session_uuid=session_id,
+                therapist_id=therapist_id,
+                date=date.today(),
+                mode="interactive",
+            )
+            .on_conflict_do_nothing(index_elements=["session_uuid"])
+        )
+        await db.execute(session_stmt)
+        await db.flush()
+
+        session_row = (
+            await db.execute(
+                select(TherapySession).where(TherapySession.session_uuid == session_id)
+            )
+        ).scalar_one_or_none()
+
+        if session_row is None:
+            return {"ok": False}
+
+        result_stmt = (
+            pg_insert(WarmupCardResult)
+            .values(
+                session_id=session_row.id,
+                card_key=body.card_key,
+                card_order=body.card_order,
+                status=body.status,
+                joint_angle_pct=joint_angle_pct,
+                smoothness_pct=smoothness_pct,
+                symmetry_pct=symmetry_pct,
+                duration_seconds=body.duration_seconds,
+            )
+        )
+        result_stmt = result_stmt.on_conflict_do_update(
+            index_elements=["session_id", "card_order"],
+            set_={
+                "card_key": result_stmt.excluded.card_key,
+                "status": result_stmt.excluded.status,
+                "joint_angle_pct": result_stmt.excluded.joint_angle_pct,
+                "smoothness_pct": result_stmt.excluded.smoothness_pct,
+                "symmetry_pct": result_stmt.excluded.symmetry_pct,
+                "duration_seconds": result_stmt.excluded.duration_seconds,
+            },
+        )
+        await db.execute(result_stmt)
+        await db.commit()
+    except Exception as e:
+        print(f"[DB] warmup_card_results 寫入失敗（不影響主流程）: {e}")
+        await db.rollback()
+        return {"ok": False}
+
     return {"ok": True}
 
 

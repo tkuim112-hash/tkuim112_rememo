@@ -141,6 +141,68 @@ public class WarmupCardController : MonoBehaviour
     // 時間後，才知道要換回哪一張。
     private Sprite detectingBadgeSprite;
 
+    // ────────────────────────────────────────────────────────────────────
+    // 以下是暖身活動評估指標用的取樣狀態，每張卡在 ShowCurrentCard() 時歸零，
+    // CompleteCurrentCard/SkipCurrentCard 時換算成最終百分比送給後端。詳見
+    // KinectPoseChecker.cs 對應的角度/距離量測函式，以及暖身活動評估指標.md。
+    // ────────────────────────────────────────────────────────────────────
+
+    private float cardStartTime;
+
+    // 平滑度（Log Dimensionless Jerk，Hogan & Sternad）：追蹤代表關節的位置，
+    // 逐幀做有限差分算速度→加速度→加加速度（jerk），累積 ∫jerk²dt 的黎曼和，
+    // 不整段存軌跡（省記憶體，跟 realLegLen 那類即時計算是同一種做法）。
+    private Vector3 smLastPos, smLastVel, smLastAcc;
+    private bool smHasPos, smHasVel, smHasAcc;
+    private float smDuration, smPeakSpeed, smSumJerkSq;
+
+    // 角度型指標（手臂平舉/踢腿或原地踏步/擴胸）：整段取樣的平均角度，左右
+    // 分開存供 Symmetry Index 用。
+    private float angleSumLeft, angleSumRight;
+    private int angleSampleCount;
+
+    // 扭腰：訊號本身有正負號分左右擺，左右各自獨立平均。
+    private float waistAbsSumLeft, waistAbsSumRight;
+    private int waistCountLeft, waistCountRight;
+
+    // 摸膝蓋：距離型，要的是整段過程「最接近的一次」，不是平均值。
+    private float minDistLeft, minDistRight;
+
+    // 手臂旋轉：Circularity Index，追蹤手部相對同側肩膀的位置邊界框，整段
+    // 結束時用寬高比換算成 0~1（1＝正圓，越扁越接近 0）。
+    private float circMinXLeft, circMaxXLeft, circMinYLeft, circMaxYLeft;
+    private float circMinXRight, circMaxXRight, circMinYRight, circMaxYRight;
+    private bool hasCircLeft, hasCircRight;
+
+    // 各卡片型別需要的目標角度／參考值，來源見計畫文件：
+    //
+    // 手臂平舉：臨床上有意義的角度點（肩線＝90度肩外展），不受年齡衰退影響
+    // ——就算長者肩關節活動度隨年齡下降，90度這個「舉到肩線」的milestone
+    // 離一般長者的實際上限還有段距離，不需要往下調整。
+    //
+    // 擴胸：AAOS 臨床正常值（肩水平外展45度），沒查到這個動作專屬的長者
+    // 退化率數據，維持原臨床正常值，不強行套用其他動作的退化率製造假精確度。
+    //
+    // 踢腿/原地踏步（髖屈曲）：2026-09-12 改用長者實測退化率重新推算，不再
+    // 是憑感覺抓的保守值。Stathokostas et al. (2013, 55-86歲長者柔軟度研究)
+    // 測到髖屈曲每年退化約0.6度(男)/0.7度(女)，取平均0.65度/年；AAOS的120度
+    // 基準假設對照組約30歲，這裡假設療程長者代表性年齡75歲，45年累積退化
+    // 約29度，長者實際上限≈120-29≈90度，暖身目標抓這個上限的4成≈35度。
+    //
+    // 扭腰（軀幹旋轉）：只查到「軀幹前彎後仰」的長者退化率文獻，沒查到
+    // 「旋轉」這個動作本身的長者退化率數據——前彎後仰跟旋轉是不同動作模式，
+    // 借用前者的退化率套在後者上會製造沒有根據的假精確度，這裡維持原本
+    // 「從 AAOS 60度/側往下抓的保守估計」，誠實標註成推估值，之後如果查到
+    // 軀幹旋轉專屬的長者退化數據，或有現場實測資料，應該換掉這個數字。
+    const float TargetArmRaiseDeg = 90f;
+    const float TargetHipFlexionDeg = 35f;
+    const float TargetWaistRotationDeg = 28f;
+    const float TargetChestExpandDeg = 45f;
+
+    // 摸膝蓋達成率要拿肩寬當比例基準，但 FinalizeCardMetrics 呼叫時已經沒有
+    // 當下的 km/userId 可以現算，改成取樣期間順便記錄最後一次量到的肩寬。
+    private float lastKnownShoulderWidth = 0.35f;
+
     void Start()
     {
         sessionId = AuthSession.SessionId;
@@ -204,6 +266,18 @@ public class WarmupCardController : MonoBehaviour
         armAngleInitRight = false;
         lastArmCircleRepTime = -999f;
         progressReportTimer = 0f;
+
+        cardStartTime = Time.time;
+        smHasPos = smHasVel = smHasAcc = false;
+        smDuration = smPeakSpeed = smSumJerkSq = 0f;
+        angleSumLeft = angleSumRight = 0f;
+        angleSampleCount = 0;
+        waistAbsSumLeft = waistAbsSumRight = 0f;
+        waistCountLeft = waistCountRight = 0;
+        minDistLeft = minDistRight = float.MaxValue;
+        circMinXLeft = circMinYLeft = circMinXRight = circMinYRight = float.MaxValue;
+        circMaxXLeft = circMaxYLeft = circMaxXRight = circMaxYRight = float.MinValue;
+        hasCircLeft = hasCircRight = false;
 
         CancelInvoke(nameof(NextCard));
         if (card.poseType == PoseType.None)
@@ -314,7 +388,9 @@ public class WarmupCardController : MonoBehaviour
             case "complete":
                 // 5 張卡都做完、正在等 enter_activity 時 currentIndex 已經
                 // 超出範圍，這裡沒有「目前這張卡」可以標記，忽略。
-                if (currentIndex < selectedCards.Count) CompleteCurrentCard();
+                // 傳 true 標記這是治療師手動標記完成，不是 Kinect 真的偵測到
+                // 動作——見 ReportCardResult 的 status 區分。
+                if (currentIndex < selectedCards.Count) CompleteCurrentCard(true);
                 break;
             case "skip":
                 if (currentIndex < selectedCards.Count) SkipCurrentCard();
@@ -333,6 +409,7 @@ public class WarmupCardController : MonoBehaviour
     {
         if (cardCompleted) return;
         cardCompleted = true;
+        ReportCardResult(selectedCards[currentIndex], "skipped");
         CancelInvoke(nameof(NextCard));
         NextCard();
     }
@@ -411,6 +488,8 @@ public class WarmupCardController : MonoBehaviour
                 if (userTracked) UpdateArmCircle(km, userId, card.requiredCount);
                 break;
         }
+
+        if (userTracked) SampleMetricsForCurrentCard(km, userId, card);
 
         UpdateProgressText();
 
@@ -585,7 +664,253 @@ public class WarmupCardController : MonoBehaviour
         return false;
     }
 
-    void CompleteCurrentCard()
+    // 平滑度（Log Dimensionless Jerk，Hogan & Sternad）：對代表關節的位置逐幀
+    // 做有限差分算速度→加速度→加加速度（jerk），累積 ∫jerk²dt 的黎曼和。不
+    // 整段存軌跡，做法上跟 KinectLegIK 那類「即時算、不存歷史」是同一種精神。
+    void SampleSmoothness(Vector3 pos, float dt)
+    {
+        if (dt <= 0f) return;
+
+        if (smHasPos)
+        {
+            Vector3 vel = (pos - smLastPos) / dt;
+            if (smHasVel)
+            {
+                Vector3 acc = (vel - smLastVel) / dt;
+                if (smHasAcc)
+                {
+                    Vector3 jerk = (acc - smLastAcc) / dt;
+                    smSumJerkSq += jerk.sqrMagnitude * dt;
+                }
+                smLastAcc = acc;
+                smHasAcc = true;
+                smPeakSpeed = Mathf.Max(smPeakSpeed, vel.magnitude);
+            }
+            smLastVel = vel;
+            smHasVel = true;
+        }
+        smLastPos = pos;
+        smHasPos = true;
+        smDuration += dt;
+    }
+
+    // 每張卡進行期間逐幀呼叫，依卡片類型取樣角度/距離/圓形吻合度所需的原始
+    // 值，全部是「累積量」，不整段存軌跡；CompleteCurrentCard/SkipCurrentCard
+    // 時才換算成最終百分比（見 FinalizeCardMetrics）。
+    void SampleMetricsForCurrentCard(KinectManager km, long userId, ActionCard card)
+    {
+        float dt = Time.deltaTime;
+        float sw = KinectPoseChecker.ShoulderWidth(km, userId);
+        if (sw > 0.05f) lastKnownShoulderWidth = sw;
+
+        switch (card.poseType)
+        {
+            case PoseType.HoldArmsRaised:
+                if (KinectPoseChecker.TryGetArmRaiseAngles(km, userId, out var aL, out var aR))
+                {
+                    angleSumLeft += aL; angleSumRight += aR; angleSampleCount++;
+                }
+                SampleSmoothnessFromPair(km, userId, KinectInterop.JointType.HandLeft, KinectInterop.JointType.HandRight, dt);
+                break;
+
+            case PoseType.CountLegLift:
+                if (KinectPoseChecker.TryGetHipFlexionAngles(km, userId, out var hipL, out var hipR))
+                {
+                    angleSumLeft += hipL; angleSumRight += hipR; angleSampleCount++;
+                }
+                SampleSmoothnessFromPair(km, userId, KinectInterop.JointType.KneeLeft, KinectInterop.JointType.KneeRight, dt);
+                break;
+
+            case PoseType.CountWaistTwist:
+                if (KinectPoseChecker.TryGetWaistRotationAngle(km, userId, out var wDeg))
+                {
+                    if (wDeg < 0f) { waistAbsSumLeft += -wDeg; waistCountLeft++; }
+                    else { waistAbsSumRight += wDeg; waistCountRight++; }
+                }
+                SampleSmoothnessFromPair(km, userId, KinectInterop.JointType.HipLeft, KinectInterop.JointType.HipRight, dt);
+                break;
+
+            case PoseType.CountChestExpand:
+                if (KinectPoseChecker.TryGetChestExpandAngles(km, userId, out var ceL, out var ceR))
+                {
+                    angleSumLeft += ceL; angleSumRight += ceR; angleSampleCount++;
+                }
+                SampleSmoothnessFromPair(km, userId, KinectInterop.JointType.HandLeft, KinectInterop.JointType.HandRight, dt);
+                break;
+
+            case PoseType.CountTouchKnees:
+            case PoseType.HoldTouchKnees:
+                if (KinectPoseChecker.TryGetTouchKneesDistances(km, userId, out var dL, out var dR))
+                {
+                    if (dL < minDistLeft) minDistLeft = dL;
+                    if (dR < minDistRight) minDistRight = dR;
+                }
+                SampleSmoothnessFromPair(km, userId, KinectInterop.JointType.HandLeft, KinectInterop.JointType.HandRight, dt);
+                break;
+
+            case PoseType.CountArmCircle:
+                SampleArmCircleBounds(km, userId, true, ref circMinXLeft, ref circMaxXLeft, ref circMinYLeft, ref circMaxYLeft, ref hasCircLeft);
+                SampleArmCircleBounds(km, userId, false, ref circMinXRight, ref circMaxXRight, ref circMinYRight, ref circMaxYRight, ref hasCircRight);
+                SampleSmoothnessFromPair(km, userId, KinectInterop.JointType.HandLeft, KinectInterop.JointType.HandRight, dt);
+                break;
+        }
+    }
+
+    // 平滑度的代表關節統一用「左右兩個對應關節的中點」，手部類/腿部類/髖部
+    // 類卡片都適用，不用每種卡各寫一次找中點的邏輯。
+    void SampleSmoothnessFromPair(KinectManager km, long userId, KinectInterop.JointType left, KinectInterop.JointType right, float dt)
+    {
+        if (!km.IsJointTracked(userId, (int)left) || !km.IsJointTracked(userId, (int)right)) return;
+        Vector3 mid = (km.GetJointPosition(userId, (int)left) + km.GetJointPosition(userId, (int)right)) * 0.5f;
+        SampleSmoothness(mid, dt);
+    }
+
+    // 手臂旋轉的圓形吻合度：追蹤手部相對同側肩膀的水平/垂直位置邊界框。
+    void SampleArmCircleBounds(KinectManager km, long userId, bool isLeft,
+        ref float minX, ref float maxX, ref float minY, ref float maxY, ref bool hasSample)
+    {
+        var handJoint = isLeft ? KinectInterop.JointType.HandLeft : KinectInterop.JointType.HandRight;
+        var shoulderJoint = isLeft ? KinectInterop.JointType.ShoulderLeft : KinectInterop.JointType.ShoulderRight;
+        if (!km.IsJointTracked(userId, (int)handJoint) || !km.IsJointTracked(userId, (int)shoulderJoint)) return;
+
+        Vector3 rel = km.GetJointPosition(userId, (int)handJoint) - km.GetJointPosition(userId, (int)shoulderJoint);
+        if (rel.x < minX) minX = rel.x;
+        if (rel.x > maxX) maxX = rel.x;
+        if (rel.y < minY) minY = rel.y;
+        if (rel.y > maxY) maxY = rel.y;
+        hasSample = true;
+    }
+
+    static float CircularityOf(float minX, float maxX, float minY, float maxY, bool hasSample)
+    {
+        if (!hasSample) return 0f;
+        float w = maxX - minX;
+        float h = maxY - minY;
+        if (w < 0.01f || h < 0.01f) return 0f;
+        return Mathf.Min(w, h) / Mathf.Max(w, h);
+    }
+
+    // Robinson, Herzog & Nigg (1987) Symmetry Index：SI=(Xr-Xl)/(0.5*(|Xr|+|Xl|))*100，
+    // 0＝完全對稱，絕對值越大越不對稱。換算成「對稱性分數」給前端顯示：100
+    // 減掉 |SI|（夾在 0~100），分數越高越對稱。
+    static int SymmetryScore(float left, float right)
+    {
+        float denom = 0.5f * (Mathf.Abs(left) + Mathf.Abs(right));
+        if (denom < 0.0001f) return 100; // 兩邊都幾乎是 0，沒有動作可比，視為對稱
+        float si = (right - left) / denom * 100f;
+        return Mathf.RoundToInt(Mathf.Clamp(100f - Mathf.Abs(si), 0f, 100f));
+    }
+
+    // 卡片完成/跳過時，把整段取樣結果換算成 (角度或距離或圓形吻合度達成率,
+    // 平滑度, 左右對稱性) 三個 0~100 的值；完全沒取樣到資料時回傳 null，前端
+    // 顯示「—」。
+    (int? anglePct, int? smoothPct, int? symPct) FinalizeCardMetrics(ActionCard card)
+    {
+        int? anglePct = null;
+        int? symPct = null;
+
+        switch (card.poseType)
+        {
+            case PoseType.HoldArmsRaised:
+            case PoseType.CountLegLift:
+            case PoseType.CountChestExpand:
+                if (angleSampleCount > 0)
+                {
+                    float avgL = angleSumLeft / angleSampleCount;
+                    float avgR = angleSumRight / angleSampleCount;
+                    float target = card.poseType == PoseType.HoldArmsRaised ? TargetArmRaiseDeg
+                        : card.poseType == PoseType.CountLegLift ? TargetHipFlexionDeg
+                        : TargetChestExpandDeg;
+                    anglePct = Mathf.RoundToInt(Mathf.Clamp01(((avgL + avgR) * 0.5f) / target) * 100f);
+                    symPct = SymmetryScore(avgL, avgR);
+                }
+                break;
+
+            case PoseType.CountWaistTwist:
+                if (waistCountLeft > 0 || waistCountRight > 0)
+                {
+                    float avgSwingL = waistCountLeft > 0 ? waistAbsSumLeft / waistCountLeft : 0f;
+                    float avgSwingR = waistCountRight > 0 ? waistAbsSumRight / waistCountRight : 0f;
+                    anglePct = Mathf.RoundToInt(Mathf.Clamp01(((avgSwingL + avgSwingR) * 0.5f) / TargetWaistRotationDeg) * 100f);
+                    symPct = SymmetryScore(avgSwingL, avgSwingR);
+                }
+                break;
+
+            case PoseType.CountTouchKnees:
+            case PoseType.HoldTouchKnees:
+                if (minDistLeft < float.MaxValue || minDistRight < float.MaxValue)
+                {
+                    float dL = Mathf.Min(minDistLeft, 1f);
+                    float dR = Mathf.Min(minDistRight, 1f);
+                    float avgDist = (dL + dR) * 0.5f;
+                    anglePct = Mathf.RoundToInt(Mathf.Clamp01(1f - avgDist / (lastKnownShoulderWidth * 1.2f)) * 100f);
+                    symPct = SymmetryScore(dL, dR);
+                }
+                break;
+
+            case PoseType.CountArmCircle:
+                if (hasCircLeft || hasCircRight)
+                {
+                    float circL = CircularityOf(circMinXLeft, circMaxXLeft, circMinYLeft, circMaxYLeft, hasCircLeft);
+                    float circR = CircularityOf(circMinXRight, circMaxXRight, circMinYRight, circMaxYRight, hasCircRight);
+                    anglePct = Mathf.RoundToInt(((circL + circR) * 0.5f) * 100f);
+                    symPct = SymmetryScore(circL, circR);
+                }
+                break;
+        }
+
+        int? smoothPct = null;
+        if (smDuration > 0.1f && smPeakSpeed > 0.01f)
+        {
+            float dlj = (smDuration * smDuration * smDuration / (smPeakSpeed * smPeakSpeed)) * smSumJerkSq;
+            float ldlj = -Mathf.Log(dlj + 1e-6f);
+            // 經驗範圍：實測前抓 -20（很不平滑）~ 0（非常平滑），之後依現場資料調整。
+            smoothPct = Mathf.RoundToInt(Mathf.Clamp01((ldlj + 20f) / 20f) * 100f);
+        }
+
+        return (anglePct, smoothPct, symPct);
+    }
+
+    // 卡片完成/跳過時呼叫一次，把這張卡的評估結果送給後端（治療師端暖身狀態
+    // 總覽頁用）。跳過的卡片所有指標都是 null，前端顯示「—」。
+    void ReportCardResult(ActionCard card, string status)
+    {
+        if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(card.cardKey)) return;
+
+        int? anglePct = null, smoothPct = null, symPct = null;
+        if (status != "skipped")
+        {
+            (anglePct, smoothPct, symPct) = FinalizeCardMetrics(card);
+        }
+
+        StartCoroutine(PostWarmupCardResult(new WarmupCardResultPayload
+        {
+            card_key = card.cardKey,
+            card_order = currentIndex + 1,
+            status = status,
+            joint_angle_pct = anglePct ?? -1,
+            smoothness_pct = smoothPct ?? -1,
+            symmetry_pct = symPct ?? -1,
+            duration_seconds = Time.time - cardStartTime,
+        }));
+    }
+
+    // JsonUtility 不支援可為 null 的 int，指標算不出來時用 -1 代表「沒有資料」，
+    // 後端收到 -1 會存成 null（見 app/routers/session.py session_warmup_card_result）。
+    IEnumerator PostWarmupCardResult(WarmupCardResultPayload payload)
+    {
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
+        using var req = new UnityWebRequest($"{backendUrl}/session/{sessionId}/warmup_card_result", "POST");
+        req.uploadHandler = new UploadHandlerRaw(body);
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+        AuthService.AttachAuthHeader(req);
+        yield return req.SendWebRequest();
+        if (req.result != UnityWebRequest.Result.Success)
+            Debug.LogWarning($"[Warmup] 回報卡片評估結果失敗: {req.error}");
+    }
+
+    void CompleteCurrentCard(bool triggeredManually = false)
     {
         // 等音效播完才換卡的這段期間，舊卡片仍會繼續被判定，避免長者姿勢還沒收
         // 回來又被重複觸發一次完成。
@@ -593,6 +918,7 @@ public class WarmupCardController : MonoBehaviour
         cardCompleted = true;
         // 過關那一刻先送一次 100% 進度，確保最後一小段進度不會被跳過。
         ReportWarmupProgress(selectedCards[currentIndex]);
+        ReportCardResult(selectedCards[currentIndex], triggeredManually ? "manual" : "completed");
 
         if (audioSource != null && successSound != null)
         {
@@ -701,4 +1027,16 @@ public class WarmupProgressPayload
 public class WarmupControlResponse
 {
     public string action;
+}
+
+[System.Serializable]
+public class WarmupCardResultPayload
+{
+    public string card_key;
+    public int card_order;
+    public string status;
+    public int joint_angle_pct;
+    public int smoothness_pct;
+    public int symmetry_pct;
+    public float duration_seconds;
 }

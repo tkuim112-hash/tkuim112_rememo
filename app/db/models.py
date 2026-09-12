@@ -118,6 +118,32 @@ class TherapyRound(Base):
     signal_codes: Mapped[str | None] = mapped_column(Text)
 
 
+class WarmupCardResult(Base):
+    """暖身活動每張動作卡的評估結果（見 app/routers/session.py
+    warmup_card_result）：關節角度/動作到位程度/畫圓穩定度、平滑度
+    （Log Dimensionless Jerk）、左右對稱性（Symmetry Index）都是 Unity
+    端在卡片進行期間逐幀取樣、卡片完成/跳過那一刻換算成 0-100 送過來的，
+    這裡只負責存最終結果，不做任何計算。"""
+    __tablename__ = "warmup_card_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sessions.id", ondelete="CASCADE")
+    )
+    card_key: Mapped[str] = mapped_column(Text, nullable=False)
+    card_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 'completed'（Kinect 自動偵測完成）/'skipped'（治療師跳過）/
+    # 'manual'（治療師手動標記完成）。skipped 的話下面四個指標欄位都是 null。
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    joint_angle_pct: Mapped[int | None] = mapped_column(Integer)
+    smoothness_pct: Mapped[int | None] = mapped_column(Integer)
+    symmetry_pct: Mapped[int | None] = mapped_column(Integer)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+
 class RoundExchange(Base):
     __tablename__ = "round_exchanges"
 

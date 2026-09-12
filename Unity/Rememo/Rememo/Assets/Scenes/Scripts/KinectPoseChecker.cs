@@ -20,7 +20,7 @@ public static class KinectPoseChecker
         return userId != 0;
     }
 
-    static float ShoulderWidth(KinectManager km, long userId)
+    public static float ShoulderWidth(KinectManager km, long userId)
     {
         Vector3 l = km.GetJointPosition(userId, (int)ShoulderLeft);
         Vector3 r = km.GetJointPosition(userId, (int)ShoulderRight);
@@ -208,5 +208,132 @@ public static class KinectPoseChecker
         }
 
         return open;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // 以下是給暖身活動評估指標用的「連續值」量測函式，不影響上面既有的過關
+    // 判斷（那些門檻已經調校過，這裡刻意分開，不要互相牽動）。回傳角度給
+    // WarmupCardController 累積成關節角度達成率／左右對稱性（Robinson,
+    // Herzog & Nigg 1987 Symmetry Index：SI=(Xr-Xl)/(0.5*(|Xr|+|Xl|))*100）。
+    // 詳見暖身活動評估指標.md／synthetic-zooming-pizza 計畫。
+    // ────────────────────────────────────────────────────────────────────
+
+    // 手臂平舉：肩外展角度。0 度＝手臂垂放身側，90 度＝手臂平舉與肩同高
+    // （這張卡的目標角度），180 度＝手臂完全舉過頭。用「垂直落差」跟「水平
+    // 外伸距離」的反正切算，不需要知道手臂實際長度。
+    static float AbductionAngle(Vector3 shoulder, Vector3 hand)
+    {
+        float verticalDrop = shoulder.y - hand.y; // 手比肩膀低時為正
+        float horizontalOut = new Vector2(hand.x - shoulder.x, hand.z - shoulder.z).magnitude;
+        return Mathf.Atan2(horizontalOut, verticalDrop) * Mathf.Rad2Deg;
+    }
+
+    public static bool TryGetArmRaiseAngles(KinectManager km, long userId, out float leftDeg, out float rightDeg)
+    {
+        leftDeg = rightDeg = 0f;
+        if (!km.IsJointTracked(userId, (int)HandLeft) || !km.IsJointTracked(userId, (int)HandRight) ||
+            !km.IsJointTracked(userId, (int)ShoulderLeft) || !km.IsJointTracked(userId, (int)ShoulderRight))
+        {
+            return false;
+        }
+
+        leftDeg = AbductionAngle(km.GetJointPosition(userId, (int)ShoulderLeft), km.GetJointPosition(userId, (int)HandLeft));
+        rightDeg = AbductionAngle(km.GetJointPosition(userId, (int)ShoulderRight), km.GetJointPosition(userId, (int)HandRight));
+        return true;
+    }
+
+    // 踢腿／原地踏步：髖屈曲角度。0 度＝腿垂直站立，角度越大代表膝蓋抬得
+    // 越高（往前抬腿）。跟肩外展角度同一套反正切算法，只是換成髖到膝蓋。
+    public static bool TryGetHipFlexionAngles(KinectManager km, long userId, out float leftDeg, out float rightDeg)
+    {
+        leftDeg = rightDeg = 0f;
+        if (!km.IsJointTracked(userId, (int)HipLeft) || !km.IsJointTracked(userId, (int)HipRight) ||
+            !km.IsJointTracked(userId, (int)KneeLeft) || !km.IsJointTracked(userId, (int)KneeRight))
+        {
+            return false;
+        }
+
+        leftDeg = AbductionAngle(km.GetJointPosition(userId, (int)HipLeft), km.GetJointPosition(userId, (int)KneeLeft));
+        rightDeg = AbductionAngle(km.GetJointPosition(userId, (int)HipRight), km.GetJointPosition(userId, (int)KneeRight));
+        return true;
+    }
+
+    // 扭腰：軀幹旋轉角度的近似值。真正的軀幹旋轉是肩線相對髖線繞垂直軸轉了
+    // 幾度，但 Kinect 骨架給的是關節位置不是可靠的軀幹朝向，這裡改用「髖部
+    // 中心偏離肩部中心的橫向距離，除以肩寬」當比例，反正切換算成一個角度感
+    // 的數值——這是實作上的近似，不是嚴謹的臨床軀幹旋轉量測，好處是不需要
+    // 額外的朝向資料。回傳值有正負號：負＝偏左，正＝偏右，供呼叫端各自累積
+    // 左右兩側的峰值角度。
+    public static bool TryGetWaistRotationAngle(KinectManager km, long userId, out float signedDeg)
+    {
+        signedDeg = 0f;
+        if (!km.IsJointTracked(userId, (int)ShoulderLeft) || !km.IsJointTracked(userId, (int)ShoulderRight) ||
+            !km.IsJointTracked(userId, (int)HipLeft) || !km.IsJointTracked(userId, (int)HipRight))
+        {
+            return false;
+        }
+
+        float sw = ShoulderWidth(km, userId);
+        if (sw < 0.05f) return false;
+
+        Vector3 shL = km.GetJointPosition(userId, (int)ShoulderLeft);
+        Vector3 shR = km.GetJointPosition(userId, (int)ShoulderRight);
+        Vector3 hL = km.GetJointPosition(userId, (int)HipLeft);
+        Vector3 hR = km.GetJointPosition(userId, (int)HipRight);
+
+        float shoulderCenterX = (shL.x + shR.x) * 0.5f;
+        float hipCenterX = (hL.x + hR.x) * 0.5f;
+        float offset = hipCenterX - shoulderCenterX;
+
+        signedDeg = Mathf.Atan2(offset, sw) * Mathf.Rad2Deg;
+        return true;
+    }
+
+    // 擴胸：肩水平外展角度的近似值。臨床量法是肩外展 90 度、肘彎 90 度時，
+    // 手臂能往後展開多少度（正常值約 45 度）。這裡沒有辦法完整重現那個
+    // 量測姿勢，改用「手肘超出肩寬的距離／上臂長度」的反正切近似，上臂長
+    // 用當下肩到肘的距離即時算（不受身高影響）。
+    public static bool TryGetChestExpandAngles(KinectManager km, long userId, out float leftDeg, out float rightDeg)
+    {
+        leftDeg = rightDeg = 0f;
+        if (!km.IsJointTracked(userId, (int)ElbowLeft) || !km.IsJointTracked(userId, (int)ElbowRight) ||
+            !km.IsJointTracked(userId, (int)ShoulderLeft) || !km.IsJointTracked(userId, (int)ShoulderRight))
+        {
+            return false;
+        }
+
+        Vector3 shL = km.GetJointPosition(userId, (int)ShoulderLeft);
+        Vector3 shR = km.GetJointPosition(userId, (int)ShoulderRight);
+        Vector3 eL = km.GetJointPosition(userId, (int)ElbowLeft);
+        Vector3 eR = km.GetJointPosition(userId, (int)ElbowRight);
+
+        float shoulderCenterX = (shL.x + shR.x) * 0.5f;
+        float halfShoulderWidth = Vector3.Distance(shL, shR) * 0.5f;
+
+        float excessL = Mathf.Max(0f, (shoulderCenterX - eL.x) - halfShoulderWidth);
+        float excessR = Mathf.Max(0f, (eR.x - shoulderCenterX) - halfShoulderWidth);
+        float upperArmL = Mathf.Max(0.05f, Vector3.Distance(shL, eL));
+        float upperArmR = Mathf.Max(0.05f, Vector3.Distance(shR, eR));
+
+        leftDeg = Mathf.Atan2(excessL, upperArmL) * Mathf.Rad2Deg * 2f;
+        rightDeg = Mathf.Atan2(excessR, upperArmR) * Mathf.Rad2Deg * 2f;
+        return true;
+    }
+
+    // 摸膝蓋：回傳左右手到左右膝蓋的原始距離（沿用 IsTouchingKnees 同一套
+    // 量測，但不合併、不套門檻），供 WarmupCardController 各自取整段過程的
+    // 最小值，換算成 Senior Fitness Test 那種「距離型」達成率跟左右對稱性。
+    public static bool TryGetTouchKneesDistances(KinectManager km, long userId, out float distLeft, out float distRight)
+    {
+        distLeft = distRight = float.MaxValue;
+        if (!km.IsJointTracked(userId, (int)HandLeft) || !km.IsJointTracked(userId, (int)HandRight) ||
+            !km.IsJointTracked(userId, (int)KneeLeft) || !km.IsJointTracked(userId, (int)KneeRight))
+        {
+            return false;
+        }
+
+        distLeft = Vector3.Distance(km.GetJointPosition(userId, (int)HandLeft), km.GetJointPosition(userId, (int)KneeLeft));
+        distRight = Vector3.Distance(km.GetJointPosition(userId, (int)HandRight), km.GetJointPosition(userId, (int)KneeRight));
+        return true;
     }
 }
