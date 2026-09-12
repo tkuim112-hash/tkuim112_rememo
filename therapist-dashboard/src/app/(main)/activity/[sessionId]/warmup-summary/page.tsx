@@ -206,7 +206,7 @@ export default function WarmupSummaryPage({ params }: { params: Promise<{ sessio
           <path d="M19 12H5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           <path d="M12 19l-7-7 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        歷史療程
+        歷史活動
       </Link>
 
       <div className="flex gap-8 items-start flex-wrap">
