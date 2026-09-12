@@ -3,25 +3,7 @@
 import { use, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { API_BASE } from "@/lib/api";
-
-// 每張暖身動作卡的圖片跟顯示文字都存在前端本機（public/image/warmup/）。
-// 後端只會在 Unity 換卡時回報一個 card_key 字串說「現在要顯示哪一張」
-// （見 app/routers/session.py session_warmup_progress），不會傳圖片本身。
-// key 要跟 Unity WarmupCardController.ActionCard.cardKey 保持一致（見
-// Unity/Rememo/Rememo/Assets/Scenes/WarmupGameScene.unity 的 cardPool），
-// 之後在 Unity 那邊新增/調整暖身卡時，這個表要跟著同步更新。
-// steps：這個動作要求的次數/秒數，要跟 Unity 那張卡 Inspector 設定的
-// requiredCount／requiredHoldSeconds 一致（也就是 label 文字上寫的數字），
-// 用來畫「這個動作做到第幾下/第幾秒」的進度條格數。
-const WARMUP_CARDS: Record<string, { label: string; image: string; steps: number }> = {
-  arm_raise: { label: "手臂平舉 5 秒", image: "/image/warmup/arm_raise.png", steps: 5 },
-  leg_kick: { label: "踢腿 3 次", image: "/image/warmup/leg_kick.png", steps: 3 },
-  march_in_place: { label: "原地踏步 5 次", image: "/image/warmup/march_in_place.png", steps: 5 },
-  touch_knees: { label: "手摸膝蓋 5 次", image: "/image/warmup/touch_knees.png", steps: 5 },
-  arm_circle: { label: "手臂旋轉 5 次", image: "/image/warmup/arm_circle.png", steps: 5 },
-  waist_twist: { label: "扭腰 5 次", image: "/image/warmup/waist_twist.png", steps: 5 },
-  chest_expand: { label: "擴胸 5 次", image: "/image/warmup/chest_expand.png", steps: 5 },
-};
+import { WARMUP_CARDS } from "@/lib/warmupCards";
 
 function IconEdit() {
   return (

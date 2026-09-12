@@ -700,8 +700,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -228, y: 91}
-  m_SizeDelta: {x: 860.7678, y: 9.8973}
+  m_AnchoredPosition: {x: -243.84, y: 69.515}
+  m_SizeDelta: {x: 860.7678, y: 65.0737}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &721035782
 MonoBehaviour:
@@ -723,10 +723,10 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: "\u60F3\u5230\u4EC0\u9EBC\u5C31\u8AAA\u4EC0\u9EBC\uFF0C\u6309\u4E0B\u9EA5\u514B\u98A8\u53EF\u4EE5\u7528\u8AAA\u7684\u2026\n"
+  m_text: "\u60F3\u5230\u4EC0\u9EBC\u5C31\u8AAA\u4EC0\u9EBC\uFF0C\u6309\u4E0B\u9EA5\u514B\u98A8\u53EF\u4EE5\u7528\u8AAA\u7684\n"
   m_isRightToLeft: 0
-  m_fontAsset: {fileID: 11400000, guid: 7b0848de019d74b028f80380e3f38bbe, type: 2}
-  m_sharedMaterial: {fileID: 9175543853248863310, guid: 7b0848de019d74b028f80380e3f38bbe, type: 2}
+  m_fontAsset: {fileID: 11400000, guid: cc903d2d94a73cb48b71f2d43741816d, type: 2}
+  m_sharedMaterial: {fileID: 481956537529305434, guid: cc903d2d94a73cb48b71f2d43741816d, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -756,7 +756,7 @@ MonoBehaviour:
   m_enableAutoSizing: 0
   m_fontSizeMin: 18
   m_fontSizeMax: 72
-  m_fontStyle: 1
+  m_fontStyle: 0
   m_HorizontalAlignment: 1
   m_VerticalAlignment: 256
   m_textAlignment: 65535
@@ -1776,6 +1776,7 @@ MonoBehaviour:
   gameController: {fileID: 0}
   audioSender: {fileID: 1806627863}
   audioSpeechThreshold: 0.015
+  facialFrameJpegQuality: 60
 --- !u!1 &1847855630
 GameObject:
   m_ObjectHideFlags: 0
@@ -1916,6 +1917,7 @@ MonoBehaviour:
   raiseThreshold: 0.15
   lowerThreshold: 0.02
   untrackedDebounceFrames: 35
+  lowerDebounceFrames: 18
 --- !u!114 &1853010729
 MonoBehaviour:
   m_ObjectHideFlags: 0
