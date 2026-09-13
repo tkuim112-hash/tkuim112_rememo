@@ -152,8 +152,22 @@ public class WarmupCardController : MonoBehaviour
     // 平滑度（Log Dimensionless Jerk，Hogan & Sternad）：追蹤代表關節的位置，
     // 逐幀做有限差分算速度→加速度→加加速度（jerk），累積 ∫jerk²dt 的黎曼和，
     // 不整段存軌跡（省記憶體，跟 realLegLen 那類即時計算是同一種做法）。
-    private Vector3 smLastPos, smLastVel, smLastAcc;
-    private bool smHasPos, smHasVel, smHasAcc;
+    //
+    // 2026-09-14 修正：Kinect 關節座標本身有抖動，位置連續三次差分會把雜訊
+    // 放大約 1/dt³ 倍，之前完全沒濾波，長者站定不動時的雜訊也會被當成真的
+    // jerk 累積，量出來的平滑度幾乎全部趴在 0%。改成：
+    //   1. 位置先過一次濾波（等效 Melendez-Calderon et al., 2021 用 0.1 秒
+    //      loess 濾波再微分的做法），抑制抖動被三次差分放大。
+    //   2. 只在速度超過雜訊門檻（真的在動）時才把 jerk 累積進 ∫jerk²dt、
+    //      duration 也只算這段時間——Hogan & Sternad (2009) 明確指出
+    //      dimensionless jerk 對「動作中的靜止停頓」極度敏感，公式裡 duration
+    //      又是三次方項，靜止段（例如撐住不動的 Hold 類卡片）混進去會讓分母
+    //      整個失真。SmoothingTimeConstant / MovingSpeedThreshold 目前是
+    //      沒有現場資料前的估計值，之後要用真實紀錄的 Kinect log 重新校正。
+    private const float SmoothingTimeConstant = 0.1f; // 秒
+    private const float MovingSpeedThreshold = 0.05f; // 公尺/秒
+    private Vector3 smLastPos, smLastVel, smLastAcc, smFilteredPos;
+    private bool smHasPos, smHasVel, smHasAcc, smHasFilteredPos;
     private float smDuration, smPeakSpeed, smSumJerkSq;
 
     // 角度型指標（手臂平舉/踢腿或原地踏步/擴胸）：整段取樣的平均角度，左右
@@ -268,7 +282,7 @@ public class WarmupCardController : MonoBehaviour
         progressReportTimer = 0f;
 
         cardStartTime = Time.time;
-        smHasPos = smHasVel = smHasAcc = false;
+        smHasPos = smHasVel = smHasAcc = smHasFilteredPos = false;
         smDuration = smPeakSpeed = smSumJerkSq = 0f;
         angleSumLeft = angleSumRight = 0f;
         angleSampleCount = 0;
@@ -671,16 +685,37 @@ public class WarmupCardController : MonoBehaviour
     {
         if (dt <= 0f) return;
 
+        // 濾波：先把原始關節座標過一次低通（等效時間常數 SmoothingTimeConstant
+        // 的指數移動平均），再拿濾波後的位置去做三次差分，抑制 Kinect 抖動被
+        // 放大成假 jerk。
+        if (!smHasFilteredPos)
+        {
+            smFilteredPos = pos;
+            smHasFilteredPos = true;
+        }
+        else
+        {
+            float alpha = 1f - Mathf.Exp(-dt / SmoothingTimeConstant);
+            smFilteredPos = Vector3.Lerp(smFilteredPos, pos, alpha);
+        }
+        Vector3 fpos = smFilteredPos;
+
         if (smHasPos)
         {
-            Vector3 vel = (pos - smLastPos) / dt;
+            Vector3 vel = (fpos - smLastPos) / dt;
             if (smHasVel)
             {
                 Vector3 acc = (vel - smLastVel) / dt;
                 if (smHasAcc)
                 {
                     Vector3 jerk = (acc - smLastAcc) / dt;
-                    smSumJerkSq += jerk.sqrMagnitude * dt;
+                    // 只在速度超過雜訊門檻（真的在動）時才累積 jerk 跟 duration，
+                    // 撐住不動的靜止段不計入——理由見上面欄位宣告處的說明。
+                    if (vel.magnitude > MovingSpeedThreshold)
+                    {
+                        smSumJerkSq += jerk.sqrMagnitude * dt;
+                        smDuration += dt;
+                    }
                 }
                 smLastAcc = acc;
                 smHasAcc = true;
@@ -689,9 +724,8 @@ public class WarmupCardController : MonoBehaviour
             smLastVel = vel;
             smHasVel = true;
         }
-        smLastPos = pos;
+        smLastPos = fpos;
         smHasPos = true;
-        smDuration += dt;
     }
 
     // 每張卡進行期間逐幀呼叫，依卡片類型取樣角度/距離/圓形吻合度所需的原始
