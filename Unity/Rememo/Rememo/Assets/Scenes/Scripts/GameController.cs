@@ -742,6 +742,17 @@ public class GameController : MonoBehaviour
     IEnumerator ProcessConfirmedSubmit(string confirmedText)
     {
         isSubmitting = true;
+        // 2026-09-14 稽核：這條路徑（治療師先審核確認、長者才按送出）漏了跟
+        // ProcessSubmit 一樣的收尾——isWaitingForStt 在長者剛開口那次錄音結束
+        // 時被設成 true（見 StopRecording），治療師搶在 OnSttFinal 真正跑完前
+        // 就先確認/編輯文字，這裡從此再也沒有人把它清回 false。旗標永久卡
+        // true 不影響這次送出本身（送出走 pendingConfirmedText 那條件，不看
+        // isWaitingForStt），但會讓之後治療師端「跳過此場景」被
+        // isWaitingForStt 誤判成「還在等 STT」而silently擋下，且沒有任何提示，
+        // 治療師只會看到按了沒反應。跟 ProcessSubmit 一樣順手清掉逾時計時器，
+        // 避免它之後過期觸發 OnSttFinal 蓋掉已經送出的畫面。
+        isWaitingForStt = false;
+        if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         RefreshSubmitButton();
         ResetInputText();
         aiText.gameObject.SetActive(false);
