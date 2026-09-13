@@ -250,7 +250,8 @@ _CLOSING_SCHEMA = {
     "properties": {
         "closing_text": {
             "type": "string",
-            "description": "收尾語，1-2句、30字以內，把長者帶回當下。",
+            "description": "收尾語，1句話（用逗號銜接、只用一個句號收尾），30字以內，"
+                            "把長者帶回當下。",
         },
         "question": {
             "type": "string",
@@ -1068,6 +1069,20 @@ _GIVE_UP_KEYWORDS = ["不記得", "不知道", "忘了", "忘記了", "不清楚
 def _strip_leaked_brackets(text: str) -> str:
     text = _LEAK_BRACKET_RE.sub("", text).strip()
     return _UNMATCHED_LEAK_BRACKET_RE.sub("", text).strip()
+
+
+# 2026-09-14稽核（使用者提案）：closing.txt 已經要求承接語只寫一句話、
+# 用逗號銜接需要對比的內容、最後只用一個句號收尾（見該檔【收尾語規則】），
+# 這裡機械式保證這件事，不完全依賴模型自己遵守——找不到句號（模型用
+# 「！」「？」結尾、或忘記加標點）就整句保留，不動它，避免誤刪掉唯一
+# 一句話僅有的內容。
+def _truncate_to_first_period(text: str) -> str:
+    if not text:
+        return text
+    idx = text.find("。")
+    if idx == -1:
+        return text
+    return text[:idx + 1]
 
 
 # STEP3補問保底問句：target_w 已知時，比起完全通用的「讓你想到什麼？」，
@@ -4512,7 +4527,7 @@ class TherapyOrchestrator:
             + f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
             f"輸出一個JSON物件，包含2個key：\n"
-            f"closing_text（收尾語）：1-2句，30字以內。\n"
+            f"closing_text（收尾語）：1句話（用逗號銜接、只用一個句號收尾），30字以內。\n"
             f"question（問題）：不超過25字。"
         )
         messages = [
@@ -4572,6 +4587,12 @@ class TherapyOrchestrator:
             result["question"] = str(data.get("question") or "").strip()
         for key in ("closing_text", "question"):
             result[key] = _strip_leaked_brackets(_strip_trailing_covered_w_leak(result[key]))
+        # 2026-09-14稽核（使用者提案）：closing.txt 已經要求承接語只寫一句話、
+        # 只用一個句號收尾，但這只是prompt上的要求，本地弱模型偶爾還是會多寫
+        # 一句——機械式只保留到第一個句號為止當結構性保證，不依賴模型自己
+        # 遵守。找不到句號（模型用「！」「？」結尾、或忘記加標點）就整句保留，
+        # 不動它，避免誤刪掉唯一一句話的內容。
+        result["closing_text"] = _truncate_to_first_period(result["closing_text"])
         if not result["question"]:
             result["question"] = _FALLBACK_QUESTION
         if not result["closing_text"]:

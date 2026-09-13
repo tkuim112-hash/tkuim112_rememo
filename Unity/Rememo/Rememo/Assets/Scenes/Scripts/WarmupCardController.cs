@@ -900,11 +900,20 @@ public class WarmupCardController : MonoBehaviour
         {
             float dlj = (smDuration * smDuration * smDuration / (smPeakSpeed * smPeakSpeed)) * smSumJerkSq;
             float ldlj = -Mathf.Log(dlj + 1e-6f);
-            // 經驗範圍：實測前抓 -20（很不平滑）~ 0（非常平滑），之後依現場資料調整。
-            smoothPct = Mathf.RoundToInt(Mathf.Clamp01((ldlj + 20f) / 20f) * 100f);
-            // TODO(暫時診斷用): -20~0 這個範圍還沒拿真實 Kinect 資料校正過，
-            // 先把算出來的原始數值印出來，現場測完拿 ldlj 的實際分布回來重新
-            // 訂這個範圍，校正完就可以把這行拿掉。
+            // 經驗範圍：2026-09-14 拿現場實測（waist_twist/march_in_place/leg_kick/
+            // chest_expand/touch_knees 各一筆，動作品質是「正常做，沒有刻意求好或
+            // 搞砸」）校正過，5 筆 ldlj 落在 -23.76~-29.68 之間。這樣的「普通表現」
+            // 應該落在量表中段，不是兩端，所以兩端錨點抓在實測範圍外一段距離：
+            // -18（100%，比實測任何一筆都更平滑才拿滿分）~ -38（0%，比實測任何一
+            // 筆都更不穩才是 0 分），讓這批「普通」數據落在 42~71% 這個中段。目前
+            // 所有卡片共用同一個範圍，march_in_place/waist_twist 這兩張在這批樣本
+            // 裡數字明顯偏低，但只有一筆樣本，無法判斷是動作品質還是卡片動作本身
+            // 幅度較大造成的系統性落差——之後如果同一人測多次、不同卡片間持續有
+            // 這種落差，可能要改成每種卡片各自的範圍，而不是全部共用一個。
+            smoothPct = Mathf.RoundToInt(Mathf.Clamp01((ldlj + 38f) / 20f) * 100f);
+            // TODO(暫時診斷用): arm_raise（Hold 類）、arm_circle（連續繞圈）這兩張
+            // 卡還沒有實測資料驗證過上面的範圍，先把原始數值印出來，之後測到這
+            // 兩張卡再拿 log 回來看要不要調整範圍，確認過就把這行拿掉。
             Debug.Log($"[WarmupSmoothness] card={card.cardKey} duration={smDuration:F2}s peakSpeed={smPeakSpeed:F3}m/s sumJerkSq={smSumJerkSq:F2} dlj={dlj:E3} ldlj={ldlj:F2} -> {smoothPct}%");
         }
 
