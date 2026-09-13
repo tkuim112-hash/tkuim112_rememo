@@ -2605,6 +2605,15 @@ class TherapyOrchestrator:
             # 這裡 text_keys 換成 reaction_text，不能直接沿用，否則 fallback
             # 真的觸發時 result['reaction_text'] 會 KeyError。
             fallback={"reaction_text": ""},
+            # 2026-09-10起 reaction_text 已改成依 classification 查
+            # _IMAGE_REVEAL_REACTION_TEMPLATES 固定句（見該常數說明），不是
+            # LLM 現寫，語氣已經過長期稽核核可。不加這個參數的話，guarded_
+            # generate 仍會拿這句寫死的模板去跑 ai_claims_personal_memory_llm
+            # ——模板1「聽你這樣說，我彷彿也看到了當時的畫面。」被穩定判成
+            # 「疑似冒用經歷」，只要分類結果不變，重試幾次都是同一句話、同一個
+            # 判定，白白燒光3次重試額度、每次都失敗，最後連累到要動用
+            # pre_image_detail 那層保底（見下方 result["reaction_text"] 判斷）。
+            skip_ack_memory_check=True,
             user=user, scene_elements=scene_els, elder_response=elder_response,
             scene_composition=scene_comp, covered_w=covered_w,
             pre_image_detail=pre_image_detail, emotion=emotion,
@@ -2641,6 +2650,7 @@ class TherapyOrchestrator:
                 max_retry=3,
                 text_keys=("reaction_text",),
                 fallback={"reaction_text": ""},
+                skip_ack_memory_check=True,  # 理由同上一次呼叫：reaction_text是固定模板，不需要重查冒用經歷
                 user=user, scene_elements=scene_els, elder_response=elder_response,
                 scene_composition=scene_comp, covered_w=covered_w,
                 pre_image_detail=pre_image_detail, emotion=emotion,
@@ -2679,6 +2689,7 @@ class TherapyOrchestrator:
                 max_retry=3,
                 text_keys=("reaction_text",),
                 fallback={"reaction_text": ""},
+                skip_ack_memory_check=True,  # 理由同上一次呼叫：reaction_text是固定模板，不需要重查冒用經歷
                 user=user, scene_elements=scene_els, elder_response=elder_response,
                 scene_composition=scene_comp, covered_w=covered_w,
                 pre_image_detail=pre_image_detail, emotion=emotion,
