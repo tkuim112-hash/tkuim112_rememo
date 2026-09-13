@@ -58,12 +58,11 @@ AU_PRESENT_MIN = 0.5   # AU 強度判定為「有出現」的門檻（py-feat �
 # 個人基準扣除的上限，只套用在 AU_VALENCE_POSITIVE（見 _au_baseline）——套用
 # 到皺眉那組會削弱原本運作良好的校正效果，見該函式說明。
 #
-# 2026-09-14 稽核：AU-DEBUG 實測發現卡到 0.2 上限的人，扣完基準殘留值仍
-# 輕易衝過 _au_graded 的封頂點（沒笑也判成滿分微笑）——同一次校正量到的
-# 其他 AU 基準（未套上限）落在 0.33~0.56，推測 AU06/12 真實基準也在類似
-# 量級，0.2 夾太低。改成 0.35，09-09 那次案例（baseline 0.266/0.319）仍
-# 低於新上限、不受影響。同樣是暫定值，之後累積更多資料再調整。
-AU_BASELINE_CAP = 0.35
+# 2026-09-14 稽核：0.2 上限太低（沒笑也判成滿分微笑），改成 0.35 後又
+# 實測發現太高——真的在笑時，扣完基準常常掉到 AU_PRESENT_MIN_POSITIVE
+# (0.3) 以下，判不到笑。改回 0.3，09-09 那次案例（baseline 0.266/0.319）
+# 仍低於這個上限、不受影響。同樣是暫定值，之後累積更多資料再調整。
+AU_BASELINE_CAP = 0.3
 # 微笑/負向表情各自的「有出現」門檻，比一般 AU_PRESENT_MIN 寬鬆，避免個人
 # 基準扣完後永遠過不了 0.5（見 _au_present_min）。負向比正向保守，因為焦躁/
 # 低落誤判代價較高。
@@ -915,14 +914,6 @@ async def _ema_classify(
     # awaiting_response 分支說明），這裡一併排除。
     sway_threshold = _body_sway_threshold(calib)
     body_sway_agi = max(0.0, min(1.0, p.body_sway / max(sway_threshold, 1e-6) - 1.0))
-    # 暫時稽核用 log（比照 AU-DEBUG，查個人化晃動門檻是不是把真的晃動訊號
-    # 蓋掉，驗證完就移除）：body_sway_baseline 印 0.0 代表沒有校正資料或
-    # 校正基準是 0，這時 threshold 會退回固定值 SWAY_AGITATION_MIN。
-    print(
-        f"[SWAY-DEBUG] session={session_id} body_sway={p.body_sway:.4f} "
-        f"baseline={(calib or {}).get('bodySwayBaseline', 0.0):.4f} "
-        f"threshold={sway_threshold:.4f} body_sway_agi={body_sway_agi:.3f}"
-    )
     tension_agi = min(1.0, _skel_tension(p, calib) / 2.0)  # _skel_tension 上界是 2.0，正規化成 [0,1]
     if p.awaiting_response:
         pitch_agi = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))
@@ -939,6 +930,18 @@ async def _ema_classify(
             + tension_agi  * (0.15 / 0.75)
         )
     new_agi = prev_agi + EMA_ALPHA * (raw_agi - prev_agi)
+    # 暫時稽核用 log（比照 AU-DEBUG，查即時畫面顯示的 agitation_pct 平滑後
+    # 反應夠不夠快，驗證完就移除）：body_sway_baseline 印 0.0 代表沒有校正
+    # 資料或校正基準是 0，這時 threshold 會退回固定值 SWAY_AGITATION_MIN。
+    # new_agi/agitation_pct 是即時畫面實際顯示的值，body_sway_agi 只是其中
+    # 一個分量，兩者不能直接劃等號。
+    print(
+        f"[SWAY-DEBUG] session={session_id} body_sway={p.body_sway:.4f} "
+        f"baseline={(calib or {}).get('bodySwayBaseline', 0.0):.4f} "
+        f"threshold={sway_threshold:.4f} body_sway_agi={body_sway_agi:.3f} "
+        f"raw_agi={raw_agi:.3f} prev_agi={prev_agi:.3f} new_agi={new_agi:.3f} "
+        f"agitation_pct={_pct(new_agi, *AGITATION_RANGE)}"
+    )
 
     # EMA 更新：agitation 每一幀都更新，但 engagement／happiness 只在真的有對應
     # 訊號時才更新——「沒偵測到」跟「偵測到、但剛好是中性/沒有」是兩回事，如果
@@ -1251,6 +1254,14 @@ async def receive_sensor(
             )
 
     emotion_raw, eng, hap, agi = await _ema_classify(r, body.session_id, body, au, pose, calib)
+    if face_detected:
+        # 暫時稽核用 log（比照 SWAY-DEBUG，查即時畫面顯示的 happiness_pct
+        # 平滑後反應夠不夠快/準不準，驗證完就移除）：new_hap/happiness_pct
+        # 才是即時畫面實際顯示的值，上面 AU-DEBUG 印的只是原始 AU 訊號。
+        print(
+            f"[AU-DEBUG] session={body.session_id} new_hap={hap:.3f} "
+            f"happiness_pct={_pct(hap, *HAPPINESS_RANGE)} emotion={emotion_raw}"
+        )
     signals = _reasoning_signals(body, au, pose, calib, face_detected)
     await _update_session_stats(r, body.session_id, body, emotion_raw, au, pose, calib, signals, eng, hap, agi, face_detected)
     emotion_label = _EMOTION_LABEL.get(emotion_raw, "適當")
