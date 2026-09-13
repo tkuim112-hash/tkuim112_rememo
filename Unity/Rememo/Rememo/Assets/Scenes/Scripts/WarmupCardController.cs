@@ -796,7 +796,18 @@ public class WarmupCardController : MonoBehaviour
     // 類卡片都適用，不用每種卡各寫一次找中點的邏輯。
     void SampleSmoothnessFromPair(KinectManager km, long userId, KinectInterop.JointType left, KinectInterop.JointType right, float dt)
     {
-        if (!km.IsJointTracked(userId, (int)left) || !km.IsJointTracked(userId, (int)right)) return;
+        if (!km.IsJointTracked(userId, (int)left) || !km.IsJointTracked(userId, (int)right))
+        {
+            // 掉追蹤的這幾幀直接跳過不取樣，但下一次追蹤恢復時 smLastPos 還是
+            // 掉追蹤前的舊位置——SampleSmoothness 拿「舊位置」對「當幀 dt」做
+            // 差分，等於拿位移除以太小的時間，速度被虛灌大，再微分兩次算加速度/
+            // jerk 誤差會被放大兩次（2026-09-14 現場回報：arm_circle 手部繞到
+            // 肩膀/頭部附近容易短暫掉追蹤，踩到這個 bug 使 peakSpeed 衝到
+            // 7.297m/s，遠高於其他卡的 0.85~2.87m/s）。掉追蹤時整個差分鏈重置，
+            // 恢復追蹤後從新的一幀重新開始算，不要跨越掉追蹤的空隙硬算微分。
+            smHasPos = smHasVel = smHasAcc = smHasFilteredPos = false;
+            return;
+        }
         Vector3 mid = (km.GetJointPosition(userId, (int)left) + km.GetJointPosition(userId, (int)right)) * 0.5f;
         SampleSmoothness(mid, dt);
     }

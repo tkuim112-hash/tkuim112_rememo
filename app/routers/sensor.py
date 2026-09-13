@@ -13,6 +13,11 @@ HEAD_DROP_MIN      = 0.12   # m：頭部低於 SpineShoulder 的門檻（低頭/
 LEAN_FWD_MIN       = 0.05   # m：SpineBase.z − SpineMid.z 前傾門檻（投入）
 SHOULDER_RAISE_MIN = 0.04   # m：聳肩門檻（焦慮緊張）
 SWAY_AGITATION_MIN  = 0.025  # m：SpineBase 晃動標準差門檻（焦躁動作）
+# 2026-09-14 稽核：個人晃動基準沒有上限保護時，同一個人不同場次校正量到
+# 的基準可以差將近一倍（實測 0.019 vs 0.037），門檻跟著同倍數飄動，同樣
+# 力道的晃動有時候能算進 agitation、有時候幾乎不算——跟 AU_BASELINE_CAP
+# 同一種問題、同一種修法：保留個人化方向，但夾住異常偏高的單次校正結果。
+SWAY_BASELINE_CAP   = 0.03   # m：個人晃動基準扣除的上限，見 _body_sway_threshold
 AUDIO_SPEECH_MIN    = 0.015  # RMS：說話音量門檻
 EMA_ALPHA           = 0.25   # EMA 平滑係數（~8 次 × 2s = 16s 收斂）
 # B 階段擴充閾值（Proxemics / 音高 / 手部速度）
@@ -595,8 +600,9 @@ def _is_head_drop(p: SensorPayload, calib: dict | None = None) -> bool:
 
 def _body_sway_threshold(calib: dict | None) -> float:
     """
-    個人晃動門檻＝校正期間量到的個人靜坐晃動基準 + SWAY_AGITATION_MIN
-    當固定邊際，沒有校正基準時退回純固定門檻。
+    個人晃動門檻＝校正期間量到的個人靜坐晃動基準（夾在 SWAY_BASELINE_CAP
+    以內，見該常數說明）+ SWAY_AGITATION_MIN 當固定邊際，沒有校正基準時
+    退回純固定門檻。
 
     2026-09-13 稽核：本體感覺/視覺/前庭覺隨年齡退化，長者「靜止不動」時
     的姿勢晃動幅度本身就普遍比年輕人大（見文獻查證），不是像脊椎後凸只
@@ -614,7 +620,7 @@ def _body_sway_threshold(calib: dict | None) -> float:
     if calib:
         baseline = calib.get("bodySwayBaseline", 0.0)
         if baseline > 0.0:
-            return baseline + SWAY_AGITATION_MIN
+            return min(SWAY_BASELINE_CAP, baseline) + SWAY_AGITATION_MIN
     return SWAY_AGITATION_MIN
 
 
