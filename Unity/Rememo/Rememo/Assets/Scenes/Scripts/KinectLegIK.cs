@@ -124,6 +124,17 @@ public class KinectLegIK : MonoBehaviour
         Vector3 hipWorldPos = hip.position;
         Vector3 rawTargetPos = avatarController.GetJointWorldPos(footJoint);
 
+        // GetJointWorldPos() 的 Y 軸另外疊加了一次 offsetPos.y/sensorHeight（見
+        // AvatarController.cs 第212行），跟 X/Z 的算法不對稱，實測這個 Y 幾乎每
+        // 一幀都比髖部還高，不是偶爾雜訊。km.GetJointPosition() 拿到的原始關節
+        // 座標，Y 軸已經是 KinectManager 用 kinectToWorld 矩陣轉換過的地板相對
+        // 高度，髖、腳兩個關節出自同一次轉換，兩者的差值（腳踝比髖部低多少）是
+        // 可信的，不會被 GetJointWorldPos 那段有問題的疊加公式污染。X/Z 維持原
+        // 本用 GetJointWorldPos，只有 Y 換成這個差值。
+        Vector3 kinectHipRaw = km.GetJointPosition(userId, (int)hipJoint);
+        Vector3 kinectFootRaw = km.GetJointPosition(userId, (int)footJoint);
+        rawTargetPos.y = hipWorldPos.y + (kinectFootRaw.y - kinectHipRaw.y);
+
         // 角色是小孩比例，腿比真人短很多，直接套用真人世界座標會逼短腿硬凹去搆
         // 一個相對過遠的目標。用「這個人當下的真實腿長」跟「角色自己的腿長」算
         // 縮放比例，把目標點相對髖部的偏移量按比例縮小，角色維持小孩外型，只是
@@ -131,10 +142,8 @@ public class KinectLegIK : MonoBehaviour
         // 以縮放比例本身也做平滑，不要一幀變化太大。
         if (km.IsJointTracked(userId, (int)kneeJoint))
         {
-            Vector3 kinectHip = km.GetJointPosition(userId, (int)hipJoint);
             Vector3 kinectKnee = km.GetJointPosition(userId, (int)kneeJoint);
-            Vector3 kinectFoot = km.GetJointPosition(userId, (int)footJoint);
-            float realLegLen = Vector3.Distance(kinectHip, kinectKnee) + Vector3.Distance(kinectKnee, kinectFoot);
+            float realLegLen = Vector3.Distance(kinectHipRaw, kinectKnee) + Vector3.Distance(kinectKnee, kinectFootRaw);
 
             if (realLegLen > 0.1f)
             {
@@ -144,6 +153,10 @@ public class KinectLegIK : MonoBehaviour
         }
 
         Vector3 scaledTargetPos = hipWorldPos + (rawTargetPos - hipWorldPos) * legScale;
+
+        // 上面已經改用可信的原始高度差算 Y，正常情況下不會再高過髖部。這裡留一道
+        // 安全網防極端雜訊幀，但只在真的超過時才夾住，不會平常就把目標往下拉。
+        scaledTargetPos.y = Mathf.Min(scaledTargetPos.y, hipWorldPos.y);
 
         // 用「限制每幀最大移動速度」取代整幀丟棄：單幀雜訊只會被削掉尖峰、下一幀
         // 就會自然修正；就算一開始骨架初始位置跟 Kinect 實際位置差很多（不是雜
@@ -155,9 +168,20 @@ public class KinectLegIK : MonoBehaviour
         lastTarget = targetPos;
         hasLastTarget = true;
 
-        Vector3 kneeHintPos = km.IsJointTracked(userId, (int)kneeJoint)
-            ? avatarController.GetJointWorldPos(kneeJoint)
-            : knee.position;
+        // 膝蓋提示位置只用來算彎曲方向，但一樣吃 GetJointWorldPos()，Y 軸有同一個
+        // 疊加問題，錯的高度會讓彎曲方向算歪，膝蓋可能凹錯邊。用同樣的原始高度差
+        // 校正。
+        Vector3 kneeHintPos;
+        if (km.IsJointTracked(userId, (int)kneeJoint))
+        {
+            kneeHintPos = avatarController.GetJointWorldPos(kneeJoint);
+            Vector3 kinectKneeRaw = km.GetJointPosition(userId, (int)kneeJoint);
+            kneeHintPos.y = hipWorldPos.y + (kinectKneeRaw.y - kinectHipRaw.y);
+        }
+        else
+        {
+            kneeHintPos = knee.position;
+        }
 
         KinectTwoBoneIK.Solve(hip, knee, foot, targetPos, kneeHintPos, upperLen, lowerLen);
     }

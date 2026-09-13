@@ -73,6 +73,30 @@ export interface SessionRound {
   signalCodes?: string[];
 }
 
+// 暖身狀態總覽頁用：見 app/routers/session.py session_warmup_card_result、
+// /api/sessions/[id]/warmup-summary/route.ts。jointAnglePct 依卡片類型可能
+// 是真的角度型、距離型（摸膝蓋）或圓形吻合度型（手臂旋轉），文字標籤見
+// therapist-dashboard/src/lib/warmupCards.ts 的 metricOneLabel。status 是
+// 'skipped' 時三個指標都是 null，前端顯示「—」。
+export interface WarmupCardResult {
+  cardKey: string;
+  cardOrder: number;
+  status: "completed" | "skipped" | "manual";
+  jointAnglePct: number | null;
+  smoothnessPct: number | null;
+  symmetryPct: number | null;
+  durationSeconds: number | null;
+}
+
+export interface WarmupSummary {
+  jointAnglePct: number | null;
+  smoothnessPct: number | null;
+  symmetryPct: number | null;
+  avgDurationSeconds: number | null;
+  skippedCount: number;
+  manualCount: number;
+}
+
 export interface ActiveSession {
   sessionId: string;
   caseId: string;

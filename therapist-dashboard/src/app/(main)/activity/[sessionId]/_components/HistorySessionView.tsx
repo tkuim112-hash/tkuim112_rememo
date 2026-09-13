@@ -96,6 +96,21 @@ export function HistorySessionView({
        <h2 className="text-[20px] font-bold text-[#1a1a1a]">各回合紀錄</h2> {/* 區塊標題 */}
 
 
+       {/* 暖身狀態總覽卡片，顯示在第一回合卡片上方；詳細資料另開新頁面呈現 */}
+       <div className="bg-white rounded-xl px-6 py-5 flex items-center justify-between">
+         <div className="flex flex-col gap-0.5">
+           <span className="text-[13px] text-[#888]">暖身活動</span>
+           <span className="text-[16px] font-bold text-[#1a1a1a]">暖身狀態總覽</span>
+         </div>
+         <Link
+           href={`/activity/${session.id}/warmup-summary`}
+           className="text-[14px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors"
+         >
+           詳細 ›
+         </Link>
+       </div>
+
+
        {/* 逐筆渲染每個回合卡片 */}
        {rounds.map((round) => {
          const dotColor = EMOTION_COLORS[round.emotion] ?? "#888";
