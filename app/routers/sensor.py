@@ -903,6 +903,14 @@ async def _ema_classify(
     # awaiting_response 分支說明），這裡一併排除。
     sway_threshold = _body_sway_threshold(calib)
     body_sway_agi = max(0.0, min(1.0, p.body_sway / max(sway_threshold, 1e-6) - 1.0))
+    # 暫時稽核用 log（比照 AU-DEBUG，查個人化晃動門檻是不是把真的晃動訊號
+    # 蓋掉，驗證完就移除）：body_sway_baseline 印 0.0 代表沒有校正資料或
+    # 校正基準是 0，這時 threshold 會退回固定值 SWAY_AGITATION_MIN。
+    print(
+        f"[SWAY-DEBUG] session={session_id} body_sway={p.body_sway:.4f} "
+        f"baseline={(calib or {}).get('bodySwayBaseline', 0.0):.4f} "
+        f"threshold={sway_threshold:.4f} body_sway_agi={body_sway_agi:.3f}"
+    )
     tension_agi = min(1.0, _skel_tension(p, calib) / 2.0)  # _skel_tension 上界是 2.0，正規化成 [0,1]
     if p.awaiting_response:
         pitch_agi = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))

@@ -776,6 +776,37 @@ _AI_MEMORY_CHECK_SYSTEM = (
 )
 
 
+# 2026-09-14稽核（真實session實測抓到）：ai_claims_personal_memory_llm
+# 是丟給本地弱模型做的「是/否」二元判斷，這次連續在同一個session踩到兩次
+# 偽陰性——「聽到你提到家人，讓我想起了自己的親人。」「聽到你提到邊吃飯，
+# 讓我想起了年輕時和朋友們一起聚餐的歡樂時光。」都被判成「否」放行，
+# 送到長者端。這兩句都用了「(讓)我...想起」這個固定措辭自稱有一段記憶，
+# 跟同一天稍早出示圖片那句「聽你這樣說，我彷彿也看到了當時的畫面。」
+# 反過來被同一顆模型誤判成「是」（見 orchestrator.py 呼叫處補的
+# skip_ack_memory_check）合起來看，這顆本地模型在這個二元判斷任務上
+# 偽陽性、偽陰性都會發生，不夠穩定。
+#
+# 「(讓/使)我...想起」這個措辭本身——不管後面接的是不是明講自己的親人/
+# 童年——就是在暗示AI擁有一段屬於自己的記憶，跟_AI_MEMORY_CHECK_SYSTEM
+# 要擋的是同一件事，但這個特定措辭可以直接用規則比對抓，不需要再賭一次
+# 準確率不穩的LLM判斷。這條規則式檢查不取代 ai_claims_personal_memory_llm
+# （後者還要抓更多樣的冒用經歷措辭，例如直接寫「我小時候」「我媽媽」），
+# 是補上前者對這個特定措辭的漏洞、且不用額外LLM呼叫，可以放在LLM檢查
+# 之前當免費的第一道防線。
+_AI_RECOLLECTION_RE = re.compile(r"(我|讓我|使我)(也|都)?(回)?想起")
+
+
+def ack_claims_recollection(text: str) -> bool:
+    """True 代表承接語裡AI自稱「(讓)我想起/回想起」了什麼。這個措辭本身就是
+    在暗示AI有一段屬於自己的記憶，跟_COMPOSE_RULES「我」只能表達當下情緒
+    反應（不能是回憶）的規則矛盾，一律視為違規，不需要判斷後面接的內容
+    是不是真的講到親人/童年——只要AI自稱「想起」了什麼，這件事本身就不
+    成立。"""
+    if not text:
+        return False
+    return bool(_AI_RECOLLECTION_RE.search(text))
+
+
 async def ai_claims_personal_memory_llm(
     text: str, elder_response: str, llm_service,
 ) -> bool:
@@ -1982,6 +2013,21 @@ async def guarded_generate(
                 "呼應長者剛才說的內容（提到誰、提到什麼事）。這次請具體引用長者剛才"
                 "說的話裡提到的人事物，例如「聽起來那段跟○○一起做工的日子很熱鬧呢」"
                 "這種寫法，不要用套語帶過。"
+            ), False))
+
+        # AI自稱「(讓)我想起/回想起」了什麼——見 ack_claims_recollection
+        # 上方2026-09-14稽核：這個特定措辭下面的 ai_claims_personal_memory_llm
+        # LLM判斷抓不穩（真實session連續2輪放行），改用規則比對免費先擋，
+        # 不管 skip_ack_memory_check 有沒有設（那個參數只是省下面LLM那次
+        # 呼叫，這條規則比對本來就不用呼叫LLM，一律都要查）。
+        if ack_claims_recollection(ack_check_text):
+            logger.warning(f"[ResponseGuard] 承接語疑似AI自稱想起了什麼: {ack_check_text!r}")
+            violations.append(("ack_claims_recollection", (
+                f"上一次的承接語「{ack_check_text}」寫了「(讓)我想起」這類措辭，"
+                "等於AI自稱擁有一段屬於自己的記憶——AI在這段對話裡只是聆聽者，"
+                "沒有自己的人生經歷，不能說任何事「讓我想起」了什麼。這次請把"
+                "「我」的部分改成單純表達你聽完之後當下的情緒反應（例如「我也"
+                "覺得很溫暖」），不要用「想起」這個字。"
             ), False))
 
         # 承接語／場景文字幾乎整段複誦長者剛才那句話，不是用自己的話轉述

@@ -55,16 +55,32 @@ public static class KinectPoseChecker
         return leftLevel && rightLevel && leftOut && rightOut;
     }
 
+    // 摸膝蓋碰到/放開的判定滯後狀態（hysteresis）：距離只有單一門檻的話，彎腰
+    // 摸膝蓋時手在門檻附近小幅晃動（加上彎腰時肩寬本身也會飄動，門檻線跟著
+    // 抖），會被反覆誤判成「放開又碰到」，一次彎腰動作就能多算好幾次（見
+    // 2026-09-14 現場回報：實際彎 3 次被算成 5 次）。改成碰到／放開用不同門檻，
+    // 距離要明顯拉開超過 TouchExitRatio 才算放開，抖動幅度不夠大就維持原本
+    // 狀態，不會來回誤觸發。ResetTouchKneesState 在每次進新卡片時呼叫，避免
+    // 上一張卡結束時的狀態延續到這一張。
+    private const float TouchEnterRatio = 1.2f;
+    private const float TouchExitRatio = 1.5f;
+    private static bool touchKneesEngaged;
+
+    public static void ResetTouchKneesState()
+    {
+        touchKneesEngaged = false;
+    }
+
     public static bool IsTouchingKnees(KinectManager km, long userId)
     {
         if (!km.IsJointTracked(userId, (int)HandLeft) || !km.IsJointTracked(userId, (int)HandRight) ||
             !km.IsJointTracked(userId, (int)KneeLeft) || !km.IsJointTracked(userId, (int)KneeRight))
         {
-            return false;
+            return touchKneesEngaged;
         }
 
         float sw = ShoulderWidth(km, userId);
-        if (sw < 0.05f) return false;
+        if (sw < 0.05f) return touchKneesEngaged;
 
         Vector3 hL = km.GetJointPosition(userId, (int)HandLeft);
         Vector3 hR = km.GetJointPosition(userId, (int)HandRight);
@@ -75,18 +91,28 @@ public static class KinectPoseChecker
         // 0.29~0.40 倍，原本 1.6 倍的門檻太寬鬆，站著不動就會被判定成「碰到」。
         // 改到 0.9 倍又太緊——彎腰時 Kinect 對肩膀的追蹤準確度會下降，量到的
         // 肩寬（當比例基準）本身就會飄動，伸手伸到底也量不到那麼低的比例。抓在
-        // 兩次實測中間，改成 1.2 倍。
+        // 兩次實測中間，改成 1.2 倍當作「碰到」的進入門檻。
         float distL = Vector3.Distance(hL, kL);
         float distR = Vector3.Distance(hR, kR);
-        bool touching = distL < sw * 1.2f && distR < sw * 1.2f;
+
+        if (touchKneesEngaged)
+        {
+            // 已經判定碰到了：只要還有一手停在門檻附近，就當作長者還維持著碰
+            // 膝蓋的姿勢，兩手都明顯拉開超過 TouchExitRatio 才算真的放開。
+            touchKneesEngaged = distL < sw * TouchExitRatio || distR < sw * TouchExitRatio;
+        }
+        else
+        {
+            touchKneesEngaged = distL < sw * TouchEnterRatio && distR < sw * TouchEnterRatio;
+        }
 
         // 除錯用：確認過原因了記得把這段 log 拿掉。
         if (Time.frameCount % 30 == 0)
         {
-            Debug.Log($"[TouchKnees] distL={distL:F3} distR={distR:F3} sw={sw:F3} threshold={sw * 1.2f:F3} touching={touching}");
+            Debug.Log($"[TouchKnees] distL={distL:F3} distR={distR:F3} sw={sw:F3} enter={sw * TouchEnterRatio:F3} exit={sw * TouchExitRatio:F3} touching={touchKneesEngaged}");
         }
 
-        return touching;
+        return touchKneesEngaged;
     }
 
     // 扭腰：實際動作是髖部左右擺動（不是上半身相對下半身扭轉），所以量「髖部

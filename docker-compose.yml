@@ -239,9 +239,17 @@ services:
       # 下載一次——網速不快時要 40~60 分鐘，這段期間 /sensor/emotion 的臉部
       # 分析請求全部連線失敗，被當成「沒偵測到臉」，跟門檻/校正/距離都無關。
       - ./models/py_feat_resources:/opt/conda/lib/python3.11/site-packages/feat/resources
-    # server.py 改用 device="cpu"、完全不給容器GPU可見性
-    # （見該檔開頭說明），不再需要NVIDIA環境變數／GPU device reservation，
-    # 把約1GB VRAM還給ollama。
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
 
   # M1: 感知數據處理服務 (OpenAI Whisper STT)

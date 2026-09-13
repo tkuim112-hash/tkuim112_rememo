@@ -281,6 +281,8 @@ public class WarmupCardController : MonoBehaviour
         lastArmCircleRepTime = -999f;
         progressReportTimer = 0f;
 
+        KinectPoseChecker.ResetTouchKneesState();
+
         cardStartTime = Time.time;
         smHasPos = smHasVel = smHasAcc = smHasFilteredPos = false;
         smDuration = smPeakSpeed = smSumJerkSq = 0f;
@@ -900,6 +902,10 @@ public class WarmupCardController : MonoBehaviour
             float ldlj = -Mathf.Log(dlj + 1e-6f);
             // 經驗範圍：實測前抓 -20（很不平滑）~ 0（非常平滑），之後依現場資料調整。
             smoothPct = Mathf.RoundToInt(Mathf.Clamp01((ldlj + 20f) / 20f) * 100f);
+            // TODO(暫時診斷用): -20~0 這個範圍還沒拿真實 Kinect 資料校正過，
+            // 先把算出來的原始數值印出來，現場測完拿 ldlj 的實際分布回來重新
+            // 訂這個範圍，校正完就可以把這行拿掉。
+            Debug.Log($"[WarmupSmoothness] card={card.cardKey} duration={smDuration:F2}s peakSpeed={smPeakSpeed:F3}m/s sumJerkSq={smSumJerkSq:F2} dlj={dlj:E3} ldlj={ldlj:F2} -> {smoothPct}%");
         }
 
         return (anglePct, smoothPct, symPct);
