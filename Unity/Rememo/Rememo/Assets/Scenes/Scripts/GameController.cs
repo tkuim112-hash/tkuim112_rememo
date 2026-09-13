@@ -353,6 +353,10 @@ public class GameController : MonoBehaviour
         catch { return; }
         if (msg == null) return;
 
+        // 2026-09-13 除錯用：下次治療師反映「按了沒反應」時，靠這行 log 判斷是
+        // 「後端根本沒推播/沒收到」還是「收到了但被下面某個旗標擋下」。
+        Debug.Log($"[Control] 收到 type={msg.type} action={msg.action} | isRecording={isRecording} isWaitingForStt={isWaitingForStt} isSubmitting={isSubmitting} isPaused={isPaused} isPendingTherapistReview={isPendingTherapistReview}");
+
         if (msg.type == "control")
         {
             switch (msg.action)
@@ -361,6 +365,8 @@ public class GameController : MonoBehaviour
                     // 暫停中不重播：重播會重新排反應逾時倒數，等於讓暫停中的療程自己繼續跑。
                     if (!isPaused)
                         OnReplayAudio();
+                    else
+                        Debug.Log($"[Control] replay_audio 被擋下：isPaused={isPaused}");
                     break;
                 case "skip_scene":
                     // 跳過「目前這一題」，不是跳過整個回合：視同長者未回應直接進下一步，
@@ -369,6 +375,8 @@ public class GameController : MonoBehaviour
                     // 這裡搶著用 NoResponseMarker 蓋過去會跟治療師的確認結果打架。
                     if (!isRecording && !isWaitingForStt && !isSubmitting && !isPaused && !isPendingTherapistReview)
                         StartCoroutine(AutoSubmitNoResponse());
+                    else
+                        Debug.Log($"[Control] skip_scene 被擋下：isRecording={isRecording} isWaitingForStt={isWaitingForStt} isSubmitting={isSubmitting} isPaused={isPaused} isPendingTherapistReview={isPendingTherapistReview}");
                     break;
                 case "pause":
                     isPaused = true;
