@@ -75,7 +75,15 @@ async def llm_topic_check(text: str, taboo_words: list[str], llm_service) -> boo
             {"role": "system", "content": _TOPIC_CHECK_SYSTEM},
             {"role": "user", "content": prompt},
         ]
-        raw = await llm_service.chat(messages)
+        # temperature=0：這是一個「只回YES/NO」的二元判斷，不是需要多樣性
+        # 的生成任務。沒指定溫度時吃 llm.py 預設的 TEMPERATURE=0.3，實測
+        # 發現同一句完全固定不變的文字（例如orchestrator.py寫死的分類1
+        # 過渡句「聽你這樣說，我彷彿也看到了當時的畫面。」）反覆檢查，
+        # 判定結果會不一致——同樣輸入卻有時候過、有時候被判違規，长者
+        # 明明講的是做料理，卻偶爾被判成涉及跟主題完全無關的政治禁忌詞。
+        # 降到0讓這個判斷盡量趨於決定性，減少純粹因為取樣隨機性造成的
+        # 誤判（不保證100%決定性，但比0.3的隨機程度低很多）。
+        raw = await llm_service.chat(messages, temperature=0)
         return raw.strip().upper().startswith("Y")
     except Exception as e:
         logger.warning(f"[TabooChecker] LLM語意檢查失敗: {e}，保守視為違規")

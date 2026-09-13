@@ -10,9 +10,16 @@ Face Emotion 服務：用 py-feat 分析單張畫面的 FACS Action Unit (AU) �
 """
 import io
 import logging
+import os
 import tempfile
 from contextlib import asynccontextmanager
 
+# 這個服務完全不用GPU（見下面 _load_detector 的說明），必須在 import torch
+# 之前設定 CUDA_VISIBLE_DEVICES——CUDA可見性是 torch 的C擴充在初始化時讀
+# 一次的，import之後再設定環境變數沒有效果。
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+
+import torch  # noqa: E402（見上面說明，必須排在設定 CUDA_VISIBLE_DEVICES 之後）
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image
@@ -21,12 +28,47 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-_detector = None  # 延遲載入，Start-up 時初始化一次，常駐在 GPU 上
+# 部分 py-feat 模型（例如 img2pose 的 resnet18 backbone）checkpoint 存檔時是
+# CUDA tensor，torch.load 在完全看不到CUDA裝置時預設仍會嘗試反序列化回CUDA
+# 裝置、直接拋 RuntimeError，跟 feat.Detector 傳的 device 參數無關，要在
+# torch.load 這一層強制指定 map_location 才能繞過。monkeypatch 不能只用
+# kwargs.setdefault：torch.hub.load_state_dict_from_url 內部呼叫時會明確傳
+# map_location=None（不是省略這個key），setdefault對「key存在、值是None」
+# 不會生效，要顯式檢查並覆蓋。
+_original_torch_load = torch.load
+
+
+def _cpu_only_torch_load(*args, **kwargs):
+    if len(args) < 2 and kwargs.get("map_location") is None:
+        kwargs["map_location"] = "cpu"
+    return _original_torch_load(*args, **kwargs)
+
+
+torch.load = _cpu_only_torch_load
+
+_detector = None  # 延遲載入，Start-up 時初始化一次
 
 
 def _load_detector():
     """載入 py-feat Detector。模型權重第一次執行會自動從 HuggingFace 下載，
-    掛了 volume 快取後之後啟動不用重下。"""
+    掛了 volume 快取後之後啟動不用重下。
+
+    device="cpu"，完全不佔用GPU——這台機器的GPU同時被 ollama（LLM＋RAG
+    嵌入模型，100% GPU 常駐）、stt 共用，VRAM餘裕壓到只剩約1.6GB，懷疑是
+    偶爾單次LLM生成卡到數分鐘的原因之一。CPU代價：Unity端每2秒才送一次
+    畫面做分析（不是即時30fps影像流，見 app/routers/sensor.py 的
+    sendInterval 說明），單張畫面分析在CPU上約0.81秒、GPU上約0.5-0.6秒，
+    差距遠低於2秒的呼叫間隔，不會造成堆積；換來的是釋放約970MB VRAM。
+    au_model="xgb" 本身是XGBoost，原本就不吃GPU加速，真正受益於GPU的只有
+    另外4個小型CNN模型，CPU推論的代價本來就有限。
+
+    只改 device="cpu"、但容器仍能看到GPU（NVIDIA_VISIBLE_DEVICES）不夠——
+    只要容器看得到CUDA裝置，torch/py-feat內部某些初始化路徑還是會建立CUDA
+    context、佔掉VRAM。必須連容器的GPU可見性一起拿掉（上面的
+    CUDA_VISIBLE_DEVICES=""＋torch.load monkeypatch），才會真的釋放VRAM；
+    docker-compose.yml 對應的NVIDIA環境變數／GPU device reservation也要
+    一併移除。
+    """
     from feat import Detector
 
     logger.info("載入 py-feat Detector...")
@@ -36,7 +78,7 @@ def _load_detector():
         au_model="xgb",
         emotion_model="resmasknet",
         facepose_model="img2pose",
-        device="cuda",
+        device="cpu",
     )
     logger.info("py-feat Detector 載入完成")
     return detector

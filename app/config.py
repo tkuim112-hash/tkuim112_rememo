@@ -17,8 +17,10 @@ class Settings(BaseSettings):
     # 2026-09-08實測：16GB顯卡上這個值超過~24576，模型就會被擠出GPU、部分
     # 改用CPU算，單次生成從1.5-3.6秒拖慢到5-7秒；24576是目前prompt實際
     # 用量（約14000 tokens）之上留足安全餘裕、又能維持整個模型留在GPU的
-    # 上限，調高前請先用 ollama ps 確認 PROCESSOR 欄位仍是 100% GPU。
-    ollama_num_ctx: int = 8192
+    # 上限（原本留8192，比實際用量還小、長期在截斷prompt前段，已調高）。
+    # 部署到不同GPU的機器時，調整這個值後務必用 ollama ps 確認 PROCESSOR
+    # 欄位仍是 100% GPU，避免被擠到CPU算反而更慢。
+    ollama_num_ctx: int = 24576
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://stt:8000"

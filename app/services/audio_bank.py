@@ -289,26 +289,22 @@ FIVE_W1H_AUDIO_KEYS = {
     },
     "興趣": {
         "granularity": "theme",
+        # orchestrator.py _FIVE_W1H_BANK 的「興趣」已經把整個 Why 欄位
+        # 刪掉（跟Q1邀請語重複，見該檔案說明），這裡同步拿掉 Why，不留
+        # 永遠查不到的音檔 key。
         "fields": {
             "Where": ["w_hobby_where1", "w_hobby_where2"],
             "When": ["w_hobby_when1", "w_hobby_when2"],
             "How": ["w_hobby_how1", "w_hobby_how2"],
-            # orchestrator.py _FIVE_W1H_BANK 的「興趣」Why 已經把原本
-            # index 0 那句（「這件事裡，最讓你放不下的是哪一部分？」，
-            # 對應 w_hobby_why1）刪掉，只剩原本 index 1 那句「說起這個
-            # 興趣，最讓你著迷的是什麼？」——這裡要同步拿掉 w_hobby_why1，
-            # 讓剩下唯一的 variant（現在的 index 0）正確對到它原本的
-            # w_hobby_why2，不要因為兩邊清單長度不同步，讓 index 0 誤查到
-            # 已經刪掉那句的舊音檔。
-            "Why": ["w_hobby_why2"],
         },
     },
     "專長": {
         "granularity": "theme",
+        # orchestrator.py 已把「專長」的 How 欄位整個刪掉（跟Q1邀請語
+        # 重複），這裡同步拿掉。
         "fields": {
             "Where": ["w_skill_where1", "w_skill_where2"],
             "When": ["w_skill_when1", "w_skill_when2"],
-            "How": ["w_skill_how1", "w_skill_how2"],
             "Why": ["w_skill_why1", "w_skill_why2"],
         },
     },
@@ -322,19 +318,21 @@ FIVE_W1H_AUDIO_KEYS = {
     },
     "休閒": {
         "granularity": "theme",
+        # orchestrator.py 已把「休閒」的 Why 欄位整個刪掉（跟Q1邀請語
+        # 重複），這裡同步拿掉。
         "fields": {
             "Where": ["w_leisure_where1", "w_leisure_where2"],
             "When": ["w_leisure_when1", "w_leisure_when2"],
             "How": ["w_leisure_how1", "w_leisure_how2"],
-            "Why": ["w_leisure_why1", "w_leisure_why2"],
         },
     },
     "節慶": {
         "granularity": "theme",
+        # orchestrator.py 已把「節慶」的 How 欄位整個刪掉（跟Q1邀請語
+        # 重複），這裡同步拿掉。
         "fields": {
             "Where": ["w_festival_where1", "w_festival_where2"],
             "When": ["w_festival_when1", "w_festival_when2"],
-            "How": ["w_festival_how1", "w_festival_how2"],
             "Why": ["w_festival_why1", "w_festival_why2"],
         },
     },
@@ -361,19 +359,22 @@ FIVE_W1H_AUDIO_KEYS = {
     },
     "自我成就感": {
         "granularity": "theme",
+        # orchestrator.py 已把「自我成就感」的 Why 欄位整個刪掉（跟Q1
+        # 邀請語重複），這裡同步拿掉。
         "fields": {
             "Where": ["w_achievement_where1", "w_achievement_where2"],
             "When": ["w_achievement_when1", "w_achievement_when2"],
             "How": ["w_achievement_how1", "w_achievement_how2"],
-            "Why": ["w_achievement_why1", "w_achievement_why2"],
         },
     },
     "生命中特殊的事件": {
         "granularity": "theme",
+        # orchestrator.py 已把「生命中特殊的事件」的 Why 欄位也整個刪掉
+        # （跟Q1邀請語重複，How原本就已排除），這裡同步拿掉 Why，只留
+        # Where/When。
         "fields": {
             "Where": ["w_special_where1", "w_special_where2"],
             "When": ["w_special_when1", "w_special_when2"],
-            "Why": ["w_special_why1", "w_special_why2"],
         },
     },
 }
