@@ -50,58 +50,32 @@ ELBOW_FLARE_SHOULDER_RATIO_MAX = 0.5    # 有肩寬基準時：現在距離 / �
 # 取代 Kinect 內建 Face API 只有 8 個粗糙布林屬性的做法（詳見專案記憶
 # project_openface_kinect_emotion_redesign）。這裡的門檻是初版映射：
 AU_PRESENT_MIN = 0.5   # AU 強度判定為「有出現」的門檻（py-feat 輸出範圍依模型版本而定）
-# 2026-09-08 稽核（實測發現微笑一次都沒被偵測到）：個人基準扣除沒有上限保護，
-# 這次實測校正量到 AU12 baseline=0.266、AU06 baseline=0.319，長者笑的時候原始
-# 強度衝到 AU12 raw=0.745、AU06 raw=0.602（py-feat 明顯有量到臉部動作），扣完
-# 基準卻只剩 0.479／0.283，永遠過不了 0.5 的門檻——duchenne/social smile 因此
-# 整段從沒觸發過。跟 _audio_threshold 的下限保護（AUDIO_RMS_THRESHOLD_MIN）
-# 同樣的精神：個人化本來是要抵消系統性偏差（天生表情較活躍/較放鬆），不該
-# 反過來把真正的表情訊號整個蓋掉。0.2 是這次事後回推的起始值（cap 到 0.2 時，
-# 這次實測的 AU12 案例扣完還剩 0.545，能過門檻），沒有大量真實資料驗證過，
-# 之後有更多校正資料可以再調整。
-#
-# 只套用在 AU_VALENCE_POSITIVE（見 _au_baseline）：同一次稽核後續又實測到，
-# 統一套用在所有 AU 上會把皺眉（AU_VALENCE_NEGATIVE）原本運作良好的校正
-# 效果打折（假陽性從 ~8% 彈回 ~43%）——那組 AU 的基準普遍測得比 AU06/AU12
-# 高，不是這裡要處理的「基準蓋掉訊號」問題，維持原本無上限的個人化即可。
+# 個人基準扣除的上限，只套用在 AU_VALENCE_POSITIVE（見 _au_baseline）——套用
+# 到皺眉那組會削弱原本運作良好的校正效果，見該函式說明。
 AU_BASELINE_CAP = 0.2
-# 2026-09-08 稽核（使用者反映正向情緒可以寬鬆一點）：微笑（AU_VALENCE_
-# POSITIVE）另外用比一般 AU_PRESENT_MIN 低的門檻，見 _au_present_min。
-# 0.3 是這次實測回推的起始值——當時 AU12 扣完基準最高到 c=0.567（原本
-# 0.5 的門檻本來就過得了），AU06 最高只到 c=0.382，用 0.3 能讓這種情況下
-# duchenne（要求 AU06/AU12 同時過門檻）也偵測得到，同時還留有一點餘裕
-# 不會卡在臨界值；沒有大量真實資料驗證過確切數字，之後可以再調整。
+# 微笑/負向表情各自的「有出現」門檻，比一般 AU_PRESENT_MIN 寬鬆，避免個人
+# 基準扣完後永遠過不了 0.5（見 _au_present_min）。負向比正向保守，因為焦躁/
+# 低落誤判代價較高。
 AU_PRESENT_MIN_POSITIVE = 0.3
+AU_PRESENT_MIN_NEGATIVE = 0.4
 YAW_AWAY_MAYBE = 15.0   # 度：頭部偏轉角度，視線「可能」離開畫面
 YAW_AWAY_YES   = 25.0   # 度：頭部偏轉角度，視線「確定」離開畫面
 
-# 悲傷型／憤怒型負向表情各自要求的 AU 組合，依據 EMFACS（Emotions FACS，
-# Ekman & Friesen 提出的 FACS 情緒判讀系統）的標準定義——見 2026-09-08
-# 稽核（使用者反映表情太容易被判負面）後查證：
-# https://en.wikipedia.org/wiki/Facial_Action_Coding_System
-#   Sadness = AU01+AU04+AU15、Anger = AU04+AU05+AU07+AU23
-# EMFACS 的「+」是同時出現（AND），不是任一個出現（OR）就算，跟正向表情
-# 的 AU06+AU12（_au_duchenne_smile）是同一種「多重證據」邏輯，見 _au_sad／
-# _au_angry。這是換成 py-feat 之後才做得到的涵蓋範圍，Kinect 內建 Face API
-# 完全沒有這幾個 AU。
+# 悲傷型／憤怒型負向表情各自要求的 AU 組合，依 EMFACS 標準定義（同時出現，
+# 不是任一個就算）：Sadness=AU01+AU04+AU15、Anger=AU04+AU05+AU07+AU23，見
+# _au_sad/_au_angry。Kinect 內建 Face API 沒有這些 AU，換成 py-feat 才有。
 AU_SADNESS = ("AU01", "AU04", "AU15")
 AU_ANGER   = ("AU04", "AU05", "AU07", "AU23")
-# 校正期間要收集個人基準的完整負向 AU 集合（見 AU_CALIBRATED_CODES），
-# 兩種情緒組合各自互不相同的 AU 聯集起來，AU04 兩邊都要用只算一次。
 AU_VALENCE_NEGATIVE = tuple(dict.fromkeys(AU_SADNESS + AU_ANGER))
 
-# 正向表情 AU 集合：AU06（臉頰上提）+ AU12（嘴角上揚）決定真笑/社交笑的區分
-# （見 _au_duchenne_smile/_au_social_smile）。
+# AU06（臉頰上提）+AU12（嘴角上揚）決定真笑/社交笑的區分，見
+# _au_duchenne_smile/_au_social_smile。
 AU_VALENCE_POSITIVE = ("AU06", "AU12")
 
-# 2026-09-08 稽核（使用者反映一直被誤判打瞌睡）：AU43（眼睛閉合）原本沒有
-# 校正、直接拿原始強度比對固定門檻，跟 face_frown 校正前是同一種問題——
-# 眼皮天生偏垂/瞇眼幅度較大的人，原始 AU43 可能本來就常態偏高，誤判成
-# 「持續打瞌睡」。同樣納入校正集合，讓 _au_eyes_closed 也扣個人基準。
+# AU43（眼睛閉合）：眼皮天生偏垂的人原始強度常態偏高，會誤判成持續打瞌睡，
+# 納入校正集合讓 _au_eyes_closed 扣個人基準。
 AU_EYES_CLOSED = ("AU43",)
 
-# 跟 AU_VALENCE_NEGATIVE 合併起來是校正期間要逐一收集個人基準的完整 AU
-# 集合（見 AU_CALIBRATED_CODES、_au_baseline）。
 AU_CALIBRATED_CODES = AU_VALENCE_POSITIVE + AU_VALENCE_NEGATIVE + AU_EYES_CLOSED
 
 # Circumplex Model（Russell 1980）的低激動門檻：agitation 低於此值視為安靜/
@@ -109,6 +83,11 @@ AU_CALIBRATED_CODES = AU_VALENCE_POSITIVE + AU_VALENCE_NEGATIVE + AU_EYES_CLOSED
 # valence×arousal 分不出是「安穩參與」還是「放空退縮」，見 _classify_from_scores。
 AROUSAL_LOW_MAX          = 0.35
 ENGAGEMENT_WITHDRAWN_MAX = -0.5
+# 高激動時，valence 要偏正向/偏負向到這個程度才判亢奮/焦躁，中性落回「適當」，
+# 不再把中性預設成亢奮（HAPPINESS_RANGE 是 [-2,3]，0.5 約合 25%），見
+# _classify_from_scores。
+VALENCE_POSITIVE_MIN = 0.5
+VALENCE_NEGATIVE_MAX = -0.5
 
 # 三維分數正規化範圍（供治療師端顯示 0-100% 量表用）。範圍是把
 # _face_engagement/_skel_engagement/audio_eng 等各子分數的理論上下界依
@@ -218,19 +197,10 @@ def _au_baseline(calib: dict | None, code: str) -> float:
     天生偏高，不代表其他 AU 也偏高，混在一起平均會連帶稀釋/污染其他 AU
     真正的訊號。
 
-    只有 AU_VALENCE_POSITIVE（AU06/AU12，微笑）的基準會夾在 AU_BASELINE_CAP
-    以內：這兩個 AU 校正期間量到的基準沒有上限保護的話，只要那 15 秒剛好
-    不是完全放鬆（緊張、或臉部肌肉天生較活躍），基準可能高到把之後真正的
-    微笑訊號整個蓋掉——2026-09-08 稽核就是實測到這個情況（見 AU_BASELINE_CAP
-    定義處的真實數字）。個人化本來是要抵消系統性偏差，不該反過來變成偵測不到
-    訊號的黑洞，跟 _audio_threshold 用 AUDIO_RMS_THRESHOLD_MIN 卡下限是同樣的
-    精神（那邊卡下限、這邊卡上限，方向不同是因為 AU 基準只會讓判斷變嚴格、
-    不會變寬鬆，見 AU_BASELINE_CAP 說明）。
-
-    皺眉那組（AU_VALENCE_NEGATIVE）跟 AU43（眼睛閉合）刻意不套這個上限——
-    2026-09-08 同一次稽核也實測到，統一套用上限會把皺眉原本運作得很好的
-    校正效果打折（假陽性從加上限前的 ~8% 彈回 ~43%），這兩組 AU 的基準
-    普遍測得比 AU06/AU12 高，是不同 AU 各自的天生特性，不該共用同一個上限。
+    只有 AU_VALENCE_POSITIVE（AU06/AU12，微笑）的基準夾在 AU_BASELINE_CAP 以內
+    （跟 _audio_threshold 卡下限同樣精神，只是這裡是上限——AU 基準只會讓判斷
+    變嚴格，不會變寬鬆）。皺眉那組跟 AU43 不套這個上限，統一套用會削弱原本
+    運作良好的校正效果，見 AU_BASELINE_CAP 說明。
     """
     if not calib:
         return 0.0
@@ -252,9 +222,14 @@ def _au_c(au: dict, code: str, calib: dict | None) -> float:
 
 def _au_present_min(code: str) -> float:
     """AU 強度判定為「有出現」的門檻，依 AU 而異：微笑（AU_VALENCE_POSITIVE）
-    用比較寬鬆的 AU_PRESENT_MIN_POSITIVE，其他 AU 用一般的 AU_PRESENT_MIN，
-    見兩個常數定義處的說明。"""
-    return AU_PRESENT_MIN_POSITIVE if code in AU_VALENCE_POSITIVE else AU_PRESENT_MIN
+    用最寬鬆的 AU_PRESENT_MIN_POSITIVE，悲傷/憤怒（AU_VALENCE_NEGATIVE）用
+    比較保守的 AU_PRESENT_MIN_NEGATIVE，其他 AU（眼睛閉合、嘴巴動作）維持
+    一般的 AU_PRESENT_MIN，見三個常數定義處的說明。"""
+    if code in AU_VALENCE_POSITIVE:
+        return AU_PRESENT_MIN_POSITIVE
+    if code in AU_VALENCE_NEGATIVE:
+        return AU_PRESENT_MIN_NEGATIVE
+    return AU_PRESENT_MIN
 
 
 def _au_graded(au: dict, code: str, calib: dict | None) -> float:
@@ -293,31 +268,23 @@ def _au_social_smile(au: dict, calib: dict | None = None) -> bool:
 
 def _au_sad(au: dict, calib: dict | None = None) -> bool:
     """悲傷型負向表情：AU01（內眉上揚）+AU04（皺眉）+AU15（嘴角下垂）同時
-    出現，見 AU_SADNESS 的 EMFACS 文獻依據說明。"""
-    return all(_au_c(au, code, calib) >= AU_PRESENT_MIN for code in AU_SADNESS)
+    出現，見 AU_SADNESS 的 EMFACS 文獻依據說明。門檻用 _au_present_min
+    （負向表情用比一般寬鬆的 AU_PRESENT_MIN_NEGATIVE），見該常數說明。"""
+    return all(_au_c(au, code, calib) >= _au_present_min(code) for code in AU_SADNESS)
 
 
 def _au_angry(au: dict, calib: dict | None = None) -> bool:
     """憤怒型負向表情：AU04（皺眉）+AU05（上眼瞼提起）+AU07（眼瞼收緊）+
-    AU23（抿嘴）同時出現，見 AU_ANGER 的 EMFACS 文獻依據說明。"""
-    return all(_au_c(au, code, calib) >= AU_PRESENT_MIN for code in AU_ANGER)
+    AU23（抿嘴）同時出現，見 AU_ANGER 的 EMFACS 文獻依據說明。門檻用
+    _au_present_min（負向表情用比一般寬鬆的 AU_PRESENT_MIN_NEGATIVE），
+    見該常數說明。"""
+    return all(_au_c(au, code, calib) >= _au_present_min(code) for code in AU_ANGER)
 
 
 def _au_frown(au: dict, calib: dict | None = None) -> bool:
     """悲傷型或憤怒型負向表情任一種成立、且沒有微笑訊號＝負向表情（兩者的
-    區分交給 arousal，見 _classify_from_scores）。
-
-    2026-09-08 稽核（使用者反映表情太容易被判負面）：原本是 AU_VALENCE_
-    NEGATIVE 這 6 個 AU 任一個過門檻就算負面（OR 邏輯），跟正向表情
-    （_au_duchenne_smile 要 AU06+AU12 同時出現，AND 邏輯）不對稱——查證
-    EMFACS（Ekman & Friesen 的 FACS 情緒判讀系統，見 AU_SADNESS/AU_ANGER
-    文獻依據）後發現，悲傷/憤怒本來就各自定義成「特定幾個 AU 同時出現」，
-    不是任一個，跟正向表情是同一種「多重證據」邏輯，只是原本的實作沒有
-    照著做。改成兩種情緒各自要求完整組合同時成立，才真的跟文獻對齊，也
-    不會像單純要求「任兩個」那樣可能誤湊出不成模式的組合（例如 AU01+
-    AU23，不對應任何一種真實表情）。「沒有微笑」的門檻用 _au_present_min，
-    跟微笑判斷本身用同一套（比較寬鬆的）標準，避免兩邊對「算不算在笑」
-    的認定不一致。"""
+    區分交給 arousal，見 _classify_from_scores）。「沒有微笑」用
+    _au_present_min，跟微笑判斷本身同一套標準。"""
     return (_au_sad(au, calib) or _au_angry(au, calib)) and _au_c(au, "AU12", calib) < _au_present_min("AU12")
 
 
@@ -391,39 +358,66 @@ def _face_happiness(au: dict, calib: dict | None = None) -> float:
     return 0.0  # 沒有明確訊號（沒偵測到臉、或表情中性）
 
 
-def _skel_engagement(p: SensorPayload) -> float | None:
+def _skel_engagement(p: SensorPayload, calib: dict | None = None) -> float | None:
     """
     骨架參與度 [−2, +2]。
-    低頭（疲勞/低落）和前傾（投入/興趣）是比臉部更穩定的老年人行為指標。
+    低頭（疲勞/低落）、前傾/後仰（投入/退縮）、蜷縮（防禦/不投入）是比臉部
+    更穩定的老年人行為指標。
 
-    回傳 None（而不是 0.0）代表兩個關節都完全追丟，真的沒有任何骨架資料可用——
+    回傳 None（而不是 0.0）代表所有關節都完全追丟，真的沒有任何骨架資料可用——
     跟「有資料、算出來的分數剛好是 0（中性）」要能區分開來，呼叫端（_ema_classify）
     才能在真的沒資料時跳過這一幀的 engagement EMA 更新，不要把「追丟」誤當成
     「骨架顯示中性」去平均，稀釋掉其他幀真正偵測到的訊號（跟 happiness 只信
     臉部單一管道時的稀釋問題是同一種，這裡因為 engagement 還有臉部/音量兩個
     來源撐著，影響較小，但邏輯上該一致處理）。
+
+    2026-09-13 稽核（查證文獻後修正三處）：
+    1. 低頭/前傾後仰原本直接比對固定絕對門檻，沒有個人校正——查證的
+       engagement 偵測文獻明確指出「解讀前傾這類訊號，必須先知道這個人
+       平常的預設姿勢長什麼樣子，移動方向才有意義，不然會被誤判成這個人
+       穩定的體態特徵」，不是可有可無的加分項。改用 _head_drop_baseline／
+       _lean_forward_baseline，跟其他姿勢訊號的校正邏輯一致。
+    2. 原本只看低頭/前傾兩個訊號，漏了蜷縮——文獻上「封閉姿勢」（抱胸、
+       蜷縮、駝背）本身就是公認的防禦/不投入指標，跟低頭/後仰是同一類別
+       但獨立的訊號，這裡補上 _is_body_constricted 當第三個分量。
+    3. 前傾隨幅度加分到上限 +2.0，後仰卻只給固定 -0.5，不管後仰多少都一樣
+       ——查證文獻描述這組訊號是「隨幅度漸進」的連續關係，不是二元開關，
+       這裡讓後仰比照前傾用同一個單位（LEAN_FWD_MIN）照幅度縮放，觸發門檻
+       本身（-0.03 vs +0.05，後仰比較敏感）維持不變，那是另一個獨立的
+       既有設計決定，不在這次修正範圍。
     """
     score, count = 0.0, 0
 
     if p.skel_head_drop is not None:
-        if p.skel_head_drop < HEAD_DROP_MIN:
-            ratio  = min(1.0, (HEAD_DROP_MIN - p.skel_head_drop) / HEAD_DROP_MIN)
+        head_baseline = _head_drop_baseline(calib)
+        head_threshold = (head_baseline - HEAD_DROP_MIN) if head_baseline is not None else HEAD_DROP_MIN
+        if p.skel_head_drop < head_threshold:
+            ratio  = min(1.0, (head_threshold - p.skel_head_drop) / HEAD_DROP_MIN)
             score -= ratio * 2.0  # 低頭程度越深扣分越多
         else:
             score += 0.5          # 頭部正常高度 = 小加分
         count += 1
 
     if p.skel_lean_forward is not None:
-        if p.skel_lean_forward > LEAN_FWD_MIN:
-            score += min(p.skel_lean_forward / LEAN_FWD_MIN, 2.0)  # 前傾 = 投入
-        elif p.skel_lean_forward < -0.03:
-            score -= 0.5  # 後仰 = 輕微退縮
+        lean_baseline = _lean_forward_baseline(calib)
+        lean_dev = p.skel_lean_forward - lean_baseline if lean_baseline is not None else p.skel_lean_forward
+        if lean_dev > LEAN_FWD_MIN:
+            score += min(lean_dev / LEAN_FWD_MIN, 2.0)  # 前傾 = 投入，隨幅度加分
+        elif lean_dev < -0.03:
+            score -= min(abs(lean_dev) / LEAN_FWD_MIN, 2.0)  # 後仰 = 退縮，隨幅度扣分
+        count += 1
+
+    if p.skel_elbow_flare_left is not None or p.skel_elbow_flare_right is not None:
+        if _is_body_constricted(p, calib):
+            score -= 1.5  # 蜷縮/防禦姿勢＝不投入，文獻上的獨立指標
+        else:
+            score += 0.5
         count += 1
 
     return max(-2.0, min(2.0, score / count)) if count else None
 
 
-def _skel_tension(p: SensorPayload) -> float:
+def _skel_tension(p: SensorPayload, calib: dict | None = None) -> float:
     """
     骨架緊張度 [0, +2]。
     聳肩是焦慮/激動的典型姿勢，對老年人尤其明顯。這是 arousal（激動程度）
@@ -437,10 +431,21 @@ def _skel_tension(p: SensorPayload) -> float:
     辨識文獻裡的 "motion artifact"（操作動作造成的訊號污染），跟操作系統
     直接掛鉤、幾乎每場都會發生，不是偶發雜訊。_ema_classify 裡給這個訊號
     的權重刻意壓得比晃動/音高低（0.15），只是緩解，沒有真的濾掉污染。
+
+    2026-09-13 稽核：跟 _is_shoulder_raised 一樣改用個人基準（見
+    _shoulder_raise_baseline）——原本這裡只用固定絕對門檻 SHOULDER_RAISE_
+    MIN，年齡相關圓肩/駝背體態常見的長者，這個連續分數會被系統性拉高，
+    跟 _is_shoulder_raised 那顆離散開關已經修過的問題是同一個成因，這裡
+    沒有一起改的話，焦躁的「判斷」不會誤觸發，但 agitation 的「強度」還是
+    會被墊高，兩邊會對不起來。
     """
-    if p.skel_shoulder_raise is None or p.skel_shoulder_raise <= SHOULDER_RAISE_MIN:
+    if p.skel_shoulder_raise is None:
         return 0.0
-    return min(p.skel_shoulder_raise / SHOULDER_RAISE_MIN, 2.0)
+    baseline = _shoulder_raise_baseline(calib)
+    deviation = p.skel_shoulder_raise - baseline if baseline is not None else p.skel_shoulder_raise
+    if deviation <= SHOULDER_RAISE_MIN:
+        return 0.0
+    return min(deviation / SHOULDER_RAISE_MIN, 2.0)
 
 
 def _shoulder_width_baseline(calib: dict | None) -> float | None:
@@ -469,6 +474,142 @@ def _shoulder_width_baseline(calib: dict | None) -> float | None:
     if left is None or right is None:
         return None
     return abs(right - left)
+
+
+def _lean_forward_baseline(calib: dict | None) -> float | None:
+    """
+    個人前傾基準（SpineBase.z − SpineMid.z 校正期間平均值）。
+
+    2026-09-13 稽核：長者年齡相關脊椎後凸（hyperkyphosis）盛行率約 20~40%
+    （部分社區長者研究達 62.5%，見 JOSPT Age-Related Hyperkyphosis 綜述），
+    典型姿態就是胸椎前弓——這正是 skel_lean_forward 量測的同一個軸，會讓
+    這類長者「平靜坐著」時這顆訊號的原始值就已經偏高，不是情緒造成的前傾。
+    跟 _shoulder_width_baseline 同一套做法：SpineBase/SpineMid 本來就在
+    15 秒校正期間被記錄，jointKeys/jointZ 裡已經有這兩個關節的平均位置，
+    不需要 Unity 端多送任何新資料。找不到這兩個關節、或根本沒有校正資料
+    時回傳 None，呼叫端退回固定絕對門檻。
+    """
+    if not calib:
+        return None
+    keys = calib.get("jointKeys")
+    zs = calib.get("jointZ")
+    if not keys or not zs or len(keys) != len(zs):
+        return None
+    joint_z = dict(zip(keys, zs))
+    spine_base = joint_z.get("SpineBase")
+    spine_mid = joint_z.get("SpineMid")
+    if spine_base is None or spine_mid is None:
+        return None
+    return spine_base - spine_mid
+
+
+def _shoulder_raise_baseline(calib: dict | None) -> float | None:
+    """
+    個人聳肩基準（avgShoulder.y − SpineShoulder.y 校正期間平均值）。
+
+    理由同 _lean_forward_baseline：年齡相關圓肩/駝背體態常見，這顆訊號
+    也可能對特定長者長期偏高，不是情緒造成的聳肩。做法同上，不需要
+    Unity 端多送資料。
+    """
+    if not calib:
+        return None
+    keys = calib.get("jointKeys")
+    ys = calib.get("jointY")
+    if not keys or not ys or len(keys) != len(ys):
+        return None
+    joint_y = dict(zip(keys, ys))
+    left = joint_y.get("ShoulderLeft")
+    right = joint_y.get("ShoulderRight")
+    spine_shoulder = joint_y.get("SpineShoulder")
+    if left is None or right is None or spine_shoulder is None:
+        return None
+    return (left + right) / 2 - spine_shoulder
+
+
+def _head_drop_baseline(calib: dict | None) -> float | None:
+    """
+    個人低頭基準（Head.y − SpineShoulder.y 校正期間平均值）。
+
+    理由同上：年齡相關頭前傾/駝背體態常見，這顆訊號也可能對特定長者
+    長期偏低，不是情緒造成的低頭。做法同上，不需要 Unity 端多送資料。
+    """
+    if not calib:
+        return None
+    keys = calib.get("jointKeys")
+    ys = calib.get("jointY")
+    if not keys or not ys or len(keys) != len(ys):
+        return None
+    joint_y = dict(zip(keys, ys))
+    head = joint_y.get("Head")
+    spine_shoulder = joint_y.get("SpineShoulder")
+    if head is None or spine_shoulder is None:
+        return None
+    return head - spine_shoulder
+
+
+def _is_lean_forward(p: SensorPayload, calib: dict | None = None) -> bool:
+    """前傾判斷：有個人基準時看「比自己平常前傾多少」，沒有才退回固定絕對門檻。"""
+    if p.skel_lean_forward is None:
+        return False
+    baseline = _lean_forward_baseline(calib)
+    if baseline is not None:
+        return (p.skel_lean_forward - baseline) > LEAN_FWD_MIN
+    return p.skel_lean_forward > LEAN_FWD_MIN
+
+
+def _is_lean_back(p: SensorPayload, calib: dict | None = None) -> bool:
+    """後仰判斷，同 _is_lean_forward 的個人基準邏輯。"""
+    if p.skel_lean_forward is None:
+        return False
+    baseline = _lean_forward_baseline(calib)
+    if baseline is not None:
+        return (p.skel_lean_forward - baseline) < -0.03
+    return p.skel_lean_forward < -0.03
+
+
+def _is_shoulder_raised(p: SensorPayload, calib: dict | None = None) -> bool:
+    """聳肩判斷：有個人基準時看「比自己平常聳肩多少」，沒有才退回固定絕對門檻。"""
+    if p.skel_shoulder_raise is None:
+        return False
+    baseline = _shoulder_raise_baseline(calib)
+    if baseline is not None:
+        return (p.skel_shoulder_raise - baseline) > SHOULDER_RAISE_MIN
+    return p.skel_shoulder_raise > SHOULDER_RAISE_MIN
+
+
+def _is_head_drop(p: SensorPayload, calib: dict | None = None) -> bool:
+    """低頭判斷：有個人基準時看「比自己平常低頭多少」，沒有才退回固定絕對門檻。"""
+    if p.skel_head_drop is None:
+        return False
+    baseline = _head_drop_baseline(calib)
+    if baseline is not None:
+        return p.skel_head_drop < baseline - HEAD_DROP_MIN
+    return p.skel_head_drop < HEAD_DROP_MIN
+
+
+def _body_sway_threshold(calib: dict | None) -> float:
+    """
+    個人晃動門檻＝校正期間量到的個人靜坐晃動基準 + SWAY_AGITATION_MIN
+    當固定邊際，沒有校正基準時退回純固定門檻。
+
+    2026-09-13 稽核：本體感覺/視覺/前庭覺隨年齡退化，長者「靜止不動」時
+    的姿勢晃動幅度本身就普遍比年輕人大（見文獻查證），不是像脊椎後凸只
+    影響特定子群，是連續且幾乎人人適用的老化現象。body_sway 在 agitation
+    裡占 60% 權重、還決定要不要判定為「激動」，固定絕對門檻對這個族群
+    風險最高。
+
+    body_sway 本身就是 SpineBase 位置標準差（見 KinectSensorSender.cs
+    MeasureBodySway），校正基準 bodySwayBaseline 是用同一套算法在 15 秒
+    校正視窗算出來的「這個人平靜坐著時原本的晃動幅度」（見
+    KinectCalibrationManager.cs SendCalibrationData），兩者同尺度，用
+    「加法邊際」而非乘法比例（沒有像音高/音量那樣額外收集標準差的標準差，
+    加法邊際沿用跟 lean_forward/shoulder_raise/head_drop 一致的簡化處理）。
+    """
+    if calib:
+        baseline = calib.get("bodySwayBaseline", 0.0)
+        if baseline > 0.0:
+            return baseline + SWAY_AGITATION_MIN
+    return SWAY_AGITATION_MIN
 
 
 def _is_body_constricted(p: SensorPayload, calib: dict | None = None) -> bool:
@@ -562,18 +703,17 @@ def _reasoning_signals(
     if _au_eyes_closed(au, calib):
         codes.append("eye_closed_drowsy")
 
-    if p.skel_lean_forward is not None:
-        if p.skel_lean_forward > LEAN_FWD_MIN:
-            codes.append("body_lean_forward")
-        elif p.skel_lean_forward < -0.03:
-            codes.append("body_lean_back")
-    if p.skel_head_drop is not None and p.skel_head_drop < HEAD_DROP_MIN:
+    if _is_lean_forward(p, calib):
+        codes.append("body_lean_forward")
+    elif _is_lean_back(p, calib):
+        codes.append("body_lean_back")
+    if _is_head_drop(p, calib):
         codes.append("body_head_drop")
-    if p.skel_shoulder_raise is not None and p.skel_shoulder_raise > SHOULDER_RAISE_MIN:
+    if _is_shoulder_raised(p, calib):
         codes.append("body_shoulder_raise")
     if _is_body_constricted(p, calib):
         codes.append("body_constricted")
-    if p.body_sway > SWAY_AGITATION_MIN:
+    if p.body_sway > _body_sway_threshold(calib):
         codes.append("body_sway_high")
     # 離座偵測（Proxemics，B階段）：spinebase_z 超過門檻代表長者身體已經移離
     # Kinect 的有效追蹤範圍。這個訊號不像其他訊號那樣直接進三維分數的加權
@@ -602,58 +742,70 @@ def _reasoning_signals(
 
 def _classify_from_scores(
     engagement: float, happiness: float, agitation: float, constricted: bool = False,
+    text_negative: bool = False, lean_forward: bool = False,
+    shoulder_raise: bool = False, head_drop: bool = False,
 ) -> str:
     """
     Valence（happiness，來自 AU）× Arousal（agitation，來自骨架晃動+音高變異）
-    為主軸，對應 Russell (1980) Circumplex Model of Affect 的兩個正交維度，
-    比舊版三個變數互相糾纏的門檻更有心理學文獻依據。
+    為主軸，對應 Russell (1980) Circumplex Model of Affect。
 
-    engagement／constricted 是低激動象限裡的裁判：valence 非正向（中性或
-    負向）、arousal 也低時，可能是「安穩參與」也可能是「放空退縮/安靜地
-    情緒低落」，需要 engagement 明顯退縮**且**身體呈現收縮/封閉姿勢
-    （constricted，見 _is_body_constricted）兩者同時成立才判低落，不會
-    因為只是「安靜」就被誤判。
+    text_negative：orchestrator 判定長者剛才的話需要情緒安撫（見
+    _detect_emotional_trigger），跟 AU 獨立的另一個 valence 來源。沒用音高
+    變異當替代訊號，因為聲學特徵主要反映 arousal、分不出 valence（生氣/開心
+    聲學特徵常常很像）。焦躁、低落都能被它單獨觸發，證據力比單一 AU 高。
 
-    constricted（C 階段，2026-09-05 新增）原本是跟 engagement 平行的獨立
-    驗證路徑（or 關係，任一個成立就算數），2026-09-06 改成必須跟 engagement
-    同時成立（and）：查證失智/老年淡漠（apathy）評估文獻後發現，臨床上
-    對淡漠/退縮的評估明確要求跨行為/情緒/社交互動多面向一起看，不能只憑
-    單一指標下結論（Apathy, cognitive function and motor function in
-    Alzheimer's disease）；而臨床上已驗證跟淡漠有相關性的具體指標是表情
-    豐富度（Correlations Between Facial Expressivity and Apathy in Elderly
-    People With Neurocognitive Disorders）——這條路徑我們已經用 happiness
-    的 AU 分數涵蓋了，body_constricted 這種純骨架幾何量測（手肘離身體中心
-    線的距離）並沒有同等的臨床實證支持，且已知會被「單純坐姿習慣、怕冷、
-    關節不適」等跟情緒無關的原因誤觸發（另見多模態情緒融合文獻查證：決策層
-    融合方法 MAX/SUM/模糊積分/D-S證據理論本身沒有回答「單一線索夠不夠」，
-    不能反過來當作 or 關係的支持）。engagement 是視線＋頭部＋嘴部＋音量
-    綜合出來的複合分數，證據量遠比 constricted 這個單一幾何量測豐富，讓
-    兩者用 or 並列、給同等否決力量並不合理——改成 and 之後，constricted
-    的角色從「獨立就能判定」降為「跟 engagement 一起出現時的加強確認」，
-    更符合「多面向證據需同時出現」的臨床方向，也更保守（跟本專案「寧可
-    漏掉、不要誤判」的一貫原則一致，見下方 happiness<0 驗證的相同取捨）。
+    engagement/(constricted or head_drop) 需同時成立才判低落，不能只因為
+    「安靜」就誤判（apathy 評估文獻要求跨面向證據；單一姿勢訊號證據力不足
+    以獨立否決，見 2026-09-06 稽核）；happiness<0 同理需要額外驗證，AU
+    單一管道雜訊偏高，低落誤觸發代價高（治療師端評估表 1 分，最差）。
+    head_drop（低頭/視線往下）比 constricted（蜷縮）更專一對應低落——
+    低頭是憂鬱/悲傷文獻裡最一致的姿勢指標之一，constricted 偏泛用（焦慮/
+    自我安撫時也會出現，不是低落專屬），兩者用 or 互為備援，不是缺一不可。
 
-    這裡刻意不讓 happiness<0 單獨繞過驗證直接判低落，是討論過的取捨：
-    聳肩（_skel_tension）2026-09-05 定案改進 agitation 的加權項（見上方
-    ENGAGEMENT_RANGE 等常數說明），不再是 happiness 的一部分，happiness<0
-    現在幾乎只會是 AU 明確偵測到皺眉（扣過個人校正基準後，見 _au_c）造成
-    的。維持這個分支要求額外驗證，理由是長者臉部肌肉活動本來就弱、AU 單一
-    管道的雜訊仍然偏高（見專案文獻查證），寧可漏掉一些安靜但確實低落的
-    案例（假陰性），也不要把還在正常參與的長者誤判成低落（假陽性）——
-    「低落」這個標籤在治療師端評估表是 1 分（最差），誤觸發的代價比較高。
+    低落／焦躁的 valence 判斷用 VALENCE_NEGATIVE_MAX、亢奮用
+    VALENCE_POSITIVE_MIN，不是單純 <0／>0——避免中性 valence 被硬塞進某個
+    明確情緒。
 
-    低落  — arousal 低 + （明顯退縮 且 身體收縮） + valence 沒有轉正
-    焦躁  — arousal 高 + valence 負向
-    亢奮  — arousal 高 + valence 非負向（含中性——沒有明確負向訊號時，
-             高激動預設偏向亢奮而不是焦躁，比預設成負面標籤保守）
-    適當  — 其餘情況（arousal 低但仍有參與、body 也沒收縮，或 valence 已轉正）
+    2026-09-13 稽核：長者臉部表情本來就偏弱（MCI 常見特徵，見 _ema_classify
+    說明），激動（已過 AROUSAL_LOW_MAX）但 happiness 落在模糊帶（介於
+    VALENCE_NEGATIVE_MAX~VALENCE_POSITIVE_MIN 之間）時，不該一律 fallback
+    判成「適當」，改用身體訊號當裁判：
 
+    - 不論 happiness 正負，只要 constricted 或 shoulder_raise 出現就判
+      「焦躁」——兩者都是文獻上明確對應恐懼/焦慮/壓力（戰或逃反應）的姿勢
+      指標，SHOULDER_RAISE_MIN 這顆常數命名就是「焦慮緊張」。
+    - 沒有以上兩者、且 happiness 本身已經偏正向（>0，只是不夠強）時，
+      lean_forward（前傾）才會把判斷推向「亢奮」。
+
+    這個順序（先看身體、身體沒有才看臉的正負號）依據 Aviezer, Trope &
+    Todorov (2012, Science)《Body cues, not facial expressions,
+    discriminate between intense positive and negative emotions》：情緒
+    強度越高，臉部表情越判不出方向，這時候身體訊號比一個可能只比中性高
+    幾個百分點、幾乎沒有鑑別力的 happiness 讀數更可信，所以 constricted/
+    shoulder_raise 排在 happiness 正負號判斷之前，不等 happiness 先表態。
+
+    lean_forward 沒有拿到跟 constricted/shoulder_raise 一樣的優先權，維持
+    只在 happiness 已經自己偏正向時才生效：approach-withdrawal 動機文獻裡
+    withdrawal（蜷縮/聳肩背後的緊繃）幾乎都對應負向情緒，但 approach（前傾/
+    趨近）不是正向情緒的專利——生氣同樣是趨近而非迴避，Aviezer 那篇談的是
+    「身體比模糊的臉可靠」，沒有解決前傾/生氣這個 confound，所以 lean_
+    forward 不能無條件生效，只能在 happiness 已經先偏正向時當補強證據。
+
+    shoulder_raise 只用在焦躁（不併進低落）、head_drop 只用在低落（不併進
+    焦躁）：兩者在文獻上對應的方向不同（聳肩=焦慮/焦躁、低頭=憂鬱/低落），
+    交叉使用會混淆這兩個象限本來想分開的意義。
     """
     if agitation < AROUSAL_LOW_MAX:
-        if engagement < ENGAGEMENT_WITHDRAWN_MAX and constricted and happiness <= 0:
+        if (engagement < ENGAGEMENT_WITHDRAWN_MAX and (constricted or head_drop) and happiness <= 0) or text_negative:
             return "sad"
         return "happy"
-    return "angry" if happiness < 0 else "excited"
+    if happiness <= VALENCE_NEGATIVE_MAX or text_negative:
+        return "angry"
+    if happiness >= VALENCE_POSITIVE_MIN:
+        return "excited"
+    if constricted or shoulder_raise:
+        return "angry"
+    return "excited" if (happiness > 0 and lean_forward) else "happy"
 
 
 # ════════════ 校正基準載入 ════════════════════════════════════════════
@@ -741,7 +893,7 @@ async def _ema_classify(
 
     # 計算本次原始三維分數
     audio_eng = 1.0 if p.audio_rms > _audio_threshold(calib) else 0.0
-    skel_eng  = _skel_engagement(p)  # None＝兩個骨架關節都完全追丟，見該函式說明
+    skel_eng  = _skel_engagement(p, calib)  # None＝所有骨架關節都完全追丟，見該函式說明
     # B 階段：音高變異混入焦躁計算（門檻＝個人校正基準 + k×標準差，見 _pitch_threshold）。
     # KinectAudioSender.UpdatePitch() 在音量低於 0.005 時整個跳過、不更新
     # CurrentPitchVariance（沿用上一次的殘留值），narration 播放中/回答等待期
@@ -749,8 +901,9 @@ async def _ema_classify(
     # 雜音誤觸發自相關演算法算出的雜訊，不是長者真的情緒激動的證據——跟
     # audio_eng 是同一個「narration期間音量訊號沒有意義」的問題（見上面
     # awaiting_response 分支說明），這裡一併排除。
-    body_sway_agi = max(0.0, min(1.0, p.body_sway / max(SWAY_AGITATION_MIN, 1e-6) - 1.0))
-    tension_agi = min(1.0, _skel_tension(p) / 2.0)  # _skel_tension 上界是 2.0，正規化成 [0,1]
+    sway_threshold = _body_sway_threshold(calib)
+    body_sway_agi = max(0.0, min(1.0, p.body_sway / max(sway_threshold, 1e-6) - 1.0))
+    tension_agi = min(1.0, _skel_tension(p, calib) / 2.0)  # _skel_tension 上界是 2.0，正規化成 [0,1]
     if p.awaiting_response:
         pitch_agi = min(1.0, p.audio_pitch_variance / max(_pitch_threshold(calib), 1e-6))
         raw_agi   = (
@@ -830,7 +983,26 @@ async def _ema_classify(
     # 平滑——這是草稿版本的簡化，之後如果發現單幀手肘位置雜訊太大導致判斷
     # 抖動，需要另外幫它做平滑（例如也存進 Redis 累積成一個比率）。
     constricted = _is_body_constricted(p, calib)
-    return _classify_from_scores(new_eng, new_hap, new_agi, constricted), new_eng, new_hap, new_agi
+    # 跟 constricted 一樣直接用本次原始骨架資料判斷，沒有做 EMA 平滑——見
+    # _classify_from_scores 說明，只在 happiness 已經偏正向/偏負向時分別
+    # 當亢奮/焦躁的補強證據，不是憑空造方向。有個人校正基準時，三顆訊號都
+    # 看「比自己平常姿勢多多少」而不是絕對距離（見 _lean_forward_baseline
+    # 等函式說明：長者常見的年齡相關體態變化，會讓固定絕對門檻對特定長者
+    # 長期誤觸發）。
+    lean_forward   = _is_lean_forward(p, calib)
+    shoulder_raise = _is_shoulder_raised(p, calib)
+    head_drop      = _is_head_drop(p, calib)
+    # 長者上一句話有沒有被 orchestrator 判定需要情緒安撫，見 session.py
+    # /session/respond 寫入處與 _classify_from_scores 的 text_negative 說明。
+    text_negative_until = await r.get(f"session:{session_id}:text_negative_until")
+    text_negative = bool(text_negative_until) and time.time() < float(text_negative_until)
+    return (
+        _classify_from_scores(
+            new_eng, new_hap, new_agi, constricted, text_negative, lean_forward,
+            shoulder_raise, head_drop,
+        ),
+        new_eng, new_hap, new_agi,
+    )
 
 
 # ════════════ Session 統計累積 ════════════════════════════════════════
@@ -923,7 +1095,7 @@ async def _update_session_stats(
         pipe.hincrby(key, "mouth_window_n", 1)
     if p.awaiting_response and _au_mouth_active(au):
         pipe.hincrby(key, "mouth_moved_n", 1)
-    if p.body_sway > SWAY_AGITATION_MIN:
+    if p.body_sway > _body_sway_threshold(calib):
         pipe.hincrby(key, "high_sway_n", 1)
     if skel_absent:
         pipe.hincrby(key, "skel_absent_n", 1)
@@ -1044,11 +1216,7 @@ async def receive_sensor(
         if face_detected:
             au = face_result.get("aus", {})
             pose = face_result.get("pose", {})
-            # 暫時稽核用 log（查各種 AU 判斷準不準，驗證完就移除）：逐一印出
-            # 每個有校正的 AU 原始強度／個人基準／扣完基準後的值，方便對照
-            # AU_PRESENT_MIN=0.5 這條線到底過不過得了；AU25/AU26（嘴巴動作）
-            # 沒有校正，額外帶 awaiting_response，方便分辨是不是 narration
-            # 期間（長者本來不該開口）也常態觸發，藉此判斷要不要也校正。
+            # 暫時稽核用 log（查各種 AU 判斷準不準，驗證完就移除）
             au_parts = " | ".join(
                 f"{code} raw={_au(au, code):.3f} baseline={_au_baseline(calib, code):.3f} c={_au_c(au, code, calib):.3f}"
                 for code in AU_CALIBRATED_CODES

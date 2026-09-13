@@ -1036,6 +1036,11 @@ async def session_round(
             await _get_round_carryover(r, session_id, round_number - 1)
             if round_number in (2, 3) else None
         )
+        if round_number == 3 and carryover is not None:
+            # 回合3開場要看得到回合1、2的完整逐字稿，不只是回合2最後一句話
+            # （見 _build_prior_rounds_transcript 說明、orchestrator.py
+            # _start_round3_closing 對這個 carryover 欄位的使用方式）。
+            carryover["prior_rounds_transcript"] = await _build_prior_rounds_transcript(db, session_id)
         result = await orchestrator.start_round(
             user_id=user_id,
             session_id=session_id,
@@ -1505,6 +1510,48 @@ async def session_transcript(
 
 
 _EMOTION_LABEL_MAP = {"happy": "適當", "excited": "亢奮", "angry": "焦躁", "sad": "低落"}
+
+
+async def _build_prior_rounds_transcript(db: AsyncSession, session_id: str) -> str:
+    """
+    回合3開場（orchestrator.py _start_round3_closing／_generate_closing）用：
+    組一份「這場療程目前為止所有回合」的逐字稿，取代原本只傳「長者上一句話」
+    （carryover["last_elder_response"]）的做法——原本那樣寫承接語時只看得到
+    回合2的最後一句，完全看不到回合1訪談（例如生圖前Q1/Q2）裡更豐富的細節，
+    容易生出脫離脈絡的內容（例如把「做料理」這個主題腦補成「跟大家一起上
+    料理課」）。
+
+    查詢邏輯跟 _generate_story_summary 相同（只收錄長者真的有實質回答的回合，
+    generated_scene 只當背景參考不當長者發言），但這裡是在回合3「開始」的
+    當下呼叫，此時回合3自己的資料列還沒有內容，天然只會撈到回合1、2，不需要
+    額外過濾 round_number。
+    """
+    try:
+        session_row = (
+            await db.execute(select(TherapySession).where(TherapySession.session_uuid == session_id))
+        ).scalar_one_or_none()
+        if session_row is None:
+            return ""
+        rounds = (
+            await db.execute(
+                select(TherapyRound)
+                .where(TherapyRound.session_id == session_row.id)
+                .order_by(TherapyRound.round_number)
+            )
+        ).scalars().all()
+
+        parts = []
+        for rnd in rounds:
+            if not _has_substantive_content(rnd.patient_response):
+                continue
+            label = f"第{rnd.round_number}回合"
+            if rnd.generated_scene:
+                parts.append(f"【{label}｜AI呈現的情境（僅供參考背景，不是長者說的話）】{rnd.generated_scene}")
+            parts.append(f"【{label}｜長者實際所說】{rnd.patient_response}")
+        return "\n".join(parts)
+    except Exception as e:
+        print(f"[Orchestrator] 回合3開場逐字稿撈取失敗（改用單句 fallback）: {e}")
+        return ""
 
 
 async def _generate_story_summary(llm_service, db: AsyncSession, session_id: str) -> str:
@@ -2160,6 +2207,16 @@ async def _finalize_elder_response(
                 state.session_id, "generating_image"
             ),
         )
+
+        # orchestrator 判定長者這句話需要情緒安撫，代表語意上有明確負向訊號，
+        # 寫進 Redis 供 sensor.py _ema_classify 的 text_negative 讀取（見該處
+        # 說明）。90 秒是給長者聽完安撫語、回答下一句引導問題留的窗口。
+        if result.get("action") == "emotional_support":
+            await r.set(
+                f"session:{state.session_id}:text_negative_until",
+                str(time.time() + 90),
+                ex=90,
+            )
 
         if result.get("image_path"):
             # action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次

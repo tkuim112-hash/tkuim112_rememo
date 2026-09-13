@@ -69,6 +69,15 @@ export function tierLabel(pct: number, dimension: Dimension = "engagement"): str
 // 旁邊補這一句，只講這兩個真正決定分類的軸，不重複列專注度（它只在低激動、
 // 表情中性的模糊地帶才當裁判，多數情況下不是決定性的兩軸之一）。
 // 用詞直接沿用 tierLabel 已經在量表上顯示的字，不是另外重新判斷一次門檻。
+//
+// 2026-09-13 稽核：body_constricted／body_shoulder_raise／body_lean_forward
+// 現在也會在「肢體與語調」明顯、但「表情」讀不出明確方向時，當裁判決定
+// 焦躁/亢奮（見 sensor.py _classify_from_scores 同一天的稽核說明、以及
+// 下面 SIGNAL_DIMENSION 裡這三個訊號各自的稽核註解）。原本想在這裡額外
+// 補一句解釋，來回改了三次講法都還是會讓人誤會（分不清哪些訊號算「額外」
+// 、哪些本來就已經算進兩軸的百分比裡），且治療師本來就看得到這幾顆訊號
+// 的 chip 掛在對應量表底下（SIGNAL_DIMENSION 分類沒變），不一定需要這裡
+// 再講一次，所以維持原本只講兩軸的版本，不吃 codes。
 export function reasonCaption(happinessPct: number, agitationPct: number): string {
   return `肢體與語調${tierLabel(agitationPct, "agitation")}、表情${tierLabel(happinessPct, "happiness")}`;
 }
@@ -88,6 +97,19 @@ export function reasonCaption(happinessPct: number, agitationPct: number): strin
 // 讓肩關節追蹤位置抬高（姿態辨識文獻裡的 "motion artifact"），所以後端
 // 給這個訊號的加權比重刻意壓低（0.15，見 sensor.py raw_agi），只是緩解
 // 不是根治。
+//
+// 2026-09-13 稽核：除了上面這個連續加權的角色，body_shoulder_raise 現在
+// 也會在「肢體與語調」明顯、「表情」讀不出明確方向時，被拿來當「焦躁」的
+// 離散裁判（跟 body_constricted 同一批新增，見 sensor.py 稽核說明），不是
+// 只影響 agitation 分數的高低。這裡沒有另外在 UI 補說明句——治療師本來就
+// 看得到這顆 chip 掛在「肢體與語調」底下（分類沒變），曾經試過在
+// reasonCaption 額外加一句解釋，但講法一直不夠精確，後來還原掉了。
+//
+// body_lean_forward 同樣多了一個新角色：「表情」已經偏正向但不夠強時，
+// 拿來當「亢奮」的裁判（見 sensor.py _classify_from_scores 同一天的稽核
+// 說明）——這是跨到「表情訊號」軸的角色，但這裡沒有把它改分類到
+// happiness，因為它主要的、持續影響分數的角色還是 engagement 的前傾=
+// 投入，「亢奮」裁判只在特定模糊帶才生效，同上不另外在 UI 加說明句。
 //
 // 2026-09-05 命名調整：「愉悅度」「緊繃度」改成「表情訊號」「肢體與語調訊號」
 // ——這兩個是從 AU/骨架晃動+語調變化推論出來的「情緒特質」命名，但今天把
@@ -113,6 +135,13 @@ export const SIGNAL_DIMENSION: Record<string, Dimension> = {
   // 要跟 engagement 退縮同時成立的 and 關係，查證失智/淡漠評估文獻後認為
   // 單一姿勢訊號證據力不足以獨立否決，見 sensor.py 的完整說明），功能上跟
   // engagement 退縮是同一類角色，所以歸在這裡顯示。
+  //
+  // 2026-09-13 稽核：這顆訊號現在多了第二個角色——「肢體與語調」明顯、但
+  // 「表情」讀不出明確方向時，也會被拿來當「焦躁」的裁判（見 sensor.py
+  // 同一天的稽核說明：Aviezer et al. 2012 Science，情緒越激烈臉部表情越
+  // 不可靠，這時候信身體）。這裡沒有跟著改分類到 agitation，因為它本來的
+  // 主要角色（低落的加強確認）沒變；也沒有另外在 UI 補說明句，治療師本來
+  // 就看得到這顆 chip 掛在「投入度」底下。
   body_constricted: "engagement",
   // happiness 100% 是 _face_happiness(au)（聳肩已經改進 agitation，表情訊號
   // 不再摻任何骨架資料），比「表情訊號」以外任何量表都更依賴臉部資料

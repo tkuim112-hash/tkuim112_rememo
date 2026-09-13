@@ -30,7 +30,8 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
         "jointKeys": [...],
         "jointX": [...],
         "jointY": [...],
-        "jointZ": [...]
+        "jointZ": [...],
+        "bodySwayBaseline": 0.018
       }
 
     寫入 Redis key: session:{session_id}:calibration（TTL 7200 秒，與 /session/pending

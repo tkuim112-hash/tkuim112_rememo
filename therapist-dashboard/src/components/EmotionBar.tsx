@@ -15,7 +15,10 @@ export function EmotionBar({
     <div className="flex-1 min-w-[180px]">
       <div className="flex justify-between items-baseline">
         <span className="text-[14px] text-[#0a0a0a]">{label}</span>
-        <span className="text-[13px] font-medium" style={{ color }}>{tierLabel(pct, dimension)}</span>
+        <span className="text-[13px] font-medium" style={{ color }}>
+          {tierLabel(pct, dimension)}
+          <span className="text-[#8a8a8a] font-normal ml-1">{Math.round(pct)}%</span>
+        </span>
       </div>
       <div className="h-2 bg-[#e5e7eb] rounded-full mt-1.5 overflow-hidden">
         <div className="h-2 rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />

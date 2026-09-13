@@ -618,7 +618,13 @@ public class KinectCalibrationManager : MonoBehaviour
             jointKeys = new List<string>(baselineJoints.Keys).ToArray(),
             jointX = GetAxis(baselineJoints, 0),
             jointY = GetAxis(baselineJoints, 1),
-            jointZ = GetAxis(baselineJoints, 2)
+            jointZ = GetAxis(baselineJoints, 2),
+            // 個人靜坐晃動基準，供後端 sensor.py _body_sway_threshold 當
+            // 「baseline + 固定邊際」的個人門檻用（見該函式說明：長者本體
+            // 感覺/視覺/前庭覺隨年齡退化，靜止時的姿勢晃動幅度本身就普遍
+            // 比年輕人大，固定絕對門檻對這個族群風險最高，body_sway 又在
+            // agitation 占最大權重）。
+            bodySwayBaseline = MeasureBodySwayBaseline()
         };
 
         string json = JsonUtility.ToJson(payload);
@@ -640,6 +646,36 @@ public class KinectCalibrationManager : MonoBehaviour
             _pendingCalibrationJson = json;
             _pendingCalibrationSend = true;
         }
+    }
+
+    /// <summary>
+    /// 校正期間的 SpineBase 位置標準差（公尺）——跟 KinectSensorSender.cs
+    /// MeasureBodySway() 同一套算法（3D 位置變異量的均方根：算出平均位置、
+    /// 取每一幀跟平均位置的平方距離、取均方根），只是那邊是療程中即時對
+    /// 6 秒滑動視窗算，這裡是對整個 15 秒校正視窗的樣本算一次，量出這個人
+    /// 「平靜坐著時原本」的晃動基準。直接沿用 skeletonBuffer 裡已經蒐集到
+    /// 的 SpineBase 逐幀位置（本來就有記錄，見 CollectSkeletonData），
+    /// 不需要額外的 buffer。樣本數太少（&lt;4，跟 MeasureBodySway 的下限
+    /// 一致）時回傳 0，後端 _body_sway_threshold 會視為「沒有有效基準」
+    /// 退回固定門檻。
+    /// </summary>
+    float MeasureBodySwayBaseline()
+    {
+        var positions = new List<Vector3>();
+        foreach (var frame in skeletonBuffer)
+        {
+            if (frame.TryGetValue("SpineBase", out var pos))
+                positions.Add(new Vector3(pos[0], pos[1], pos[2]));
+        }
+        if (positions.Count < 4) return 0f;
+
+        Vector3 mean = Vector3.zero;
+        foreach (var p in positions) mean += p;
+        mean /= positions.Count;
+
+        float variance = 0f;
+        foreach (var p in positions) variance += (p - mean).sqrMagnitude;
+        return Mathf.Sqrt(variance / positions.Count);
     }
 
     float Average(List<float> list)
@@ -673,7 +709,7 @@ public class KinectCalibrationManager : MonoBehaviour
             statusIndicator.sprite = calibrated ? spriteSuccess : spriteDetecting;
     }
 
-    // 2026-08-26稽核（使用者發現，code review 再稽核修正）：場景卸載時如果
+    // 2026-08-26稽核（code review 再稽核修正）：場景卸載時如果
     // ws 還在背景執行緒讀取 frame header，直接 Close() 會把讀到一半的
     // stream 硬切斷，WebSocketSharp 內部把這個情況標成 Fatal 等級丟出
     // WebSocketException（"The header of a frame cannot be read from the
@@ -713,6 +749,7 @@ public class CalibrationPayload
     public float[] jointX;
     public float[] jointY;
     public float[] jointZ;
+    public float bodySwayBaseline;
 }
 
 [System.Serializable]
