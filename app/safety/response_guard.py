@@ -1982,6 +1982,31 @@ async def guarded_generate(
         # 保護；兩個key不會同時非空（每個generate_fn只回傳其中一個），or一下即可。
         ack_check_text = result.get("reaction_text") or result.get("scene_text", "")
 
+        # 2026-09-14稽核（真實session實測抓到）：closing_text／emotional_text
+        # 這類欄位「天生不會被指派進 ack_check_text」，原意是讓
+        # is_generic_acknowledgment／echo 這類「有沒有呼應長者剛才那句話」
+        # 性質的規則不要誤判 closing_text 合理包含的「謝謝你的分享」語意
+        # （見上方2026-08稽核），但這個排除範圍不小心連 AI自稱想起／冒用
+        # 經歷這兩條規則也一起排除掉了——這兩條跟「像不像承接語」完全無關，
+        # AI不該自稱有任何記憶，不管是在承接語、收尾語、還是情緒回應裡講
+        # 出來都一樣不該發生。真實session連續兩次收尾語出現「讓我也想起了
+        # 小時候媽媽煮飯的味道」「我們一起做料理的過程」這種明顯冒用經歷的
+        # 內容，就是因為從來沒被這兩條規則檢查過。這裡另外算一份只給這兩條
+        # 規則用的檢查對象，涵蓋 closing_text／emotional_text，其餘規則
+        # （too_long／generic／echo／is_question等）維持只查 ack_check_text
+        # 不受影響。
+        memory_check_text = (
+            ack_check_text
+            or result.get("closing_text", "")
+            or result.get("emotional_text", "")
+        )
+        memory_check_label = (
+            "承接語" if ack_check_text
+            else "收尾語" if result.get("closing_text")
+            else "情緒回應" if result.get("emotional_text")
+            else "承接語"
+        )
+
         # 承接語／場景文字超過字數上限（見 ack_text_too_long 上方註解）。
         ack_over_length = ack_text_too_long(ack_check_text)
         if ack_over_length is not None:
@@ -2020,13 +2045,13 @@ async def guarded_generate(
         # LLM判斷抓不穩（真實session連續2輪放行），改用規則比對免費先擋，
         # 不管 skip_ack_memory_check 有沒有設（那個參數只是省下面LLM那次
         # 呼叫，這條規則比對本來就不用呼叫LLM，一律都要查）。
-        if ack_claims_recollection(ack_check_text):
-            logger.warning(f"[ResponseGuard] 承接語疑似AI自稱想起了什麼: {ack_check_text!r}")
+        if ack_claims_recollection(memory_check_text):
+            logger.warning(f"[ResponseGuard] {memory_check_label}疑似AI自稱想起了什麼: {memory_check_text!r}")
             violations.append(("ack_claims_recollection", (
-                f"上一次的承接語「{ack_check_text}」寫了「(讓)我想起」這類措辭，"
-                "等於AI自稱擁有一段屬於自己的記憶——AI在這段對話裡只是聆聽者，"
-                "沒有自己的人生經歷，不能說任何事「讓我想起」了什麼。這次請把"
-                "「我」的部分改成單純表達你聽完之後當下的情緒反應（例如「我也"
+                f"上一次的{memory_check_label}「{memory_check_text}」寫了「(讓)我想起」"
+                "這類措辭，等於AI自稱擁有一段屬於自己的記憶——AI在這段對話裡只是"
+                "聆聽者，沒有自己的人生經歷，不能說任何事「讓我想起」了什麼。這次"
+                "請把「我」的部分改成單純表達你聽完之後當下的情緒反應（例如「我也"
                 "覺得很溫暖」），不要用「想起」這個字。"
             ), False))
 
@@ -2281,14 +2306,15 @@ async def guarded_generate(
         # ai_claims_personal_memory_llm 上方2026-09-13稽核說明：曾經因為
         # 「每個attempt都查一次」太貴被拿掉，後來改成只在這裡（上面全部
         # 格式/內容規則、taboo檢查都已經通過，準備真的return result的
-        # 這一刻）查一次，固定只多一趟LLM往返，不隨重試次數翻倍。只查
-        # ack_check_text（scene_text／reaction_text，跟上面幾條承接語規則
-        # 共用同一組值），closing_text／emotional_text這類欄位天生不會被
-        # 指派進 ack_check_text，不受影響；ack_check_text本身是空字串時
-        # （例如沒有承接語欄位的generate_fn）函式內部直接回False，這裡
-        # 額外先擋一次是為了省下沒必要的LLM呼叫，不是防呆。
+        # 這一刻）查一次，固定只多一趟LLM往返，不隨重試次數翻倍。
         #
-        # 2026稽核（使用者實測抓到，嘗試擴大後撤回）：曾經改成也合併查
+        # 2026-09-14稽核：查的對象改成 memory_check_text（見上方
+        # ack_check_text 後面那段定義說明）——原本只查 ack_check_text
+        # （scene_text／reaction_text），closing_text／emotional_text完全
+        # 沒被這條規則保護過，真實session抓到收尾語出現「讓我也想起了
+        # 小時候媽媽煮飯的味道」這種明顯冒用經歷卻沒被攔下來，才補上。
+        #
+        # 2026稽核（實測抓到，嘗試擴大後撤回）：曾經改成也合併查
         # question 欄位（抓到「那時候我們家通常都會一起去哪裡吃這些呢？」
         # 這類真實案例），但問題欄位常見的「你們」「大家」集體代名詞讓這支
         # LLM判斷穩定度明顯下降，補了system prompt後仍然誤判，誤判觸發的
@@ -2299,17 +2325,17 @@ async def guarded_generate(
         # skip_ack_memory_check：見上方參數說明，orchestrator.py 用
         # ack_composer 算好承接語時，這句話已經在 compose_sentence 內部
         # 查過同一件事，這裡再查一次是白工，呼叫端傳 True 跳過。
-        if ack_check_text and not skip_ack_memory_check:
+        if memory_check_text and not skip_ack_memory_check:
             claims_memory = await ai_claims_personal_memory_llm(
-                ack_check_text, echo_elder_response_val, llm_service,
+                memory_check_text, echo_elder_response_val, llm_service,
             )
             if claims_memory:
-                logger.warning(f"[ResponseGuard] 承接語疑似AI冒用第一人稱經歷: {ack_check_text!r}")
+                logger.warning(f"[ResponseGuard] {memory_check_label}疑似AI冒用第一人稱經歷: {memory_check_text!r}")
                 retry_feedback = (
-                    f"上一次的承接語「{ack_check_text}」疑似把長者的經歷講成AI自己"
-                    "的親身回憶、家人或童年/過去往事——AI在這段對話裡只是聆聽者，"
-                    "沒有自己的人生經歷，這些具體內容只能屬於長者本人。「我」只能"
-                    "用來表達你聽完之後當下的情緒反應（例如「我也覺得很溫暖」），"
+                    f"上一次的{memory_check_label}「{memory_check_text}」疑似把長者的經歷"
+                    "講成AI自己的親身回憶、家人或童年/過去往事——AI在這段對話裡只是"
+                    "聆聽者，沒有自己的人生經歷，這些具體內容只能屬於長者本人。「我」"
+                    "只能用來表達你聽完之後當下的情緒反應（例如「我也覺得很溫暖」），"
                     "不能延伸出具體的人生經歷、家人、童年往事。這次請把「我」的"
                     "部分改成單純的情緒反應，或乾脆拿掉，不要編造屬於你自己的經歷。"
                 )
