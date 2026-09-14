@@ -1068,17 +1068,22 @@ def _strip_leaked_brackets(text: str) -> str:
 
 
 # 2026-09-14稽核：closing.txt 已經要求承接語只寫一句話、用逗號銜接需要
-# 對比的內容、最後只用一個句號收尾（見該檔【收尾語規則】），這裡機械式
-# 保證這件事，不完全依賴模型自己遵守——找不到句號（模型用
-# 「！」「？」結尾、或忘記加標點）就整句保留，不動它，避免誤刪掉唯一
-# 一句話僅有的內容。
+# 對比的內容、最後只用一個句號（或驚嘆號）收尾（見該檔【收尾語規則】），
+# 這裡機械式保證這件事，不完全依賴模型自己遵守——句號、驚嘆號都算一句話
+# 結束，取兩者中先出現的那個；都找不到（模型用「？」結尾、或忘記加標點）
+# 就整句保留，不動它，避免誤刪掉唯一一句話僅有的內容。問號結尾不算在這裡
+# 判斷結束，交給 scene_text_is_a_question 那條規則處理（承接語本身不能是
+# 問句，跟「一句話要在哪裡斷句」是兩件事）。
+_SENTENCE_END_MARKERS = ("。", "！")
+
+
 def _truncate_to_first_period(text: str) -> str:
     if not text:
         return text
-    idx = text.find("。")
-    if idx == -1:
+    indices = [i for i in (text.find(m) for m in _SENTENCE_END_MARKERS) if i != -1]
+    if not indices:
         return text
-    return text[:idx + 1]
+    return text[:min(indices) + 1]
 
 
 # STEP3補問保底問句：target_w 已知時，比起完全通用的「讓你想到什麼？」，
@@ -2615,13 +2620,14 @@ class TherapyOrchestrator:
             fallback={"reaction_text": ""},
             # 2026-09-10起 reaction_text 已改成依 classification 查
             # _IMAGE_REVEAL_REACTION_TEMPLATES 固定句（見該常數說明），不是
-            # LLM 現寫，語氣已經過長期稽核核可。不加這個參數的話，guarded_
-            # generate 仍會拿這句寫死的模板去跑 ai_claims_personal_memory_llm
-            # ——模板1「聽你這樣說，我彷彿也看到了當時的畫面。」被穩定判成
-            # 「疑似冒用經歷」，只要分類結果不變，重試幾次都是同一句話、同一個
-            # 判定，白白燒光3次重試額度、每次都失敗，最後連累到要動用
-            # pre_image_detail 那層保底（見下方 result["reaction_text"] 判斷）。
-            skip_ack_memory_check=True,
+            # LLM 現寫，語氣已經過長期稽核核可，不需要再跑 ack_check_text
+            # 那一整組規則（見 guarded_generate 的 skip_ack_checks 參數
+            # 說明）。原本只加 skip_ack_memory_check（只跳過冒用經歷那一條
+            # LLM檢查）就是為了解決模板1「聽你這樣說，我彷彿也看到了當時
+            # 的畫面。」被誤判的問題，這次擴大成整組規則都跳過，理由相同、
+            # 範圍更完整——反正是固定模板，其餘規則（too_long／空泛套語／
+            # 複誦…）一樣沒有必要每次都重查。
+            skip_ack_checks=True,
             user=user, scene_elements=scene_els, elder_response=elder_response,
             scene_composition=scene_comp, covered_w=covered_w,
             pre_image_detail=pre_image_detail, emotion=emotion,
@@ -2658,7 +2664,7 @@ class TherapyOrchestrator:
                 max_retry=3,
                 text_keys=("reaction_text",),
                 fallback={"reaction_text": ""},
-                skip_ack_memory_check=True,  # 理由同上一次呼叫：reaction_text是固定模板，不需要重查冒用經歷
+                skip_ack_checks=True,  # 理由同上一次呼叫：reaction_text是固定模板，不需要跑整組ack_check_text規則
                 user=user, scene_elements=scene_els, elder_response=elder_response,
                 scene_composition=scene_comp, covered_w=covered_w,
                 pre_image_detail=pre_image_detail, emotion=emotion,
@@ -2697,7 +2703,7 @@ class TherapyOrchestrator:
                 max_retry=3,
                 text_keys=("reaction_text",),
                 fallback={"reaction_text": ""},
-                skip_ack_memory_check=True,  # 理由同上一次呼叫：reaction_text是固定模板，不需要重查冒用經歷
+                skip_ack_checks=True,  # 理由同上一次呼叫：reaction_text是固定模板，不需要跑整組ack_check_text規則
                 user=user, scene_elements=scene_els, elder_response=elder_response,
                 scene_composition=scene_comp, covered_w=covered_w,
                 pre_image_detail=pre_image_detail, emotion=emotion,
@@ -5850,8 +5856,8 @@ class TherapyOrchestrator:
     # 抽取→造句流程，_generate_open_followup／_generate_supplement_
     # question 曾經唯一的呼叫方式）整支移除——這裡持續抓到「承接語跟長者
     # 原話對不上」「答非所問」「AI冒用經歷」「我也覺得很隨便」這類語意
-    # 不通的失效模式（見 ack_composer.py 整份模組的稽核記錄），
-    # 提案後決定STEP2/3乾脆不生成承接語，直接問問題就好。ack_composer.py
+    # 不通的失效模式（見 ack_composer.py 整份模組的稽核記錄），決定
+    # STEP2/3乾脆不生成承接語，直接問問題就好。ack_composer.py
     # 這份模組本身沒有跟著刪掉（保留給未來需要時參考／重新掛回去），只是
     # 這裡不再呼叫它。
 

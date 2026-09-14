@@ -18,7 +18,7 @@ _generate_supplement_question 的呼叫方式。
      一次；兩次都沒過，退回機械模板代入（保證合格）；完全沒抽到關鍵詞則
      退回通用保底句。
 
-2026-09-14稽核（使用者提案，撈真實session log發現切題延遲很高後追查）：
+2026-09-14稽核（撈真實session log發現切題延遲很高後追查）：
 抽取跟分類原本是兩個獨立函式（_ask_extract／_classify_utterance），用
 asyncio.gather同時送出，docstring原本記載「實測比循序快約25%」。這次
 查 tku-care-ollama-1 的啟動紀錄才發現：這顆模型每次載入都是 Parallel:1

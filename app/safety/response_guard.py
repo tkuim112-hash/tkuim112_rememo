@@ -1688,6 +1688,7 @@ async def guarded_generate(
     retry_temperature: float | None = None,
     check_scene_text_question: bool = True,
     skip_ack_memory_check: bool = False,
+    skip_ack_checks: bool = False,
     **generate_kwargs,
 ) -> dict:
     """
@@ -1739,12 +1740,33 @@ async def guarded_generate(
                      retry_feedback），回傳至少含 "question" 的 dict（有
                      "covered_w" 就一併採用，沒有則視為空清單）。
         skip_ack_memory_check: 選用。呼叫端如果已經用別的管道驗證過承接語
-                     不會冒用第一人稱經歷（例如 orchestrator.py 的
-                     _compose_ack_or_none／compose_sentence，內部的
-                     _validate_composed 已經查過同一件事），設 True 跳過
-                     這裡對 ack_check_text 的 ai_claims_personal_memory_llm
-                     檢查，省下重複查同一句話的LLM呼叫。預設 False，維持
-                     原本行為。
+                     不會冒用第一人稱經歷（例如 ack_composer.py 的
+                     compose_sentence，內部的 _validate_composed 已經查過
+                     同一件事），設 True 跳過這裡對 ack_check_text 的
+                     ai_claims_personal_memory_llm 檢查，省下重複查同一句話
+                     的LLM呼叫。預設 False，維持原本行為。
+        skip_ack_checks: 選用。2026-09-14稽核（使用者提案）：
+                     _generate_image_reveal_reaction 的 reaction_text 已經
+                     改成依classification查固定模板（見該常數
+                     _IMAGE_REVEAL_REACTION_TEMPLATES 上方說明），不是LLM
+                     現寫的內容——固定、已核可的模板文字，不需要再跑
+                     ack_check_text 那一整組規則（too_long／空泛套語／複誦／
+                     問句／冒用經歷…），每次都查等於白工，而且模板配上這組
+                     規則若剛好誤判，重試幾次都是同一句話配同一個判定，
+                     注定燒光重試額度（實測案例：模板「聽你這樣說，我彷彿
+                     也看到了當時的畫面。」被 ai_claims_personal_memory_llm
+                     穩定誤判成冒用經歷）。設 True 時把 ack_check_text／
+                     memory_check_text 都強制清空——這組規則清單裡的每一條
+                     函式本身都有「輸入是空字串就直接回傳不違規」的防呆
+                     （見各函式docstring），清空後這整組規則會全部自然
+                     跳過，不用另外用一堆if包住每一條規則。只影響
+                     reaction_text／scene_text／closing_text／emotional_text
+                     這幾個欄位的檢查，不影響 judgment_evidence／
+                     classification 那組獨立的檢查（那組驗證的是模型還在
+                     自由生成的分類判斷本身，不是固定模板，仍然需要驗證）。
+                     預設 False，維持原本行為；skip_ack_memory_check 在
+                     這個設True時形同多餘，但保留參數不衝突，兩個都設也
+                     不會有問題。
         **generate_kwargs: 原封不動轉給 generate_fn 的參數
 
     Returns:
@@ -1980,7 +2002,14 @@ async def guarded_generate(
         # STEP2/3 的 _generate_open_followup／_generate_supplement_question
         # 也回傳 scene_text（承接語），跟 reaction_text 一樣要受這幾條規則
         # 保護；兩個key不會同時非空（每個generate_fn只回傳其中一個），or一下即可。
-        ack_check_text = result.get("reaction_text") or result.get("scene_text", "")
+        # skip_ack_checks=True 時（見上方參數說明：reaction_text 是固定
+        # 模板，不是LLM現寫的），強制清空成空字串——下面整組規則的每一條
+        # 函式本身都有「輸入是空字串就不算違規」的防呆，清空後這組規則
+        # 會全部自然跳過，不用另外包一層if判斷每一條規則。
+        ack_check_text = (
+            "" if skip_ack_checks
+            else result.get("reaction_text") or result.get("scene_text", "")
+        )
 
         # 2026-09-14稽核（真實session實測抓到）：closing_text／emotional_text
         # 這類欄位「天生不會被指派進 ack_check_text」，原意是讓
@@ -1996,7 +2025,9 @@ async def guarded_generate(
         # （too_long／generic／echo／is_question等）維持只查 ack_check_text
         # 不受影響。
         memory_check_text = (
-            ack_check_text
+            ""
+            if skip_ack_checks
+            else ack_check_text
             or result.get("closing_text", "")
             or result.get("emotional_text", "")
         )
@@ -2105,31 +2136,61 @@ async def guarded_generate(
         # 這是機械式修復（跟 repair_double_question 同一類），不算進
         # violations——修得回來就不用燒重試次數；修不回來才算違規、加進
         # violations 清單。
-        if check_scene_text_question and scene_text_is_a_question(ack_check_text):
-            repaired_ack = repair_scene_text_question(ack_check_text)
+        # 2026-09-14稽核（真實session實測抓到）：查的對象改成 memory_check_
+        # text，理由跟上面冒用經歷那兩條規則同一批稽核——closing_text從沒
+        # 被這條規則檢查過，真實session抓到收尾語本身被寫成問句（「...你
+        # 現在有什麼正向的情緒和感受呢？」），跟後面獨立的question欄位
+        # 兜在一起變成連問兩個問題，長者聽起來會困惑。
+        if check_scene_text_question and scene_text_is_a_question(memory_check_text):
+            repaired_ack = repair_scene_text_question(memory_check_text)
             if repaired_ack is not None:
                 # 機械修得回來（確認型問句，拿掉疑問語尾詞/標點就是完整
                 # 直述句）：直接修正、不燒重試次數，見 repair_scene_text_
                 # question 上方稽核說明。修正後的文字要繼續走下面幾條也
                 # 查 ack_check_text 的規則（承接語跟問題重複／搶答為什麼），
-                # 所以連同 result 跟這個變數本身一起更新。
-                ack_key = "reaction_text" if result.get("reaction_text") else "scene_text"
+                # 所以連同 result 跟這兩個變數本身一起更新。
+                ack_key = (
+                    "reaction_text" if result.get("reaction_text")
+                    else "scene_text" if result.get("scene_text")
+                    else "closing_text" if result.get("closing_text")
+                    else "emotional_text"
+                )
                 logger.info(
-                    f"[ResponseGuard] 承接語被寫成問句，機械修復成直述句: "
-                    f"{ack_check_text!r} → {repaired_ack!r}"
+                    f"[ResponseGuard] {memory_check_label}被寫成問句，機械修復成直述句: "
+                    f"{memory_check_text!r} → {repaired_ack!r}"
                 )
                 result[ack_key] = repaired_ack
-                ack_check_text = repaired_ack
+                ack_check_text = repaired_ack if ack_key in ("reaction_text", "scene_text") else ack_check_text
+                memory_check_text = repaired_ack
             else:
-                logger.warning(f"[ResponseGuard] 承接語被寫成問句: {ack_check_text!r}")
+                logger.warning(f"[ResponseGuard] {memory_check_label}被寫成問句: {memory_check_text!r}")
                 violations.append(("ack_is_question", (
-                    f"上一次的承接語「{ack_check_text}」本身被寫成一句問句（用「呢」"
-                    "「嗎」結尾或直接用問號收尾）。承接語的工作是接住長者剛才的話，"
+                    f"上一次的{memory_check_label}「{memory_check_text}」本身被寫成一句問句"
+                    "（用「呢」「嗎」結尾或直接用問號收尾）。這個欄位的工作是接住長者剛才的話，"
                     "不是提問，真正的提問要留給緊接著的「問題：」欄位，不然長者會"
-                    "被連問兩次、語氣也會顯得矛盾。這次請把承接語改寫成直述句"
-                    "（不要用「呢」「嗎」或問號收尾），該問的內容留到「問題：」"
+                    f"被連問兩次、語氣也會顯得矛盾。這次請把{memory_check_label}改寫成"
+                    "直述句（不要用「呢」「嗎」或問號收尾），該問的內容留到「問題：」"
                     "欄位再問。"
                 ), False))
+
+        # 2026-09-14稽核（使用者提出）：收尾語／情緒回應只要句子裡出現
+        # 「？」就整句不合格，不只是「結尾被寫成問句」才算——上面
+        # scene_text_is_a_question 只抓結尾（呢/嗎/？收尾），問號出現在
+        # 句子中間（例如「你今天過得如何？很期待聽你說」這種先問一句再
+        # 接別的話）不會被那條規則攔到，但一樣會讓長者聽起來像被問了
+        # 問題、不知道該不該回答。只套用在收尾語／情緒回應這兩個欄位——
+        # scene_text／reaction_text 維持原本「只查結尾」的規則不變，這兩個
+        # 欄位性質不同：收尾語是療程真正收尾、安撫情緒的最後一句話，不該
+        # 帶有任何提問語氣，跟STEP2/3那種「承接語+問題」還可以稍微鬆一點
+        # 的情境不一樣。
+        if memory_check_label in ("收尾語", "情緒回應") and ("？" in memory_check_text or "?" in memory_check_text):
+            logger.warning(f"[ResponseGuard] {memory_check_label}裡出現問號: {memory_check_text!r}")
+            violations.append(("ack_contains_question_mark", (
+                f"上一次的{memory_check_label}「{memory_check_text}」裡面出現了問號，"
+                "不管問號在句子開頭、中間還是結尾都不行——這個欄位不能帶有任何"
+                "提問語氣，真正的提問留給緊接著的「問題：」欄位。這次請把問號跟"
+                "帶著問句語氣的部分整個拿掉或改寫成直述句。"
+            ), False))
 
         # 承接語跟問題文字幾乎一模一樣（見 scene_text_duplicates_question
         # 上方註解）。跟上面兩條共用同一組 scene_text／reaction_text 判準理由。
