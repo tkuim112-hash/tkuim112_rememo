@@ -6,6 +6,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Session, SessionRound, Case } from "@/lib/types";
 import { API_BASE as AI_BASE } from "@/lib/api";
+import { EMOTION_COLORS, DIMENSION_COLORS, groupSignalsByDimension, reasonCaption } from "@/lib/emotionSignals";
+import { EmotionBar } from "@/components/EmotionBar";
 
 const ROUND_LABELS = ["一", "二", "三"];
 
@@ -60,6 +62,8 @@ export default function RoundDetailPage({
 
   if (!session || !caseData || !currentRound) return null;
 
+  const signalsByDimension = groupSignalsByDimension(currentRound.signalCodes ?? []);
+
   return (
     <div className="min-h-screen bg-[#f5e6d3] px-8 py-6 flex flex-col gap-4">
 
@@ -102,6 +106,24 @@ export default function RoundDetailPage({
           ))}
         </div>
       </div>
+
+      {/* Kinect 情緒判斷依據（整個回合的彙整結果，不細到每一題） */}
+      {currentRound.engagementPct != null && currentRound.happinessPct != null && currentRound.agitationPct != null && (
+        <div className="bg-white rounded-2xl px-6 py-5 flex items-start gap-8 flex-wrap">
+          <div className="flex flex-col gap-0.5 min-w-[170px]">
+            <span className="text-[13px] text-[#888]">本回合 Kinect 情緒判斷</span>
+            <span className="text-[22px] font-bold" style={{ color: EMOTION_COLORS[currentRound.emotion] ?? "#888" }}>
+              {currentRound.emotion}
+            </span>
+            <p className="text-[12px] text-[#9aa1ab]">{reasonCaption(currentRound.happinessPct, currentRound.agitationPct)}</p>
+          </div>
+          <div className="flex gap-6 flex-1 flex-wrap min-w-[300px]">
+            <EmotionBar label="投入度" pct={currentRound.engagementPct} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
+            <EmotionBar label="臉部表情（正負向）" pct={currentRound.happinessPct} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
+            <EmotionBar label="肢體與語調（激動程度）" pct={currentRound.agitationPct} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
+          </div>
+        </div>
+      )}
 
       {/* 主要內容：場景圖 + 問答紀錄 */}
       <div className="flex gap-4 flex-1 min-h-0">

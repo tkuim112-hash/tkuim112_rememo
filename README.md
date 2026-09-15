@@ -15,7 +15,8 @@
 | M6 資料庫 | `db` | PostgreSQL，長者/治療師/機構/療程資料，schema 見 [database/](database/) |
 | 前端 | `frontend` | Next.js 治療師後台：註冊/登入（含忘記密碼）、個案（長者）管理、療程紀錄查看，見 [therapist-dashboard/](therapist-dashboard/) |
 | 長者互動 App | — | Unity 應用程式，治療師以 JWT 登入後操作、帶長者進行懷舊對話與生圖，見 [Unity/Rememo/](Unity/Rememo/) |
-| 實體 Kinect 感測器 | — | 骨架/姿態情緒偵測（低頭、前傾、聳肩、晃動）、臉部偵測、可替代麥克風輸入、手勢懸停操作 UI；姿態資料即時送 [POST /sensor/emotion](app/routers/sensor.py) 分類後存 Redis 供 LLM 語氣調整參考，見 [Unity/Rememo/.../Scripts/Kinect/](Unity/Rememo/Rememo/Assets/Scenes/Scripts/Kinect/) |
+| 實體 Kinect 感測器 | — | 骨架/姿態情緒偵測（低頭、前傾、聳肩、晃動）、可替代麥克風輸入、手勢懸停操作 UI；姿態與臉部畫面即時送 [POST /sensor/emotion](app/routers/sensor.py) 分類後存 Redis 供 LLM 語氣調整參考，見 [Unity/Rememo/.../Scripts/Kinect/](Unity/Rememo/Rememo/Assets/Scenes/Scripts/Kinect/) |
+| 臉部情緒分析 | `face-service` | 用 py-feat 分析 Kinect 傳來的臉部畫面，輸出 FACS Action Unit (AU) 強度，取代 Kinect 內建 Face API；情緒判讀邏輯留在 `app/routers/sensor.py`（感測與解讀分離），見 [face-service/server.py](face-service/server.py) |
 | 其他 | `redis`、`pgadmin`、`redisinsight`、`qdrant-backup`、`db-backup` | 快取、資料庫管理介面、Qdrant/PostgreSQL 自動備份 |
 
 各服務的容器編排、環境變數與備份策略定義於 [docker-compose.yml](docker-compose.yml)（內含詳細註解說明各項設定的原因）。
@@ -60,6 +61,7 @@
 app/                  後端主服務（FastAPI）：routers、services、orchestrator、privacy、alembic migrations
 Rag/                  RAG 服務：長者對話向量化 ingest（CKIP 斷詞）與檢索（Qdrant + Ollama embedding）
 bluemagpie/           本地 TTS 服務建置（BlueMagpie-TTS，legacy，已非主要語音合成路徑）
+face-service/         臉部情緒分析服務（py-feat FACS Action Unit 強度分析，取代 Kinect 內建 Face API）
 therapist-dashboard/  治療師後台前端（Next.js）
 Unity/Rememo/         長者互動 Unity 應用程式（治療師登入操作）
 database/             M6 資料庫 schema（m6_db_schema.sql）與測試資料（seed.sql）

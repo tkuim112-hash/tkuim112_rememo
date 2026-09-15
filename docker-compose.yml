@@ -6,14 +6,23 @@ services:
     build: .
     container_name: tku-care-app-1
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./app:/app
       - ./media:/media
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    # --ws-ping-interval/--ws-ping-timeout 拉寬 uvicorn 內建 WebSocket ping/pong
+    # 保活窗口（預設都是 20 秒）：/ws/stt 走 Cloudflare Tunnel 到長者端 Unity，
+    # 多一段公網往返延遲，一遇到網路抖動或事件迴圈忙碌，20 秒內收不到 pong
+    # 就會被 uvicorn 自己判定連線死掉、直接關閉——這跟 Unity 端應用層那個
+    # 20 秒心跳（KinectAudioSender.cs SendSttControl "ping"）是兩回事，救不了
+    # 彼此。ping 照樣 20 秒送一次（維持原本及早偵測真斷線的頻率），但把等
+    # pong 回應的容忍時間拉到 60 秒，給 tunnel 延遲/抖動更多緩衝，減少長者
+    # 端連線被誤判斷線、治療師確認回應因此送不到而要按兩次的情況。
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --ws-ping-interval 20 --ws-ping-timeout 60
     depends_on:
       - ollama
       - tts
+      - face-service
       - db
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
@@ -136,7 +145,7 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     container_name: tku-care-frontend-1
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - DATABASE_URL=${FRONTEND_DATABASE_URL}
       - SESSION_SECRET=${SESSION_SECRET}
@@ -212,6 +221,29 @@ services:
       - redis
     restart: always
   
+  # M1b: 臉部情緒訊號分析 (py-feat, FACS Action Unit)，取代 Kinect 內建 Face API
+  face-service:
+    build:
+      context: ./face-service
+      dockerfile: Dockerfile
+    container_name: tku-care-face-service-1
+    volumes:
+      # py-feat 部分模型透過 huggingface_hub 下載，預設快取在 HF_HOME；掛 volume
+      # 避免每次重建容器都重下。
+      - ./models/py_feat_cache:/root/.cache/huggingface
+      # 2026-09-08 稽核（實測發現臉部分析整段時間連不上，追下去發現容器一直在
+      # 重下模型）：py-feat 主要的模型權重（ResMaskNet／mobilenet0.25／
+      # img2pose／AU XGBoost 等，共 784MB）不是存在上面那個 HF 快取路徑，是
+      # 存在套件安裝目錄本身（site-packages/feat/resources），上面那條 volume
+      # 完全沒蓋到，導致每次容器重建/重啟這 784MB 就整包消失、下次啟動要重新
+      # 下載一次——網速不快時要 40~60 分鐘，這段期間 /sensor/emotion 的臉部
+      # 分析請求全部連線失敗，被當成「沒偵測到臉」，跟門檻/校正/距離都無關。
+      - ./models/py_feat_resources:/opt/conda/lib/python3.11/site-packages/feat/resources
+    # server.py 改用 device="cpu"、完全不給容器GPU可見性
+    # （見該檔開頭說明），不再需要NVIDIA環境變數／GPU device reservation，
+    # 把約1GB VRAM還給ollama。
+    restart: unless-stopped
+
   # M1: 感知數據處理服務 (OpenAI Whisper STT)
   stt:
     image: fedirz/faster-whisper-server:latest-cuda

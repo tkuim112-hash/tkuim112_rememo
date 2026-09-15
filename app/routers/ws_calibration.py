@@ -19,14 +19,19 @@ async def ws_calibration(websocket: WebSocket, session_id: str = "", token: str 
       {
         "type": "calibration",
         "duration": 15.0,
-        "happyBaseline": 0.12,
         "lookingAwayBaseline": 0.05,
         "mouthMovedBaseline": 0.03,
         "pitchVarianceBaseline": 32.5,
+        "pitchVarianceStdDev": 8.1,
+        "audioRmsBaseline": 0.004,
+        "audioRmsStdDev": 0.001,
+        "auBaselineCodes": ["AU06", "AU12", "AU01", "AU04", "AU05", "AU07", "AU15", "AU23"],
+        "auBaselineValues": [0.1, 0.2, 0.05, 0.6, 0.1, 0.15, 0.05, 0.1],
         "jointKeys": [...],
         "jointX": [...],
         "jointY": [...],
-        "jointZ": [...]
+        "jointZ": [...],
+        "bodySwayBaseline": 0.018
       }
 
     寫入 Redis key: session:{session_id}:calibration（TTL 7200 秒，與 /session/pending

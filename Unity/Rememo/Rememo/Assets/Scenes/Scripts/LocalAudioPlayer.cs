@@ -86,4 +86,34 @@ public static class LocalAudioPlayer
         }
         onAllDone?.Invoke();
     }
+
+    // 沒有實際合成語音的回合（第2、3回合）估算閱讀時間用的係數。拿正式
+    // 環境同一組 TTS 設定（zh-TW-HsiaoYuNeural, +0%）實測 4 句不同長度的
+    // 句子（7~39字）量出真實播放秒數，線性回歸出「秒數 = 固定開場靜音 +
+    // 字數 × 每字秒數」，不是憑感覺猜的：短句子單純用「總字數÷平均字/秒」
+    // 會失真，因為每段音檔都有一段固定的前後靜音，字數越少這段固定開銷
+    // 占比越高（2026-09-06 稽核，實測數據見對話紀錄）。
+    private const float READING_FIXED_OVERHEAD_SEC = 1.2f;
+    private const float READING_SEC_PER_CHAR       = 0.24f;
+
+    /// <summary>
+    /// 估計這段文字如果用正式 TTS 語速唸出來需要多久，給沒有實際合成語音的
+    /// 回合，等長者「讀完」文字才啟動反應時間計時用——理由跟有語音的回合
+    /// 要等播放完才計時一樣，都是不該把「呈現題目」的時間算進長者的反應
+    /// 時間，不然沒語音的回合會比有語音的回合不公平（見 GameController.cs
+    /// ApplyRoundResponse 呼叫端說明）。
+    /// </summary>
+    public static float EstimateReadingSeconds(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0f;
+        return READING_FIXED_OVERHEAD_SEC + text.Length * READING_SEC_PER_CHAR;
+    }
+
+    /// <summary>通用延遲執行小工具，等 seconds 秒後呼叫 action 一次；seconds
+    /// 不是正數就立刻執行，不用另外判斷呼叫端有沒有東西可等。</summary>
+    public static IEnumerator DelayedAction(float seconds, System.Action action)
+    {
+        if (seconds > 0f) yield return new WaitForSeconds(seconds);
+        action?.Invoke();
+    }
 }

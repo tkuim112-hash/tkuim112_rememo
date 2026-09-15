@@ -76,6 +76,10 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
  const total = scores.reduce((sum, s) => sum + (s + 1), 0);
  const maxScore = CRITERIA.length * 4;
 
+ function cellLabel(rowIdx: number, colIdx: number): string {
+   return CRITERIA[rowIdx].options[colIdx];
+ }
+
  function handleSelect(rowIdx: number, colIdx: number) {
    if (!isEditing) return;
    setScores((prev) => prev.map((s, i) => (i === rowIdx ? colIdx : s)));
@@ -150,7 +154,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
                <td className="border-r border-[#e8e8e8] px-2 py-2 md:px-4 md:py-2.5 lg:px-5 lg:py-2.5 xl:px-6 xl:py-3 2xl:px-8 2xl:py-4 text-[12px] md:text-[13px] lg:text-[14px] xl:text-[15px] 2xl:text-[17px] font-medium text-[#1a1a1a]">
                  {row.name}
                </td>
-               {row.options.map((option, colIdx) => {
+               {row.options.map((_option, colIdx) => {
                  const selected = scores[rowIdx] === colIdx;
                  return (
                    <td
@@ -164,7 +168,7 @@ export default function SessionEndPage({ params }: { params: Promise<{ sessionId
                          : "text-[#555]"
                      }`}
                    >
-                     {option}{selected ? " ✓" : ""}
+                     {cellLabel(rowIdx, colIdx)}{selected ? " ✓" : ""}
                    </td>
                  );
                })}

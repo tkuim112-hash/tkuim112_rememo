@@ -51,7 +51,7 @@ MonoBehaviour:
   dontDestroyAcrossScenes: 1
   sensorHeight: 1
   sensorAngle: 0
-  autoHeightAngle: 0
+  autoHeightAngle: 2
   computeUserMap: 1
   computeColorMap: 0
   computeInfraredMap: 0

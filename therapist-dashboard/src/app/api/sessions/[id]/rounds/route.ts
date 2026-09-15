@@ -13,6 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const rows = await sql`
     SELECT
       r.id, r.round_number, r.type, r.response_time, r.emotion, r.generated_scene, r.patient_response, r.scene_image, r.summary,
+      r.engagement_pct, r.happiness_pct, r.agitation_pct, r.signal_codes,
       s.patient_id,
       re.id AS exchange_id, re.question_number, re.question, re.answer, re.stage
     FROM rounds r
@@ -54,6 +55,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     summary: r.summary ?? "",
     emotion: r.emotion ?? "—",
     sceneImage: r.scene_image ? (r.scene_image as string).replace("/media", "") : null,
+    engagementPct: r.engagement_pct ?? null,
+    happinessPct: r.happiness_pct ?? null,
+    agitationPct: r.agitation_pct ?? null,
+    signalCodes: r.signal_codes ? JSON.parse(r.signal_codes as string) : [],
     exchanges: exchanges.map(e => ({
       questionNumber: e.question_number,
       question: e.question,

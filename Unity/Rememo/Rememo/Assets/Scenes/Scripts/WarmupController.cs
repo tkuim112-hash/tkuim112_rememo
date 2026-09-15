@@ -38,10 +38,21 @@ public class WarmupController : MonoBehaviour
         statusBadge.sprite = successSprite;
 
         // 校正完成，等治療師端按下「啟動療程」（後端 /session/start 一被呼叫就馬上標記
-        // requested=true，不等 LLM 分類／RAG 檢索／TTS 合成跑完）就立刻切去
-        // InstructionScene——真正耗時的生成過程改到說明頁用進度條呈現，不讓長者
-        // 停在 WarmupScene 乾等。sessionId 拿不到（離線 demo、換取 pending session
-        // 失敗）就沿用舊行為直接放行，不讓這個環節卡住展示。
+        // requested=true，不等 LLM 分類／RAG 檢索／TTS 合成跑完）之後，還要再等治療師
+        // 網頁的暖身頁面真的載入（warmup_ready），才切去 WarmupGameScene 做暖身動作卡，
+        // 做完再進 InstructionScene——真正耗時的生成過程改到說明頁用進度條呈現，
+        // 不讓長者停在 WarmupScene 乾等。
+        //
+        // 只等 requested 不夠：治療師網頁按下按鈕後是直接跳轉（不等 /session/start
+        // 回應），但頁面切換、React 掛載還是需要一點時間，如果 Unity 這裡只看
+        // requested 就切場景，有機會比治療師網頁還早進暖身關卡，治療師端還沒開始
+        // polling warmup_progress 就已經錯過最前面幾張卡片的回報，長者端跟治療師端
+        // 看起來就會不同步。多等 warmup_ready 這個旗標（治療師網頁第一次成功 poll
+        // warmup_progress 才會設，見後端 session_warmup_progress_get），確保兩邊
+        // 真正同步起跑，不用賭時間差。
+        //
+        // sessionId 拿不到（離線 demo、換取 pending session 失敗）就沿用舊行為
+        // 直接放行，不讓這個環節卡住展示。
         if (!string.IsNullOrEmpty(sessionId))
         {
             var wait = new WaitForSeconds(therapistPollInterval);
@@ -55,6 +66,19 @@ public class WarmupController : MonoBehaviour
                     error => Debug.LogWarning(error)
                 ));
                 if (requested) break;
+                yield return wait;
+            }
+
+            bool warmupReady = false;
+            while (!warmupReady)
+            {
+                yield return StartCoroutine(SessionService.FetchWarmupReady(
+                    backendUrl,
+                    sessionId,
+                    result => warmupReady = result,
+                    error => Debug.LogWarning(error)
+                ));
+                if (warmupReady) break;
                 yield return wait;
             }
         }
@@ -75,6 +99,6 @@ public class WarmupController : MonoBehaviour
         GameController.currentRound = 1;
         PendingSessionStart.Response = null;
         PlayerPrefs.SetString("NextScene", "GameScene-1");
-        SceneManager.LoadScene("InstructionScene");
+        SceneManager.LoadScene("WarmupGameScene");
     }
 }

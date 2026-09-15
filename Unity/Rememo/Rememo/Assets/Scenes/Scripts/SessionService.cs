@@ -21,6 +21,7 @@ public static class SessionService
     {
         public bool calibrated;
         public bool requested;
+        public bool warmup_ready;
         public bool started;
     }
 
@@ -74,8 +75,9 @@ public static class SessionService
 
     /// <summary>
     /// 查詢治療師是否已按下「啟動療程」（/session/start 已被呼叫，但不保證生成完畢）。
-    /// 供 WarmupController 在校正完成後 poll，一偵測到就立刻切去 InstructionScene，
-    /// 讓真正耗時的生成過程改到說明頁用進度條呈現。
+    /// 供 WarmupController 在校正完成後 poll，一偵測到就知道可以準備切去
+    /// WarmupGameScene——但還要再等 FetchWarmupReady 確認治療師網頁真的載入
+    /// 暖身頁面才會真的切，避免 Unity 搶先跑到治療師網頁前面。
     /// </summary>
     public static IEnumerator FetchRequested(
         string backendUrl,
@@ -96,5 +98,34 @@ public static class SessionService
 
         var resp = JsonUtility.FromJson<SessionStatusResponse>(req.downloadHandler.text);
         onSuccess?.Invoke(resp?.requested ?? false);
+    }
+
+    /// <summary>
+    /// 查詢治療師網頁的暖身頁面是否已經真的載入、開始 poll warmup_progress
+    /// （見後端 session_warmup_progress_get 設定這個旗標的說明）。requested
+    /// 只代表治療師按下了按鈕，網頁跳轉/掛載還需要一點時間，Unity 只看
+    /// requested 就切場景的話，有機會比治療師網頁還早進暖身關卡，治療師端
+    /// 還沒開始 polling 就已經錯過最前面幾張卡片的回報。WarmupController
+    /// 在 requested 之後多等這個旗標，確保兩邊真正同步起跑。
+    /// </summary>
+    public static IEnumerator FetchWarmupReady(
+        string backendUrl,
+        string sessionId,
+        Action<bool> onSuccess,
+        Action<string> onFail)
+    {
+        using var req = UnityWebRequest.Get($"{backendUrl}/session/{sessionId}/status");
+        AuthService.AttachAuthHeader(req);
+
+        yield return req.SendWebRequest();
+
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            onFail?.Invoke($"取得療程狀態失敗：{req.error}");
+            yield break;
+        }
+
+        var resp = JsonUtility.FromJson<SessionStatusResponse>(req.downloadHandler.text);
+        onSuccess?.Invoke(resp?.warmup_ready ?? false);
     }
 }
