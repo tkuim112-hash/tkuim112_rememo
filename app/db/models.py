@@ -72,8 +72,15 @@ class TherapySession(Base):
     score_participation: Mapped[int | None] = mapped_column(Integer)
     score_attention: Mapped[int | None] = mapped_column(Integer)
     score_endurance: Mapped[int | None] = mapped_column(Integer)
+    # 持續力同一個分數可能是「擅自離開」或「情緒極度低落」兩種完全不同的
+    # 原因觸發（見 session.py _score_persistence），存下實際原因供前端挑選
+    # 正確的文字標籤，不是固定寫死對應分數的單一敘述。
+    endurance_reason: Mapped[str | None] = mapped_column(Text)
     score_emotion: Mapped[int | None] = mapped_column(Integer)
     score_interaction: Mapped[int | None] = mapped_column(Integer)
+    # 互動頻率同一個分數可能是「完全沒開口，只有動作」或「只回極短的指令式
+    # 回答」兩種原因（見 session.py _score_interaction），理由同 endurance_reason。
+    interaction_reason: Mapped[str | None] = mapped_column(Text)
     total_score: Mapped[int | None] = mapped_column(Integer)
     emotional_status: Mapped[str | None] = mapped_column(Text)
     therapist_note: Mapped[str | None] = mapped_column(Text)
@@ -100,6 +107,41 @@ class TherapyRound(Base):
     # _generate_round_summary），給歷史療程列表快速瀏覽用，避免把長者
     # 原話整段堆在畫面上。
     summary: Mapped[str | None] = mapped_column(Text)
+    # 情緒判斷依據（見 app/routers/session.py _finalize_round_signals）：
+    # engagement/happiness/agitation_pct 是三維 EMA 分數換算成 0-100%，
+    # signal_codes 是 JSON 字串陣列（訊號代碼，中文文案在前端
+    # therapist-dashboard/src/lib/emotionSignals.ts），供治療師端顯示
+    # 「AI 為什麼這樣判斷」。
+    engagement_pct: Mapped[int | None] = mapped_column(Integer)
+    happiness_pct: Mapped[int | None] = mapped_column(Integer)
+    agitation_pct: Mapped[int | None] = mapped_column(Integer)
+    signal_codes: Mapped[str | None] = mapped_column(Text)
+
+
+class WarmupCardResult(Base):
+    """暖身活動每張動作卡的評估結果（見 app/routers/session.py
+    warmup_card_result）：關節角度/動作到位程度/畫圓穩定度、平滑度
+    （Log Dimensionless Jerk）、左右對稱性（Symmetry Index）都是 Unity
+    端在卡片進行期間逐幀取樣、卡片完成/跳過那一刻換算成 0-100 送過來的，
+    這裡只負責存最終結果，不做任何計算。"""
+    __tablename__ = "warmup_card_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sessions.id", ondelete="CASCADE")
+    )
+    card_key: Mapped[str] = mapped_column(Text, nullable=False)
+    card_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 'completed'（Kinect 自動偵測完成）/'skipped'（治療師跳過）/
+    # 'manual'（治療師手動標記完成）。skipped 的話下面四個指標欄位都是 null。
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    joint_angle_pct: Mapped[int | None] = mapped_column(Integer)
+    smoothness_pct: Mapped[int | None] = mapped_column(Integer)
+    symmetry_pct: Mapped[int | None] = mapped_column(Integer)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
 
 
 class RoundExchange(Base):

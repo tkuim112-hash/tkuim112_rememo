@@ -36,7 +36,10 @@ class LLMService:
         )
 
     async def chat(
-        self, messages: list[dict], temperature: float | None = None
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        format: dict | str | None = None,
     ) -> str:
         """
         送出 messages 格式的對話，對齊 DPO 訓練時的 prompt 結構。
@@ -44,21 +47,30 @@ class LLMService:
         Args:
             messages: [{"role": "system"|"user"|"assistant", "content": "..."}]
             temperature: 覆寫本次呼叫的 temperature，不傳則用模組預設值 TEMPERATURE。
+            format: 選用，Ollama 的結構化輸出參數——傳一份 JSON Schema（dict）
+                強制模型用 grammar-constrained decoding 輸出符合該 schema 的
+                JSON，schema 裡列的每個 key 都保證會出現在輸出裡（不保證內容
+                品質，但保證欄位本身不會被模型漏掉，解決本地小模型在多段
+                標籤格式下常見的「漏欄位」問題）；傳 "json" 則只要求輸出是
+                合法 JSON、不檢查結構。不傳則沿用原本的自由文字輸出。
 
         Returns:
             LLM 的回應文字
         """
-        response = await self.client.post(
-            f"{self.host}/api/chat",
-            json={
-                "model": self.model,
-                "messages": messages,
-                "stream": False,
-                "options": {
-                    "temperature": TEMPERATURE if temperature is None else temperature
-                },
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": TEMPERATURE if temperature is None else temperature,
+                # 明確指定，不吃模型Modelfile自己的預設值（見 config.py
+                # ollama_num_ctx 註解）
+                "num_ctx": settings.ollama_num_ctx,
             },
-        )
+        }
+        if format is not None:
+            payload["format"] = format
+        response = await self.client.post(f"{self.host}/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
         return data["message"]["content"]

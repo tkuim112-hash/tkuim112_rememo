@@ -114,25 +114,25 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
 
   const nextSession = caseData.totalSessions + 1;
 
-  const handleStart = async () => {
+  const handleStart = () => {
     setIsStarting(true);
     setStartError("");
-    try {
-      const newSessionId = sessionId || crypto.randomUUID();
-      const topic = scene.trim() || suggestedTopic || "";
-      const res = await fetch(
-        `${API_BASE}/session/start?user_id=${encodeURIComponent(caseId)}&session_id=${encodeURIComponent(newSessionId)}&topic=${encodeURIComponent(topic)}`,
-        { method: "POST", credentials: "include" }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || "啟動活動失敗，請確認長者端裝置與後端服務狀態");
-      }
-      router.push(`/activity/${newSessionId}/warmup?caseId=${caseId}`);
-    } catch (e) {
-      setStartError(e instanceof Error ? e.message : "啟動活動失敗，請稍後再試");
-      setIsStarting(false);
-    }
+    const newSessionId = sessionId || crypto.randomUUID();
+    const topic = scene.trim() || suggestedTopic || "";
+    // /session/start 一進來就先把 session:{id}:requested 設好（見後端
+    // session.py），Unity 只看這個旗標，0.5 秒內就會切場景進暖身；後面的
+    // LLM 主題分類／RAG 檢索／TTS 合成才是真正耗時（好幾秒）的部分。這裡
+    // 以前是 await 整支 fetch（等於等那些耗時流程都跑完）才 push 到暖身
+    // 頁面，導致治療師網頁比 Unity 慢好幾秒才開始 poll 進度，看起來就像
+    // 「跟不上」。改成發出去就立刻跳轉，不等回應——跟 Unity 一樣只依賴
+    // requested 這個瞬間動作。
+    fetch(
+      `${API_BASE}/session/start?user_id=${encodeURIComponent(caseId)}&session_id=${encodeURIComponent(newSessionId)}&topic=${encodeURIComponent(topic)}`,
+      { method: "POST", credentials: "include" }
+    ).catch((e) => {
+      console.error("啟動療程請求送出失敗", e);
+    });
+    router.push(`/activity/${newSessionId}/warmup?caseId=${caseId}`);
   };
 
   return (
@@ -285,7 +285,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled={isStarting}
               className="flex-1 bg-[#5b8ac5] text-white text-[17px] font-semibold rounded-2xl py-4 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {isStarting ? "啟動中…" : "啟動活動"}
+              {isStarting ? "啟動中…" : "啟動暖身活動"}
             </button>
           )}
           {status === "calibrating" && (
@@ -294,7 +294,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動活動（校正進行中，請稍候）
+              啟動暖身活動（校正進行中，請稍候）
             </button>
           )}
           {status === "disconnected" && (
@@ -303,7 +303,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
               disabled
               className="flex-1 bg-[#d0d0d0] text-[#999] text-[17px] font-semibold rounded-2xl py-4 cursor-not-allowed"
             >
-              啟動活動（需先解決連線問題）
+              啟動暖身活動（需先解決連線問題）
             </button>
           )}
           <Link

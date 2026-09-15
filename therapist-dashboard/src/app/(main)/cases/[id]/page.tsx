@@ -4,13 +4,8 @@ import Link from "next/link";
 import { use, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { Case, Session } from "@/lib/types";
-
-const RATING_COLOR: Record<string, string> = {
-  適當: "#4caf7d",
-  亢奮: "#e09540",
-  焦躁: "#e09540",
-  低落: "#e05c3a",
-};
+import { API_BASE } from "@/lib/api";
+import { EMOTION_COLORS } from "@/lib/emotionSignals";
 
 const inputClass =
   "w-full bg-[#f5f5f5] rounded-xl px-4 py-2 text-[15px] text-[#1a1a1a] outline-none focus:bg-[#efefef] transition-colors";
@@ -28,10 +23,16 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
   const { id } = use(params);
   const router = useRouter();
   const [caseData, setCaseData] = useState<Case | null>(null);
+  const [caseNotFound, setCaseNotFound] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsError, setSessionsError] = useState(false);
   const [tab, setTab] = useState<"info" | "history">("info");
   const [isEditing, setIsEditing] = useState(false);
+  // DB 的 status='in_progress' 可能是療程被中斷後永遠卡住、從沒變成
+  // completed，不能直接當「現在真的活動中」用來導去 LiveSessionView（否則
+  // 會 poll 到過期的 session meta，誤判成剛結束，跳去觀察量表而不是歷史頁）。
+  // 用 /session/active-patients 名單再核對一次病患是否真的活動中。
+  const [isPatientLive, setIsPatientLive] = useState(false);
 
   const [editAvatar, setEditAvatar] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -44,9 +45,15 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
 
   useEffect(() => {
     fetch(`/api/cases/${id}`)
-      .then((r) => r.json())
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`個案查詢失敗（${r.status}）`);
+        return r.json();
+      })
       .then((data) => setCaseData(data))
-      .catch(() => {});
+      .catch((err) => {
+        console.error(err);
+        setCaseNotFound(true);
+      });
 
     fetch(`/api/cases/${id}/sessions`)
       .then(async (r) => {
@@ -62,6 +69,14 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
         setSessions([]);
         setSessionsError(true);
       });
+
+    fetch(`${API_BASE}/session/active-patients`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const activeIds: string[] = Array.isArray(data?.patient_ids) ? data.patient_ids : [];
+        setIsPatientLive(activeIds.includes(id));
+      })
+      .catch(() => {});
   }, [id]);
 
   function startEditing() {
@@ -102,6 +117,17 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
       setCaseData(updated);
     }
     setIsEditing(false);
+  }
+
+  if (caseNotFound) {
+    return (
+      <div className="min-h-screen bg-[#f5e6d3] px-12 py-6 flex flex-col items-center justify-center gap-4">
+        <p className="text-[18px] text-[#1a1a1a]">找不到這位個案，可能已被刪除或不屬於你的機構</p>
+        <Link href="/dashboard" className="text-[15px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors">
+          ‹ 返回個案列表
+        </Link>
+      </div>
+    );
   }
 
   if (!caseData) return null;
@@ -292,7 +318,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                 <h2 className="text-[22px] font-bold text-[#e05c3a]">最近活動</h2>
                 {recentSessions.map((s, idx) => {
                   const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
-                  const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
+                  const color = EMOTION_COLORS[s.rating ?? ""] ?? "#888";
                   return (
                     <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
                       <div className="flex flex-col gap-1.5">
@@ -309,7 +335,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                           <span className="text-[13px] font-medium" style={{ color }}>{s.rating}</span>
                         </div>
                       </div>
-                      <Link href={s.status === "completed" ? `/activity/${s.id}` : `/activity/${s.id}?live=1`} className="text-[15px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors">
+                      <Link href={s.status === "completed" || !isPatientLive ? `/activity/${s.id}` : `/activity/${s.id}?live=1`} className="text-[15px] font-medium text-[#5b8ac5] hover:text-[#3a6aa0] transition-colors">
                         查看 ›
                       </Link>
                     </div>
@@ -329,7 +355,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
             ) : (
               sessions.map((s, idx) => {
                 const pct = s.score != null ? Math.round((s.score / (s.totalScore ?? 20)) * 100) : 0;
-                const color = RATING_COLOR[s.rating ?? ""] ?? "#888";
+                const color = EMOTION_COLORS[s.rating ?? ""] ?? "#888";
                 return (
                   <div key={s.id} className="bg-white rounded-xl px-6 py-4 flex items-center justify-between">
                     <div className="flex flex-col gap-1.5">

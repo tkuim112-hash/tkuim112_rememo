@@ -12,6 +12,15 @@ class Settings(BaseSettings):
     # === LLM (Ollama) ===
     ollama_host: str = "http://ollama:11434"
     ollama_model: str = "cwchang/llama-3-taiwan-8b-instruct:q4_k_m"
+    # 128k版模型的Modelfile預設num_ctx=131072，需要19.7GB記憶體，會讓Ollama
+    # OOM回500（踩過一次正式環境中斷）——換128k模型時務必同時把這個值調低。
+    # 2026-09-08實測：16GB顯卡上這個值超過~24576，模型就會被擠出GPU、部分
+    # 改用CPU算，單次生成從1.5-3.6秒拖慢到5-7秒；24576是目前prompt實際
+    # 用量（約14000 tokens）之上留足安全餘裕、又能維持整個模型留在GPU的
+    # 上限（原本留8192，比實際用量還小、長期在截斷prompt前段，已調高）。
+    # 部署到不同GPU的機器時，調整這個值後務必用 ollama ps 確認 PROCESSOR
+    # 欄位仍是 100% GPU，避免被擠到CPU算反而更慢。
+    ollama_num_ctx: int = 24576
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://stt:8000"
@@ -24,6 +33,9 @@ class Settings(BaseSettings):
 
     # === TTS (BlueMagpie-TTS 本地語音合成) ===
     tts_host: str = "http://tts:8080"
+
+    # === Face Emotion (py-feat，取代 Kinect 內建 Face API) ===
+    face_service_host: str = "http://face-service:8000"
 
     # === Stability AI ===
     stability_api_key: str = ""

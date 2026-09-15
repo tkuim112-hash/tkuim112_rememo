@@ -63,11 +63,22 @@ public class GameController : MonoBehaviour
     private bool isPaused = false;
     private bool hasSpeechInput = false;
     // STT辨識完成後不再直接讓長者送出，改成鎖畫面等治療師在平板審核/編輯——
-    // isPendingTherapistReview 鎖住麥克風/送出鍵；pendingFinalResponse 存治療師
-    // 確認後（透過 /ws/stt 推播的 "final_response" 訊息）收到的結果，長者按送出
-    // 時直接套用它，不用再打一次 /session/respond（治療師確認當下後端已經處理完了）。
+    // isPendingTherapistReview 鎖住麥克風/送出鍵；pendingConfirmedText 存治療師
+    // 確認後（透過 /ws/stt 推播的 "confirmed_text" 訊息）收到的文字，長者按下
+    // 送出時才拿這段文字去呼叫 /session/respond 真正觸發生成（2026-09-06 改版：
+    // 原本治療師一確認就先呼叫完 LLM/RAG/生圖、把完整結果存進 pendingFinalResponse
+    // 讓長者按送出時直接套用、感覺是瞬間完成，但代價是長者還沒按送出、療程就被
+    // 結束時，這些已經算好的結果（含真的花 API 成本生成的圖片）會整份被丟棄，
+    // 稽核當天測試就踩到兩次白工。改成生成延後到長者真的按下送出才觸發，確保
+    // 生成一定會被用到，代價是長者按送出後要重新等一次生成時間）。
     private bool isPendingTherapistReview = false;
-    private RespondResponse pendingFinalResponse = null;
+    private string pendingConfirmedText = null;
+    // /ws/stt 連線在回合間（治療師審核那段）容易被判定逾時斷線、推播漏接
+    // （見 app/routers/session.py session_confirm_response 的說明）——這條
+    // coroutine 是保底：isPendingTherapistReview 期間定時輪詢 /metrics，
+    // WS 沒送達的話，靠這裡把確認後文字追回來，不用一直卡在「等待輔導員
+    // 確認中」。
+    private Coroutine reviewPollCoroutine;
     private Coroutine sttTimeoutCoroutine;
     private readonly WaitForSeconds sttTimeoutWait = new WaitForSeconds(5f);
     private const string NoResponseMarker = "（長者未回應）";
@@ -92,7 +103,10 @@ public class GameController : MonoBehaviour
     private class TextPayload { public string text; }
 
     [System.Serializable]
-    private class STTMessage { public string type; public string text; public bool isFinal; public string action; }
+    private class STTMessage { public string type; public string text; public bool isFinal; public string action; public string elder_response; }
+
+    [System.Serializable]
+    private class MetricsResponse { public string review_status; public string elder_response; }
 
     void Start()
     {
@@ -171,6 +185,8 @@ public class GameController : MonoBehaviour
         if (micButtonImage != null) micButtonImage.color = new Color(1f, 0.3f, 0.3f, 1f);
         RefreshSubmitButton();
 
+        kinectSensorSender?.OnMicPressed();
+
         if (UseKinect)
         {
             kinectAudioSender.StartSTT();
@@ -213,22 +229,22 @@ public class GameController : MonoBehaviour
         OnSttFinal();
     }
 
-    void OnSttFinal()
+    void OnSttFinal(string message = "辨識完成，請按送出")
     {
         if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         isWaitingForStt = false;
-        inputText.text = "辨識完成，請按送出";
+        inputText.text = message;
         RefreshSubmitButton();
     }
 
     void RefreshSubmitButton()
     {
-        // pendingFinalResponse != null：治療師已經確認（可能編輯過）這一題的回答，
+        // pendingConfirmedText != null：治療師已經確認（可能編輯過）這一題的回答，
         // 長者只需要看完內容按送出，不受 hasSpeechInput/isRecording/isWaitingForStt
         // 這些「還沒送審」狀態限制；isPendingTherapistReview 則整個鎖死，避免
         // 審核結果還沒回來時誤觸。
         bool enabled = !isSubmitting && !isPaused && !isPendingTherapistReview &&
-                       (pendingFinalResponse != null ||
+                       (pendingConfirmedText != null ||
                         (hasSpeechInput && !isRecording && !isWaitingForStt));
         submitButton.interactable = enabled;
         if (submitButton.image != null)
@@ -245,7 +261,7 @@ public class GameController : MonoBehaviour
     {
         if (!UseKinect && isRecording) StreamMicAudio();
         DrainIncomingMessages();
-        if (!UseKinect) TickWsReconnect();
+        if (!UseKinect) { TickWsReconnect(); TickKeepAlive(); }
     }
 
     void TickWsReconnect()
@@ -259,17 +275,44 @@ public class GameController : MonoBehaviour
         ConnectWebSocket();
     }
 
+    // 回合間（尤其是答完生圖前引導問題、後端在跑 LLM/生圖那段）長者不會碰麥克風，
+    // 這條 STT 連線會閒置一段不確定的時間——太久沒有任何訊框，中間的伺服器/代理
+    // 容易把連線判定逾時關掉，長者回來按第一次麥克風時才發現連線已經斷了，
+    // 中間重連的那幾秒錄音會漏掉（見 StreamMicAudio 的說明）。這裡固定週期送一個
+    // 後端會忽略的輕量心跳文字訊框，讓連線一直有動靜，從源頭避免被判定逾時，
+    // 不用等斷線後才補救。
+    private float sttKeepAliveTimer = 0f;
+    private const float SttKeepAliveInterval = 20f;
+
+    void TickKeepAlive()
+    {
+        if (ws == null || ws.ReadyState != WebSocketState.Open) { sttKeepAliveTimer = 0f; return; }
+        sttKeepAliveTimer += Time.deltaTime;
+        if (sttKeepAliveTimer < SttKeepAliveInterval) return;
+        sttKeepAliveTimer = 0f;
+        SendControl("ping");
+    }
+
     void StreamMicAudio()
     {
         int pos = Microphone.GetPosition(micDevice);
         if (pos < lastSamplePos) lastSamplePos = 0;
         int count = pos - lastSamplePos;
         if (count <= 0) return;
+
+        // 連線還沒開（例如上一回合等治療師審核太久，連線被閒置逾時斷開，
+        // StartRecording 觸發的 ConnectWebSocket 還在交握中）就先不要消耗這段
+        // 樣本——舊版不管有沒有真的送出都會推進 lastSamplePos，等於把長者
+        // 剛開口那幾秒錄音直接丟掉，連線恢復後也補不回來，導致 STT 辨識不到
+        // 內容、要按第二次麥克風才會成功（2026-09-07 稽核：回合2開場前那段
+        // 等治療師審核的空檔最容易踩到）。這裡改成連線沒開就整段跳過、
+        // 下一幀再重新累積，等連線真的開了再一次把累積的樣本送出，不會漏音。
+        if (ws == null || ws.ReadyState != WebSocketState.Open) return;
+
         float[] samples = new float[count];
         micClip.GetData(samples, lastSamplePos);
         lastSamplePos = pos;
-        if (ws?.ReadyState == WebSocketState.Open)
-            ws.SendAsync(FloatToInt16Bytes(samples), null);
+        ws.SendAsync(FloatToInt16Bytes(samples), null);
     }
 
     byte[] FloatToInt16Bytes(float[] samples)
@@ -354,30 +397,36 @@ public class GameController : MonoBehaviour
                     // 的通知（見 app/routers/session.py 呼叫 process_response 時的
                     // on_generating_image callback）；只有這個訊號會打開這個標籤，
                     // 生圖前追問Q2那種不生圖的分支不會走到這裡，不會誤顯示。
+                    //
+                    // 這個訊號常常是在治療師審核流程中收到的：長者已經回答完目前這題、
+                    // 正在等治療師平板確認（isPendingTherapistReview），這時候 aiText
+                    // 還顯示著長者剛剛回答過的舊題目。治療師一確認，後端就開始生圖並
+                    // 推播這個訊號，畫面會變成「舊題目」+「生圖中」同時出現，看起來
+                    // 像是那個舊題目還沒問完、卻已經在生圖，容易誤會（2026-09-06
+                    // 稽核：治療師反映生圖時旁邊的題目應該要清掉）。這裡把 aiText 一併
+                    // 藏起來，等 ApplyFinalResponse 套用新一輪回應時會自己重新顯示
+                    // （見該函式），不用另外處理復原。
+                    aiText.gameObject.SetActive(false);
                     if (generatingImageText != null) generatingImageText.SetActive(true);
                     break;
             }
             return;
         }
 
-        if (msg.type == "final_response")
+        if (msg.type == "confirmed_text")
         {
-            // 治療師在平板確認（可能編輯過）長者這一題的回答後，後端推播過來的結果——
-            // 資料庫/orchestrator 那些處理治療師確認當下就已經做完了，這裡只是把
-            // 確認後的文字顯示給長者看，等長者按送出時直接套用，不再另外打 API
-            // （見 ApplyFinalResponse／OnSubmit）。
-            RespondResponse resp;
-            try { resp = JsonUtility.FromJson<RespondResponse>(json); }
-            catch { return; }
-            isPendingTherapistReview = false;
-            pendingFinalResponse = resp;
-            displayedText = resp.elder_response;
-            inputText.text = resp.elder_response;
-            inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
-            // 麥克風維持鎖定，避免長者在按送出前又開始新錄音——這會讓
-            // pendingFinalResponse 跟一段還在錄的新音訊互相打架。等
-            // ApplyFinalResponse 進到下一題/下一回合時才解鎖（見該函式）。
-            RefreshSubmitButton();
+            // 治療師在平板確認（可能編輯過）長者這一題的回答後，後端推播過來的
+            // 確認結果——2026-09-06 改版後這裡只有確認後的文字，LLM 分類／RAG／
+            // 生圖那些耗時流程延後到長者真的按下送出才觸發（見 OnSubmit／
+            // SendResponse，取代原本的 ApplyConfirmedResponse），避免長者還沒
+            // 按送出、療程就被結束時，已經算好的結果（含生成的圖片）被整份丟棄。
+            //
+            // 治療師在長者按送出前可以重新編輯、再確認一次（pending_review 支援
+            // 重複覆蓋，見 session.py session_confirm_response），所以這裡不能只在
+            // isPendingTherapistReview 還是 true 時才套用——那樣會擋掉「已經確認
+            // 過一次、治療師又改了一次」的後續推播。無條件套用，跟 PollForConfirmedText
+            // 共用同一份文字比對邏輯（見該函式），避免舊文字蓋掉新文字。
+            ApplyConfirmedText(msg.elder_response);
             return;
         }
 
@@ -393,20 +442,89 @@ public class GameController : MonoBehaviour
             if (hasText)
             {
                 // 有辨識到文字：不再直接開放長者送出，改成鎖畫面送治療師平板審核。
+                // StopRecording 啟動的 sttTimeoutCoroutine（5秒後跳「辨識完成，請按
+                // 送出」）是給「沒進審核流程」的舊路徑用的，這裡一定要順手取消——
+                // 沒取消的話，就算治療師在5秒內就確認完、畫面已經正確顯示確認後的
+                // 文字，5秒一到 OnSttFinal 還是會準時觸發，把畫面蓋回「辨識完成，
+                // 請按送出」，看起來像剛剛的確認整個沒生效，治療師常常因此又點一次
+                // 確認（2026-09-07 稽核：治療師反映有時候要按兩次確認才成功，但
+                // 後端/WS都沒有任何錯誤或漏接紀錄，追下來是這裡的計時器沒取消）。
+                if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
                 isPendingTherapistReview = true;
-                inputText.text = "等待治療師確認中";
+                inputText.text = "等待輔導員確認中";
                 inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
                 micButton.interactable = false;
                 RefreshSubmitButton();
                 StartCoroutine(PostTranscript(msg.text));   // 統計用途，維持不變
                 StartCoroutine(RequestReview(msg.text));
+                if (reviewPollCoroutine != null) StopCoroutine(reviewPollCoroutine);
+                reviewPollCoroutine = StartCoroutine(PollForConfirmedText());
             }
             else
             {
-                // 沒辨識到任何文字（例如長者沒說話）：維持原本可直接送出空字串的行為，
-                // 不需要治療師介入。
-                OnSttFinal();
+                // 沒辨識到任何文字（例如長者沒說話，或 Kinect 收音太小聲被 VAD 判定成
+                // 整段靜音）：提示長者再試一次，並把 hasSpeechInput 收回去鎖住送出鍵
+                // （見 RefreshSubmitButton），強制長者重新錄音才能送出，不再允許直接
+                // 送出空字串。
+                hasSpeechInput = false;
+                OnSttFinal("請大聲一點再試一次");
             }
+        }
+    }
+
+    // 治療師確認（可能編輯過）這一題的回答後，套用到長者畫面——不管是從
+    // /ws/stt 收到 "confirmed_text" 推播（正常路徑），還是 PollForConfirmedText
+    // 輪詢追回來的（WS 推播漏接時的保底），都走這支，兩邊行為才不會分岔。
+    void ApplyConfirmedText(string text)
+    {
+        isPendingTherapistReview = false;
+        pendingConfirmedText = text;
+        displayedText = text;
+        inputText.text = text;
+        inputText.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+        // 麥克風維持鎖定，避免長者在按送出前又開始新錄音——這會讓
+        // pendingConfirmedText 跟一段還在錄的新音訊互相打架。等
+        // SendResponse 進到下一題/下一回合時才解鎖（見該函式呼叫的
+        // ApplyFinalResponse）。
+        RefreshSubmitButton();
+    }
+
+    // /ws/stt 連線在治療師審核這段常常閒置、容易被判定逾時斷線（見
+    // KinectAudioSender.cs TickKeepAlive 說明），"confirmed_text" 這種推播
+    // 如果剛好撞上斷線空窗就直接漏接、沒有補送機制，長者會卡在「等待輔導員
+    // 確認中」直到治療師發現、自己重按一次。這裡定時改用 HTTP 輪詢 /metrics
+    // （跟治療師網頁 polling 同一支 API，見 session.py session_metrics）當
+    // 保底，review_status 變成 awaiting_round_submit 就代表治療師已經確認
+    // 過、只是 WS 沒送到，直接把 elder_response 追回來。
+    //
+    // 存活範圍蓋 isPendingTherapistReview（等第一次確認）跟 pendingConfirmedText
+    // != null（已經確認過、長者還沒按送出，治療師隨時可能重新編輯再送一次）
+    // 兩個階段——重新編輯那次推播一樣可能撞上斷線空窗，只保第一次確認的話，
+    // 治療師改第二次時反而沒有保底。用文字比對（跟目前畫面上的
+    // pendingConfirmedText 不同才套用）避免把治療師剛編輯的新版本蓋回舊版本。
+    IEnumerator PollForConfirmedText()
+    {
+        string sessionId = AuthSession.SessionId ?? "";
+        if (string.IsNullOrEmpty(sessionId)) yield break;
+        var wait = new WaitForSeconds(3f);
+        while (isPendingTherapistReview || pendingConfirmedText != null)
+        {
+            yield return wait;
+            if (!(isPendingTherapistReview || pendingConfirmedText != null)) yield break;
+
+            using var req = UnityWebRequest.Get($"{backendUrl}/session/{sessionId}/metrics");
+            AuthService.AttachAuthHeader(req);
+            yield return req.SendWebRequest();
+            if (req.result != UnityWebRequest.Result.Success) continue;
+            if (!(isPendingTherapistReview || pendingConfirmedText != null)) yield break;   // 長者這時候已經按送出了
+
+            MetricsResponse resp;
+            try { resp = JsonUtility.FromJson<MetricsResponse>(req.downloadHandler.text); }
+            catch { continue; }
+            bool hasConfirmed = resp != null && resp.review_status == "awaiting_round_submit"
+                && !string.IsNullOrEmpty(resp.elder_response);
+            if (hasConfirmed && resp.elder_response != pendingConfirmedText)
+                ApplyConfirmedText(resp.elder_response);
         }
     }
 
@@ -416,7 +534,7 @@ public class GameController : MonoBehaviour
         byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
 
         // 跟 SendResponse 同一種重試邏輯（3次、間隔1.5秒）：這支打不通的話，
-        // 治療師平板永遠不會看到這句話，長者就會永久卡在「等待治療師確認中」，
+        // 治療師平板永遠不會看到這句話，長者就會永久卡在「等待輔導員確認中」，
         // 比原本 SendResponse 失敗只是「這句話送不出去」更嚴重，所以重試用盡後
         // 直接退回舊流程讓長者自己送出，不留長者卡死的畫面。
         const int maxAttempts = 3;
@@ -516,7 +634,10 @@ public class GameController : MonoBehaviour
         currentState = resp.state;
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
-        kinectSensorSender?.OnQuestionAsked();
+        // 新問題剛顯示，語音/估讀秒數還沒開始算，長者本來就不該開口——見
+        // KinectSensorSender.OnNewQuestionDisplayed 說明，跟下面 OnQuestionAsked
+        // 成對，避免這段合理的沉默被算成投入度低。
+        kinectSensorSender?.OnNewQuestionDisplayed();
 
         // /session/start 回傳時 image_path 一定是空字串（見 StartRound 下方註解），
         // 圖片要等長者答完生圖前引導問題、/session/respond 才第一次真的生出來。
@@ -531,8 +652,17 @@ public class GameController : MonoBehaviour
             string.IsNullOrEmpty(resp.audio_path) ? null : BuildAudioUrl(resp.audio_path),
             new[] { resp.question_audio_key }));
 
+        // 反應時間計時要等長者真的看完/聽完題目才開始，不是文字一顯示就
+        // 開始——有語音的回合，語音播放的那幾秒鐘不該算進長者的反應時間；
+        // 沒有語音的回合（第2、3回合）改用估算的閱讀時間頂替，不然沒語音
+        // 的回合會變成完全不排除呈現時間，反而比有語音的回合更不公平
+        // （2026-09-06 稽核，見 LocalAudioPlayer.EstimateReadingSeconds 說明）。
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, () => kinectSensorSender?.OnQuestionAsked()));
+        else
+            StartCoroutine(LocalAudioPlayer.DelayedAction(
+                LocalAudioPlayer.EstimateReadingSeconds(aiText.text),
+                () => kinectSensorSender?.OnQuestionAsked()));
     }
 
     IEnumerator LoadPhoto(string imageUrl)
@@ -575,13 +705,16 @@ public class GameController : MonoBehaviour
     {
         if (!submitButton.interactable) return;
 
-        if (pendingFinalResponse != null)
+        if (pendingConfirmedText != null)
         {
-            // 治療師已經確認（可能編輯過）這一題的回答，資料庫/orchestrator 那些
-            // 處理治療師確認當下就做完了，這裡不用再打 API，直接套用收到的結果。
-            var resp = pendingFinalResponse;
-            pendingFinalResponse = null;
-            StartCoroutine(ApplyConfirmedResponse(resp));
+            // 治療師已經確認（可能編輯過）這一題的回答，但 LLM 分類／RAG／生圖
+            // 延後到現在才觸發（2026-09-06 改版，見 pendingConfirmedText 欄位
+            // 說明）——跟長者直接送出走同一條路徑（SendResponse），後端
+            // /session/respond 會用 pending_review 存的原始回答時間算反應時間，
+            // 不會把治療師審核＋這段等待也算進去（見 session.py 說明）。
+            string text = pendingConfirmedText;
+            pendingConfirmedText = null;
+            StartCoroutine(ProcessConfirmedSubmit(text));
             return;
         }
 
@@ -590,15 +723,34 @@ public class GameController : MonoBehaviour
         StartCoroutine(ProcessSubmit());
     }
 
-    IEnumerator ApplyConfirmedResponse(RespondResponse resp)
+    // 治療師確認過（可能編輯過）的回答，長者按下送出後才真的呼叫
+    // /session/respond 觸發生成（2026-09-06 改版，見 pendingConfirmedText
+    // 欄位說明）——刻意跟 ProcessSubmit 走同一條 SendResponse 路徑，不再
+    // 另外維護一份「直接套用已算好結果」的邏輯：一來 SendResponse 本來就
+    // 有正確的 loadingSpinner／generatingImageText 清除邏輯（舊版
+    // ApplyConfirmedResponse 沒有，導致治療師反映轉圈圈永遠不會消失的
+    // 問題），二來這樣兩條路徑（長者直接送出／治療師審核後送出）共用同一份
+    // 生成與清理邏輯，之後修 bug 不用兩邊各修一次。
+    IEnumerator ProcessConfirmedSubmit(string confirmedText)
     {
         isSubmitting = true;
+        // 2026-09-14 稽核：這條路徑（治療師先審核確認、長者才按送出）漏了跟
+        // ProcessSubmit 一樣的收尾——isWaitingForStt 在長者剛開口那次錄音結束
+        // 時被設成 true（見 StopRecording），治療師搶在 OnSttFinal 真正跑完前
+        // 就先確認/編輯文字，這裡從此再也沒有人把它清回 false。旗標永久卡
+        // true 不影響這次送出本身（送出走 pendingConfirmedText 那條件，不看
+        // isWaitingForStt），但會讓之後治療師端「跳過此場景」被
+        // isWaitingForStt 誤判成「還在等 STT」而silently擋下，且沒有任何提示，
+        // 治療師只會看到按了沒反應。跟 ProcessSubmit 一樣順手清掉逾時計時器，
+        // 避免它之後過期觸發 OnSttFinal 蓋掉已經送出的畫面。
+        isWaitingForStt = false;
+        if (sttTimeoutCoroutine != null) { StopCoroutine(sttTimeoutCoroutine); sttTimeoutCoroutine = null; }
         RefreshSubmitButton();
         ResetInputText();
         aiText.gameObject.SetActive(false);
         loadingSpinner.SetActive(true);
 
-        yield return StartCoroutine(ApplyFinalResponse(resp));
+        yield return StartCoroutine(SendResponse(confirmedText));
 
         isSubmitting = false;
         RefreshSubmitButton();
@@ -680,25 +832,24 @@ public class GameController : MonoBehaviour
         yield return StartCoroutine(ApplyFinalResponse(resp));
     }
 
-    // 抽出來給 SendResponse（沒辨識到文字/審核重試失敗的舊流程，HTTP 回應直接拿到 resp）
-    // 跟 HandleSTTMessage 收到 "final_response"（治療師審核流程，長者按送出時直接套用
-    // 已經拿到的 resp，不用再打一次 API）共用，內容跟原本 SendResponse 尾段完全一樣。
+    // 從 SendResponse 抽出來的尾段：拿到 /session/respond 的回應後，套用到畫面上
+    // （更新題目、載入照片、播音檔）。2026-09-06 改版後，不管是長者直接送出、
+    // 還是治療師審核確認後長者再按送出（ProcessConfirmedSubmit），都是走
+    // SendResponse 呼叫這裡，不再有第二個進入點直接拿已算好的 resp 跳過 API。
     IEnumerator ApplyFinalResponse(RespondResponse resp)
     {
         // 長者按送出、真正進到下一題/下一回合了，麥克風才重新解鎖——鎖定期間
         // （等待治療師審核／已經在看治療師確認結果）不能讓長者提前開始新錄音，
-        // 避免跟 pendingFinalResponse 打架（見 HandleSTTMessage 的 final_response 分支）。
+        // 避免跟 pendingConfirmedText 打架（見 HandleSTTMessage 的 confirmed_text 分支）。
         if (!isPaused) micButton.interactable = true;
 
         if (resp.action == "end_session")
         {
-            PlayerPrefs.SetString("ClosingText", resp.scene_text ?? "");
             PlayerPrefs.SetString("ClosingThanks", resp.thanks_text ?? "");
             PlayerPrefs.SetString("ClosingQuestion", resp.question ?? "");
             // PlayerPrefs 沒有陣列型別，key 本身不含 '|'（都是英數字+底線的
             // audio_bank.py key 名稱），用它當分隔符安全串成一個字串，
             // ShareController 讀出來後用同一個字元切回陣列。
-            PlayerPrefs.SetString("ClosingSceneAudioKeys", JoinAudioKeys(resp.scene_audio_keys));
             PlayerPrefs.SetString("ClosingThanksAudioKeys", JoinAudioKeys(resp.thanks_audio_keys));
             PlayerPrefs.SetString("ClosingQuestionAudioKeys", JoinAudioKeys(resp.question_audio_keys));
             AuthSession.SessionId = sessionId;
@@ -720,7 +871,9 @@ public class GameController : MonoBehaviour
         currentState = resp.state;
         aiText.text = BuildAiText(resp.scene_text, resp.question);
         aiText.gameObject.SetActive(true);
-        kinectSensorSender?.OnQuestionAsked();
+        // 同 ApplyRoundResponse：新問題（追問/下一題）剛顯示，先標記還沒進入
+        // 回答等待期。
+        kinectSensorSender?.OnNewQuestionDisplayed();
 
         // /session/start、/session/round 回傳時 image_path 一定是空字串（見
         // ApplyRoundResponse 上方註解），圖片是長者答完生圖前引導問題、這支
@@ -737,8 +890,13 @@ public class GameController : MonoBehaviour
             string.IsNullOrEmpty(resp.audio_path) ? null : BuildAudioUrl(resp.audio_path),
             new[] { resp.question_audio_key }));
 
+        // 反應時間計時要等長者真的看完/聽完題目才開始，理由同 ApplyRoundResponse。
         if (uris.Count > 0)
-            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris));
+            StartCoroutine(LocalAudioPlayer.PlaySequence(audioSource, uris, () => kinectSensorSender?.OnQuestionAsked()));
+        else
+            StartCoroutine(LocalAudioPlayer.DelayedAction(
+                LocalAudioPlayer.EstimateReadingSeconds(aiText.text),
+                () => kinectSensorSender?.OnQuestionAsked()));
     }
 
     static string JoinAudioKeys(string[] keys)
@@ -785,12 +943,6 @@ public class GameController : MonoBehaviour
     [System.Serializable]
     class RespondResponse
     {
-        // type／elder_response：只有透過 /ws/stt 收到的 "final_response" 推播訊息才會有值
-        // （治療師確認/編輯後的文字，見 HandleSTTMessage）。SendResponse 直接 POST
-        // /session/respond 拿到的 HTTP 回應本來就沒有這兩欄，JsonUtility 反序列化
-        // 時單純留空字串，不影響原本的欄位解析。
-        public string type;
-        public string elder_response;
         public string action;
         public string scene_text;
         // action=="scene_ready"：長者剛答完生圖前的引導問題，這裡才第一次真的
@@ -798,12 +950,9 @@ public class GameController : MonoBehaviour
         public string image_path;
         public string scene_audio_path;
         public string scene_audio_key;
-        // scene_audio_keys／thanks_audio_keys／question_audio_keys：只有
-        // action=="end_session"（心得環節開場）才會有值，見
-        // app/services/closing_templates.py build_closing_invitation——
-        // 那三段固定句全部是前端內建預錄音檔，可能不只一個 key（例如
-        // 承接語＋系統整合肯定是兩句拼接，要接續播放兩個音檔）。
-        public string[] scene_audio_keys;
+        // thanks_audio_keys／question_audio_keys：只有 action=="end_session"
+        // （心得環節開場）才會有值，見 app/services/closing_templates.py
+        // build_closing_invitation——這兩段固定句是前端內建預錄音檔。
         public string thanks_text;
         public string[] thanks_audio_keys;
         public string question;

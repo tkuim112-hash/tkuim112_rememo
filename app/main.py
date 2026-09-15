@@ -13,7 +13,8 @@ from config import settings
 from db.session import engine
 from services.llm import LLMService
 from services.stt import STTService
-from services.tts import TTSService 
+from services.tts import TTSService
+from services.face_emotion import FaceEmotionService
 from services.user_profile_db import DBUserProfileClient
 from services.image import OpenAIImageService
 from services.rag_client import RealRAGClient   
@@ -65,7 +66,8 @@ async def lifespan(app: FastAPI):
     app.state.llm_service        = LLMService()
     app.state.stt_service        = STTService()
     await _warmup_stt(app.state.stt_service)
-    app.state.tts_service        = TTSService()  
+    app.state.tts_service        = TTSService()
+    app.state.face_emotion_service = FaceEmotionService()
     app.state.user_profile       = DBUserProfileClient()
     app.state.deidentifier       = Deidentifier()
     app.state.image_service      = OpenAIImageService()
@@ -108,7 +110,8 @@ async def lifespan(app: FastAPI):
     await app.state.redis.aclose()
     await app.state.llm_service.close()
     await app.state.stt_service.close()
-    await app.state.tts_service.close()  
+    await app.state.tts_service.close()
+    await app.state.face_emotion_service.close()
     await app.state.user_profile.close()
     await app.state.image_service.close()
     await engine.dispose()

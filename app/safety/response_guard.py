@@ -1,7 +1,8 @@
 """
 內容驗證與重試模組 — app/safety/response_guard.py
 
-防護對象：AI 生成的回應內容（scene_text / question）在送給長者聽之前，
+防護對象：AI 生成的回應內容（question，以及各生成函式自己的承接語欄位，
+例如 reaction_text／closing_text／emotional_text）在送給長者聽之前，
 是否符合 question_5w1h.txt 明文規定的格式/內容規則（是非題、太長、
 把AI示意圖當成真實地點、把長者寫成站在畫面裡、精確地名時間、要求描述
 畫面內容、已知用詞瑕疵等）。這些規則跟禁忌話題無關，是問題本身的品質/
@@ -164,24 +165,26 @@ def scene_text_addresses_elder(scene_text: str, elder_name: str = "") -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 場景文字把畫面講成「這是一幅畫/示意圖」，用後設視角拉開距離
+# 場景文字/承接語把畫面講成「這是一幅畫/示意圖」，用後設視角拉開距離
 # ══════════════════════════════════════════════════════════════════════
 #
 # 2026-08 orchestrator.py 開始把生圖時的 image_prompt 英文原文（脫敏、濾掉
 # 畫風片語後）直接傳給問題生成步驟當構圖參考，實測發現本地模型偶爾還是會把
-# 畫風描述的殘留語感翻譯進場景文字，變成「一幅水彩畫描繪了1970年代台灣煤礦
+# 畫風描述的殘留語感翻譯進承接語，變成「一幅水彩畫描繪了1970年代台灣煤礦
 # 場景」這種用後設視角描述「這是一幅畫」的句子——跟「場景文字不能寫成長者
 # 站在畫面裡」是同一種問題的相反方向：不是把長者拉進畫面裡，是把畫面本身
 # 講成一件被觀賞的作品，一樣會讓長者聽起來像在聽別人介紹一幅畫，而不是
-# 沉浸式的場景描述，跟「像在描述一幅畫」這句規則裡的比喻本意（客觀、第三
-# 人稱）恰恰相反。已經從源頭把 image_prompt 裡的畫風片語濾掉（見
+# 沉浸式的場景描述。已經從源頭把 image_prompt 裡的畫風片語濾掉（見
 # orchestrator.py _strip_style_descriptors），這裡加一道事後防護，避免模型
 # 自己聯想出其他「這是一幅畫/示意圖」的講法。
+#
+# 這條檢查跟 is_generic_acknowledgment 等檢查共用 ack_check_text，讀
+# reaction_text 或 scene_text 其中非空的那個，兩個key都受這條規則保護。
 _ARTWORK_FRAME_RE = re.compile(r"水彩畫|這是一幅畫|一幅.{0,4}畫作|插畫|示意圖|畫面描繪|畫中")
 
 
 def scene_text_frames_as_artwork(scene_text: str) -> bool:
-    """True 代表場景文字把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的距離，需要重新生成。"""
+    """True 代表場景文字/承接語把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的距離，需要重新生成。"""
     if not scene_text:
         return False
     return bool(_ARTWORK_FRAME_RE.search(scene_text))
@@ -208,28 +211,10 @@ _KNOWN_PROMPT_EXAMPLES = {
     "夕陽下的海港，你以前都怎麼帶團介紹？",
     "像這樣的工作場所，你以前都做些什麼？",
     "像這樣的廟口，你小時候都去做什麼？",
-    "紡織廠的大門在黃昏的光線下顯得格外寧靜，工人們陸續走出廠門，往各自的方向散去。",
-    "聽起來那段跟阿珠姐一起做工的日子很熱鬧呢。",
     "廟口的攤販剛擺出來，香氣混著人聲，好熱鬧。",
-    # 2026-08-17稽核（實測後補，隨後撤回）：一度把 _generate_image_reveal_
-    # reaction 分類1的範例句（orchestrator.py「改用自己的話接，例如...」
-    # 那句）加進這份清單，理由是「這句不會跟judgment_evidence_unsupported
-    # 搶額度，因為兩者不是同時發生」——這個判斷是錯的，judgment_evidence_
-    # unsupported 檢查的是「判斷依據」欄位有沒有編造內容，任何分類（含1）
-    # 只要長者反應訊號弱，都可能同時觸發「編造依據」跟「照抄範例」兩條
-    # 規則，跟2026-08-16那次拿掉分類2/3/4範例句的理由其實是同一種情況。
-    # 使用者確認：這裡的照抄範例本身不是問題，只要分類跟判斷依據有根據
-    # 就好，不需要為了防照抄，犧牲原本就更值得攔的judgment_evidence_
-    # unsupported檢查的重試額度——維持2026-08-16當時的結論，這句不放進來。
-    # 2026-08-17稽核（實測後補）：_generate_open_followup（STEP2）自己內嵌在
-    # 【任務】說明裡教「承接語不能是問句」用的示範句（orchestrator.py
-    # 4851-4854）——實測長者答得很薄（例如只說「就是切仔麵」）時，模型會把
-    # 這兩句範例原封不動背出來當真實輸出，而不是根據這次長者實際說的話重新
-    # 生成。原本這種情況只被 scene_text_addresses_elder 誤抓（因為範例句剛好
-    # 含「你」），retry_feedback 講的是錯的重點；那條規則已經retired（見該
-    # 函式上方註解），改成正確地由這裡的照抄檢查攔下。
-    "原來是切仔麵，光聽你這樣說就覺得很有味道。",
-    "那時候通常都跟誰一起去吃？",
+    "老王那時候，你們都聊些什麼？",
+    "那個時候的爐灶，是什麼樣子的呢？",
+    "以前用爐灶煮飯，是什麼樣的情形呢？",
     # 2026-08-16稽核：_generate_image_reveal_reaction 自己的4類反應分類範例句
     # （orchestrator.py）2026-08一度加進這份清單，但實測發現這條檢查會跟新
     # 加的 judgment_evidence_unsupported 檢查搶同一份重試額度——長者反應
@@ -238,12 +223,107 @@ _KNOWN_PROMPT_EXAMPLES = {
     # 使用者判斷「照抄範例」本身不是問題（承接語內容跟範例像，只要分類跟
     # 判斷依據是根據長者這次實際說的話推出來的就好），比起「編造依據」是
     # 更值得攔的問題，決定把這4句從清單移除，把重試額度留給後者。
+    #
+    # 2026-09-07稽核：STEP2/STEP3不再產生承接語（見orchestrator.py該次改動
+    # 說明），原本這裡幾句只在承接語規則裡出現過的範例句（「聽起來那段跟
+    # 阿珠姐一起做工的日子很熱鬧呢。」「原來是切仔麵，光聽你這樣說就覺得
+    # 很有味道。」「那時候通常都跟誰一起去吃？」「紡織廠的大門在黃昏的
+    # 光線下...」）已經不存在於任何 prompt 裡，永遠不會再被真的照抄，一併
+    # 移除；改成加入這次新增的「先呼應再問」複合句範例（含 orchestrator.py
+    # STEP2/STEP3 的【任務】示範句），跟「是怎麼回事」語氣修正範例——這些
+    # 都是實測會被模型原句背出來的新範例句，理由同上面「夕陽下的海港」那條。
+    "聽起來那段全家一起蒸年糕的日子很熱鬧，你們都怎麼分工？",
+    "圍爐那時候，你們都準備了哪些菜？",
+    "原來是滷豬腳，你最喜歡的是哪一種滷法？",
+    # 2026-09-09稽核（實測發現）：這份清單原本只收錄 question_5w1h.txt（STEP1/2/3
+    # 提問流程）的範例句，closing.txt（收尾語／_generate_closing）的範例句從沒被
+    # 收錄過，導致同一種「原句照抄範例」漏洞在收尾流程完全沒防護——實測案例：
+    # _start_round3_closing 呼叫 _generate_closing 產生的 closing_text，一字不漏
+    # 照抄了 closing.txt【錯誤範例】裡明文列出「絕對不能這樣輸出」的示範句，
+    # 直接被 guarded_generate 第一次嘗試就放行、寫進 rounds.generated_scene、
+    # 念給長者聽（長者也確實聽出「我從來沒想過自己會變得這麼厲害」這句話很怪，
+    # 用「不是料理課吧」反問回來）。guarded_generate 呼叫 _generate_closing 時
+    # text_keys=("closing_text", "question")，跟這裡的 echoes_prompt_example
+    # 檢查本來就吃得到，純粹是範例句沒被收錄進來才漏放，補上 closing.txt 全部
+    # 範例句（含【正確範例】跟【錯誤範例】，兩種都是「這次真實情境不該照抄」的
+    # 固定文字，原理跟上面 STEP1/2/3 範例句完全一樣）。
+    "客人挑滿一籃菜走的那份踏實，聽你說完，我心裡也暖暖的。",
+    "想到客人滿意離開的樣子，你現在心裡是什麼感覺呢？",
+    "阿珠姐的故事聽起來很溫暖，謝謝你今天願意說給我們聽。",
+    "跟阿珠姐相處的那段時光，最讓你開心的是哪個片刻呢？",
+    "那時候一個人扛起這麼多事真的不容易，現在不一樣了，你身邊有人陪著你。",
+    "身邊有人陪著你，這讓你覺得最溫暖的是什麼呢？",
+    "今天跟大家一起做料理的過程，真的很有趣！我從來沒想過自己會變得這麼厲害。",
+    "今天的分享太精彩了！您的人生真是太寶貴了！",
+    "療程至此結束，感謝您今日的配合，請好好休息。",
+    "把木材平安運下山，那個成就感真的很了不起。好了，今天就先聊到這裡。",
+    "今天跟你聊中秋節的回憶，聽得我也很開心呢！不過現在時間不早了，我們也該回去了。",
+    # 2026-09稽核：orchestrator.py _EMOTION_GUIDANCE（幾乎每個生成函式的
+    # prompt都會注入的固定情緒說明）也會被模型整句抄進承接語，連帶誤觸發
+    # third_person_elder_wording（裡面有「長者」兩個字）。這5句是
+    # _EMOTION_GUIDANCE 全部的值，逐字收錄。
+    "長者目前情緒低落，請優先給予溫暖同理與正向肯定，語氣放柔，暫緩深入提問，可引導至輕鬆或正向的話題。"
+    "但仍必須維持【任務】要求的提問形式、錨定眼前畫面元素或長者說過的內容，"
+    "不要脫離任務去建議深呼吸、賞花等與任務無關的活動或安慰語。",
+    "長者目前情緒焦躁不安，請先安撫情緒、語氣放緩，避免追問敏感或原因類問題。",
+    "長者目前情緒較亢奮，維持溫暖但避免過度刺激。",
+    "長者情緒穩定，正常延續對話即可。",
+    "長者目前情緒不明確或平穩，語氣維持溫和平穩，避免貿然追問需要較多情緒能量的問題（如原因、動機類），先觀察長者反應再決定是否深入。",
+    "長者目前情緒不明確或平穩，語氣維持溫和平穩，先觀察長者反應，反應平穩時才問需要較多情緒能量的問題（如原因、動機類）。",
+    # _generate_open_followup／_generate_supplement_question 的「thinking」
+    # 欄位說明裡的worked example，同樣會被模型抄進scene_text。
+    "長者正滔滔不絕地敘述，順著話往下接就好，不特別選角度",
+    "長者正滔滔不絕地敘述，順著話往下接就好，不特別選角度。",
+    # _generate_open_followup 的正反對照範例（示範「承接語不能是問句」），
+    # 用跟實際主題無關的「爬後山」情境降低誤用風險，仍先收進來防護。
+    "你以前常跟鄰居一起去爬後山嗎？",
+    "以前常跟鄰居一起爬後山，聽起來很自在。",
+    # 2026-09-11稽核（實測後補，批次品質測試腳本 manual_test_transition_
+    # quality.py 抓到）：_generate_open_followup 的「承接語要接住哪一句話」
+    # 反面範例，5次重複裡有2次被模型原句背出來當成這次的真實問題直接輸出
+    # （跟「爬後山」那組問句範例同一種leak，只是這組是「重提舊內容」的
+    # 反面範例，不是「承接語不能是問句」那組）——原本這組範例用跟真實
+    # 主題（中秋節、家庭懷舊）高度重疊的「河邊洗衣服／改用洗衣機」情境，
+    # 跟「爬後山」範例當初刻意選「跟實際主題無關」情境的理由一致，已經把
+    # orchestrator.py 該處範例換成「爬後山／改成公園散步」，這裡連同新舊
+    # 兩組例句一併收進來當安全網（舊的兩句理論上不會再被prompt帶出去，
+    # 但過去可能已經進過模型的某些快取/對話紀錄，保留無害）。
+    "原來是跟鄰居一起洗衣服，真懷念",
+    "原來後來都改用洗衣機了，省了不少功夫呢",
+    "原來是跟鄰居一起爬後山，真懷念",
+    "原來後來改成去附近公園散步，一樣很不錯呢",
+    # 上面那組舊範例裡，拿來示範「長者剛才說的話」本身的那句虛構假引言
+    # （不是承接語的正確/錯誤範例，是情境設定用的假設句）也被模型原句
+    # 背出來直接當成這次的 question 輸出過（實測案例：長者這次真正說的
+    # 是「自己一個人在家帶小孩，很辛苦」，跟洗衣機完全無關，question
+    # 卻輸出「後來大家都改用洗衣機了，方便很多嗎？」），比範例句本身的
+    # 洩漏更隱蔽——因為它是「情境設定」文字、不是「範例輸出」文字，容易
+    # 被忽略掉不用收錄，但一樣需要防護。
+    "後來大家都改用洗衣機了，方便很多",
+    "後來大家都改用洗衣機了，方便很多嗎？",
+    "後來腳力不好，改成在附近公園散步",
+    "後來腳力不好，改成在附近公園散步嗎？",
 }
 
 
 def echoes_prompt_example(text: str) -> bool:
     """True 代表這段文字跟 question_5w1h.txt 裡的範例句子完全一樣，是照抄範例而非真正生成。"""
     return text.strip() in _KNOWN_PROMPT_EXAMPLES
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 生成內容出現「〇〇」佔位符號本身——prompt裡曾用「〇〇」示範格式，實測
+# 小模型偶爾會連占位符號本身都抄進真正要念給長者聽的句子裡，變成「那道
+# 菜是〇〇」這種聽了不知所云的輸出。「〇」是很罕見的字元，用完全比對
+# 抓這個字元出現在輸出裡，抓到就重新生成。
+_PLACEHOLDER_MARKER = "〇"
+
+
+def leaks_placeholder_marker(text: str) -> bool:
+    """True 代表文字裡出現了prompt範例用來示範格式的佔位符號「〇」本身，
+    代表模型把範例的格式範本原封不動抄進了真正要念給長者聽的內容，沒有
+    換成長者這次實際講出的名稱——見上方稽核說明。"""
+    return _PLACEHOLDER_MARKER in (text or "")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -279,6 +359,55 @@ def leaks_example_person_name(text: str, real_context: str) -> bool:
     if not text or not _EXAMPLE_PERSON_NAME_RE.search(text):
         return False
     return not _EXAMPLE_PERSON_NAME_RE.search(real_context or "")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 承接語／場景文字（reaction_text／scene_text）超過字數上限
+# ══════════════════════════════════════════════════════════════════════
+#
+# check_format_rules 的 too_long 只查 question_text——承接語／場景文字的
+# 「30字以內」要求（見 orchestrator.py 每支 generate_fn 輸出格式說明裡的
+# reaction_text／scene_text 那行）先前完全沒有對應的事後防護。2026-09-11
+# 稽核（批次品質測試腳本抓到）：STEP2/STEP3 實測超字比例非常高（10種情境
+# 50次生成裡半數以上都超字，甚至有超到86字的案例），是目前實測命中率
+# 最高的違規，卻是唯一完全沒人管的一條規則，補上。
+#
+# 只查 ack_check_text（reaction_text／scene_text 兩個 key 共用同一份，見
+# guarded_generate 內賦值處），不查 closing_text／emotional_text——這兩個
+# key 不會被指派進 ack_check_text（emotional_text 的長度上限是30-50字，
+# 跟這裡的30字不一樣；closing_text 沒有另外的獨立長度需求），天然不受
+# 這條規則影響。
+#
+# 2026-09-11稽核（使用者提案，實測後補）：這條規則剛加上去時，防護門檻
+# 直接設在跟 prompt 要求一致的30字，跟真實pipeline（guarded_generate，
+# max_retry=3＋retry_temperature=0.9）合起來實測發現：本地弱模型寫承接語
+# 常常落在31-40字這個「稍微超字但不誇張」的區間，卡在30字門檻會讓這個
+# 區間也觸發重試，推高延遲（長者要多等一次語音合成），退回保底句的比例
+# 也偏高。使用者權衡後決定「偶爾稍微超字」換「反應更快」：門檻放寬到40字
+# 才觸發重試，31-40字這段直接放行，只在明顯超字（41字以上，實測案例常見
+# 50-60字）時才重試——跟 question 的「25字為目標、不超過30字」是同一種
+# 「prompt裡教的目標」跟「事後防護的門檻」可以不同值的設計，prompt裡的
+# 「30字以內」教學文字不用跟著改，30字仍是目標、才是真正會擋下來的上限。
+#
+# 2026-09-12稽核（使用者提案，實測後補）：新增 scene_text_echoes_elder_
+# response／scene_text_ignores_elder_for_scene_elements 這兩條「內容要
+# 具體呼應長者這輪的話」規則後，實測發現這條 too_long 常常變成連環重打的
+# 第一張骨牌——模型被前兩條規則逼著要「具體回應＋加上反應」，天然會比
+# 純複誦或純套語寫得更長，結果反而更常先撞上40字門檻，一輪重打修好長度、
+# 下一輪又漂回複誦或離題，三條規則輪流吃掉同一份max_retry=3額度，退回
+# 保底句的比例明顯墊高（實測案例：同一句「我們幾個小孩子都搶著顧火，怕
+# 肉烤焦被媽媽罵」，4次attempt輪流踩到超字、複誦、超字，最後燒光重試）。
+# 門檻再放寬到48字，讓「具體回應＋簡短反應」這種天然會長一點的句子有
+# 喘息空間，減少它先被字數攔下來、擠壓掉另外兩條內容規則可用的重試次數
+# ——48字以上通常已經不只是「多寫了一點反應」，是真的長到需要精簡。
+def ack_text_too_long(text: str) -> int | None:
+    """回傳承接語／場景文字去除標點後的實際字數；未超過48字回傳 None
+    （prompt裡教的目標仍是30字，48字是放寬過、真正會觸發重試的上限，
+    見上方2026-09-11／2026-09-12稽核說明）。"""
+    if not text:
+        return None
+    length = len(_FORMAT_PUNCT_RE.sub("", text))
+    return length if length > 48 else None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -333,6 +462,394 @@ def is_generic_acknowledgment(scene_text: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 承接語／場景文字幾乎整段複誦長者剛才那句話，不是用自己的話轉述
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-12稽核（使用者反映實測後補）：question_5w1h.txt「不要用「」引號把
+# 長者的原話整段複述出來再接「是嗎」「呢」這種反問語尾」這條規則（對應
+# scene_text_is_a_question／機械修復那組）只擋得住「引號複述＋反問語尾」這個
+# 窄組合，抓不到本地弱模型更常見的另一種偷懶：不加引號、也不接反問語尾，
+# 單純在長者原話前面加「你說」當前綴，後面幾乎一字不改地把整句話重貼一次
+# （實測案例：長者說「我們幾個小孩子都搶著顧火，怕肉烤焦被媽媽罵」，承接語
+# 直接寫「你說我們幾個小孩子都搶著顧火，怕肉烤焦被媽媽罵。」）——這樣寫技術上
+# 沒有踩到任何一條現有規則（沒有引號、沒有反問語尾、沒有踩到已知空泛套語的
+# 固定字串），但完全沒有做到「用自己的話轉述、加上反應」這件事，長者會覺得
+# AI只是把自己剛講的話原封不動念回來，不是真的有在聽、有在回應。
+#
+# 判準：只抓「大半句話都在長者原話裡逐字連續出現」這種偷懶複誦，不是禁止
+# 承接語提到長者說過的具體人事物——具體引用一小段細節正是 question_5w1h.txt
+# 教的正確做法（「聽起來那段跟○○一起做工的日子很熱鬧呢」），這裡用「最長
+# 共同子字串佔長者原話的比例」當判準，而不是「有沒有出現重疊」，短的具體
+# 引用（例如引用「阿珠姐」三個字）比例本來就低，不會被誤判；只有幾乎整句
+# 話都逐字複製時比例才會衝高。長者原話太短時用比例判準容易誤判，一併排除。
+#
+# 2026-09-12稽核（使用者反映實測後補）：門檻原本設12字，manual_test_
+# transition_quality.py 實測抓到一個沒有簡單解法的邊界案例——STEP3補問
+# target_w=Why、長者原話只有短短一句「都是自己踩裁縫車，一件一件做出來的」
+# （去標點17字），這句話本身完全沒有給任何「為什麼」的線索，模型被夾在
+# 「不能編一個動機當事實講」（另一條規則）跟「沒別的內容可以講」中間，
+# 連續4次attempt都只會複誦這句話當承接語，這條規則每次正確攔下，但也讓
+# 4次重試全部燒光、退回完全通用的保底句（比複誦更不知所云）。真正需要
+# 攔的是像「我們幾個小孩子都搶著顧火，怕肉烤焦被媽媽罵」這種30字以上、
+# 明顯有其他可以評論/回應空間卻懶得動筆的長句；原話本身就短、可迴旋餘地
+# 本來就小的情況，門檻拉高到20字跳過不查，兩種情境的分界線大致落在這裡。
+_ECHO_MIN_ELDER_LEN = 20          # 長者原話（去標點）不到這個字數，0.6這個比例門檻不穩定，改用更嚴格門檻
+_ECHO_MIN_OVERLAP_LEN = 12        # 重疊片段本身也要夠長，避免短巧合湊到高比例
+_ECHO_OVERLAP_RATIO = 0.6         # 原話20字以上時，重疊比例達到這個門檻就算複誦
+
+# 2026-09-13稽核（manual_test_transition_quality.py 批次實測後補）：上面
+# _ECHO_MIN_ELDER_LEN=20 這個門檻原本把「原話不到20字」的情況整個跳過不查，
+# 但實測發現20字以內的原話一樣常常被整句複誦（不管有沒有加「你說／你提到」
+# 這類前綴）——例如長者說「客人都是左右鄰居，做旗袍做得最多。」（去標點
+# 15字），承接語直接原句照搬「客人都是左右鄰居，做旗袍做得最多。」（連前綴
+# 都沒加）；「店面就開在市場口，人來人往很熱鬧。」（15字）則被寫成「你提到
+# 店面就開在市場口，人來人往很熱鬧。」——這兩種都是原話長度剛好卡在20字
+# 門檻下、被完全跳過，沒有機會被下面比例判準檢查到。
+#
+# 不直接調低 _ECHO_MIN_ELDER_LEN 本身（20字門檻是2026-09-12稽核為了裁縫車
+# 那個「原話本身就短、沒有其他內容可講」的邊界案例特地拉高的，調低會讓那個
+# 案例重新每次攔截、燒光重試退回保底句，見上方稽核）。改成兩段式比例門檻：
+# 原話20字以上維持原本0.6這個較寬鬆的門檻（因為原話夠長時，0.6這種「大半句
+# 重疊」已經是明確的偷懶訊號）；原話不到20字時，改用更嚴格的0.85（近乎
+# 「整段一字不差」才算），字數越短、巧合湊出高比例重疊的機率越低，0.85這個
+# 門檻在原話短的情況下一樣夠穩定、不會誤傷正常的部分引用（例如只引用
+# 「旗袍做得最多」六個字，占15字原話的比例遠低於0.85，不會被攔）。這樣一來
+# 裁縫車那個案例（16字、但複誦幾乎是100%重疊）依然會被攔到——這是刻意的
+# 取捨：這個具體案例本來就是零加值的整句複誦，攔下來才是對的，如果因此讓
+# 這個情境的重試/保底句比例上升，該解的是STEP3補問Why這類「原話沒給任何
+# 線索」情境的prompt策略本身（另一個已知問題，見manual_test_transition_
+# quality.py），不能為了避免這個情境燒重試，反過來放行其他原話明明有更多
+# 內容、單純是模型偷懶整句照抄的案例（旗袍／市場口這兩例）。
+_ECHO_NEAR_TOTAL_RATIO = 0.85
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 長者原話（elder_response）病態重複／過長時，先收斂再送進 prompt
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-13稽核（使用者反映「不用JSON會不會比較好」討論後補，manual_test_
+# real_transcripts.py 用真實長者對話紀錄實測抓到）：真實STT辨識偶爾會吐出
+# 病態重複的破碎文字（實測案例：某長者某次回答是同一個「對」字連續重複
+# 超過100次）。這種輸入餵進 orchestrator.py 的 prompt 後，本地弱模型在
+# schema排在第一個的「thinking」欄位裡陷入複誦/重複輸出迴圈，一路生到
+# 超出這次請求的輸出額度被截斷——JSON要求整份文件語法合法，「thinking」
+# 還沒生完就被截斷，後面根本還沒生成的「scene_text」「question」欄位
+# 自然也不存在，json.loads直接整包判讀失敗，所有欄位一起變空、退回完全
+# 通用的保底句（另見 orchestrator.py 新增的 _salvage_json_object，那是
+# 「JSON已經生成完、只是解析救不救得回來」這一層防護；這裡處理的是更前面
+# 一步——從根本上不讓這種病態輸入有機會把模型拖進複誦迴圈）。
+#
+# 在 guarded_generate 這個所有 generate_fn 呼叫共用的單一入口，於呼叫
+# generate_fn之前先把 elder_response 做兩件事：(1) 把同一個字元連續重複
+# 6次以上收斂成3次（保留「這裡有重複」的訊號，但砍斷病態重複本身的長度）；
+# (2) 收斂後仍超過 _ELDER_RESPONSE_SANITIZE_MAX_LEN 就整句截斷。不在各支
+# generate_fn各自的prompt組裝程式碼裡個別處理——那樣要記得同步修改好幾個
+# 地方，且不能保證涵蓋到所有現在/之後新增的呼叫點；guarded_generate已經
+# 是這些函式共用的必經入口（2026-09-13核對過：STEP1/2/3、收尾語、出示
+# 圖片反應、快速結尾回顧全部的production呼叫點都經過這裡），在這裡做
+# 一次就對所有呼叫點都生效。
+#
+# 門檻選擇：6次重複才收斂——中文口語裡「好好好」「對對對」這種3次以內的
+# 自然重複語氣詞很常見、不該被誤傷；200字上限則是抓「STT整段辨識失敗、
+# 吐出遠超過一般口語回答長度的破碎文字」這種明顯異常的情況，長者正常
+# 講述回憶即使講得比較長，也很少一次講到200字以上還不停頓換氣（STT通常
+# 會在停頓處切成新的一輪對話），200字以上多半是辨識品質問題而非長者真的
+# 一口氣講了這麼多。
+#
+# 2026-09-13稽核（使用者反映「承接語跟問題品質」實測後補，manual_test_
+# real_transcripts.py 用真實長者對話紀錄抓到）：截斷後原本在尾巴補一個
+# 「…」標記過長被砍過，但本地弱模型在原話很長、找不到具體切入點時，常常
+# 直接把長者原話大段逐字抄進承接語——一旦抄到剛好卡在截斷點附近，這個
+# 人工加上去的「…」會被原封不動抄進承接語，變成長者聽到的內容裡混進一個
+# 不知所云的刪節號（實測案例：承接語「...很常就是拿著麥克風…」，長者根本
+# 不會知道這個「…」代表什麼）。改成不補任何人工標記，而是往前找這個字數
+# 上限之內最後一個句子結尾標點（。！？),從那裡切齊——這樣就算被整段抄
+# 進承接語，讀起來也是一句語意完整的句子，不會留下人工痕跡；真的找不到
+# 標點（例如整段完全沒有標點符號）才退回原本的硬砍，這種情況本來就已經
+# 是文字品質很差的破碎輸入，硬砍不會讓情況變得更差。這個函式只影響餵進
+# prompt的內容，不影響資料庫裡儲存的長者原話本身，不需要標記「這裡被
+# 截斷過」供除錯用。
+#
+# 切點字元優先用句尾標點（。！？!?），但實測真實STT破碎文字常常整段只用
+# 逗號分隔、完全沒有句號（見真實案例ex182），這種情況也接受逗號／頓號當
+# 切點——目標只是「別剛好切在句子正中間留下語意破碎的殘句」，逗號位置一樣
+# 是自然的語氣停頓點，比在任意字元中間硬切好。
+_REPEATED_CHAR_RUN_RE = re.compile(r"(.)\1{5,}")
+_ELDER_RESPONSE_SANITIZE_MAX_LEN = 200
+_SENTENCE_END_CHARS = "。！？!?，,、"
+
+
+def sanitize_elder_response_for_prompt(text: str) -> str:
+    """把長者原話裡病態的連續重複字元收斂、並在整體過長時截斷，供餵進
+    prompt之前使用——見上方稽核說明。空字串／None原樣回傳，不強制轉型。"""
+    if not text:
+        return text
+    collapsed = _REPEATED_CHAR_RUN_RE.sub(lambda m: m.group(1) * 3, text)
+    if len(collapsed) > _ELDER_RESPONSE_SANITIZE_MAX_LEN:
+        window = collapsed[:_ELDER_RESPONSE_SANITIZE_MAX_LEN]
+        last_end = max((window.rfind(ch) for ch in _SENTENCE_END_CHARS), default=-1)
+        # 切齊點太靠前（不到上限的一半）代表這句子本身異常長，切在這裡會
+        # 砍掉太多內容，不如維持硬砍在字數上限，兩害相權取其輕。
+        if last_end >= _ELDER_RESPONSE_SANITIZE_MAX_LEN // 2:
+            collapsed = window[: last_end + 1]
+        else:
+            collapsed = window
+    return collapsed
+
+
+def _longest_common_substring_len(a: str, b: str) -> int:
+    """回傳 a、b 之間最長共同連續子字串的長度（動態規劃）。兩段輸入都是
+    單輪對話的短句（頂多幾十字），O(len(a)*len(b)) 的成本可以忽略。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for i in range(1, len(a) + 1):
+        curr = [0] * (len(b) + 1)
+        ai = a[i - 1]
+        for j in range(1, len(b) + 1):
+            if ai == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+                if curr[j] > best:
+                    best = curr[j]
+        prev = curr
+    return best
+
+
+def scene_text_echoes_elder_response(scene_text: str, elder_response: str) -> bool:
+    """True 代表承接語／場景文字幾乎只是把長者剛才那句話整段複誦一次
+    （例如「你說...」後面接一長串跟長者原話幾乎一字不差的內容），不是用
+    自己的話轉述或加上反應——具體引用長者原話裡一小段細節不算違規（比例
+    判準見上方稽核說明），只有大半句話都逐字重複時才算數。"""
+    if not scene_text or not elder_response:
+        return False
+    norm_scene = _PUNCT_STRIP_RE.sub("", scene_text)
+    norm_elder = _PUNCT_STRIP_RE.sub("", elder_response)
+    if not norm_elder:
+        return False
+    overlap = _longest_common_substring_len(norm_scene, norm_elder)
+    if overlap < _ECHO_MIN_OVERLAP_LEN:
+        return False
+    ratio = overlap / len(norm_elder)
+    # 原話20字以上用較寬鬆的0.6門檻，20字以下改用更嚴格的0.85（見上方
+    # 2026-09-13稽核：兩段式門檻取代原本「20字以下整個跳過不查」的做法）。
+    if len(norm_elder) >= _ECHO_MIN_ELDER_LEN:
+        return ratio >= _ECHO_OVERLAP_RATIO
+    return ratio >= _ECHO_NEAR_TOTAL_RATIO
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 承接語完全沒有呼應長者這輪實際說的內容，反而只是把畫面元素唸出來拼句
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-12稽核（使用者反映「有沒有承接到上一題」實測後補）：manual_test_
+# transition_speed.py 多跑幾輪抓到的實測案例——長者這輪剛說「我們幾個
+# 小孩子都搶著顧火，怕肉烤焦被媽媽罵」（跟顧火/怕挨罵有關），STEP3補問
+# Why那次生成的承接語卻是「就是跟家人一起在庭院烤肉賞月啊 小時候在台南
+# 的家裡 小時候在台南的家裡」——完全沒提到顧火、挨罵這件事，反而把
+# 【眼前畫面元素】（庭院、家人、台南的家裡）串成一句話，讀起來像在回顧
+# 更早的舊內容，不是在回應長者剛才這句話。這種失效不算「複誦」（跟
+# elder_response逐字重疊率很低，scene_text_echoes_elder_response 抓
+# 不到），也不是空泛套語（用了具體名詞，is_generic_acknowledgment 抓
+# 不到），純粹是承接語選錯了呼應對象——長者這輪明明有實質內容，承接語
+# 卻回頭描述畫面本身。
+#
+# 判準：長者這輪原話（去標點後）夠長、算有實質內容時，承接語如果完全
+# 沒跟長者這句話有任何連續3字以上的重疊，卻至少命中兩個【眼前畫面元素】
+# 裡的物件詞，視為「回頭描述畫面，沒有呼應這輪」，需要重新生成。長者這輪
+# 太短/沒有實質內容時（沉默、拒答）本來就該退回畫面元素當備用錨點（見
+# orchestrator.py _generate_open_followup／_generate_supplement_question
+# 的docstring說明），不適用這條規則。
+#
+# 2026-09-13稽核（使用者反映「承接語跟問題生成的品質」實測後補）：這裡
+# 原本沿用 scene_text_echoes_elder_response 的 _ECHO_MIN_ELDER_LEN（20字）
+# 當門檻，是2026-09-12稽核把echo檢查的門檻從12字調到20字時，圖方便直接
+# 共用同一個常數，沒有另外想過這條規則的門檻該不該一起變寬。實測
+# manual_test_transition_quality.py 抓到一個副作用：長者說「都是自己踩
+# 裁縫車，一件一件做出來的」（去標點16字，卡在12~20字這個被放寬掉的
+# 區間），承接語生成「你說的都很有趣，我們一起看著庭院裡的柚子和燈籠，
+# 好像中秋節快到了」——完全沒提到裁縫車，改成把畫面元素唸出來，正是這條
+# 規則要抓的模式，卻因為共用了echo那條門檻而被跳過、真的漏放了。
+#
+# 這兩條規則要擋的失效模式方向相反、對「長者原話多短才算太短不適用」的
+# 判斷標準也不一樣：echo那條是「原話夠長時，整句抄一遍算偷懶」，原話短
+# 的話難免要引用大半句才描述得清楚，門檻要放寬一點（20字）才不會誤傷；
+# 這條是「完全不呼應原話、改描述畫面」，不管原話多短，順口帶到一點都
+# 不難，用畫面元素取代完全不呼應的門檻應該低很多——改成自己專屬的門檻
+# （8字），只排除真正過短、幾乎沒東西可呼應的情況（例如「嗯」「有喔」
+# 這類語助詞回應），不再共用echo那條規則的門檻。
+_SCENE_DRIFT_MIN_ELDER_LEN = 8
+_SCENE_DRIFT_MIN_ELEMENT_HITS = 2
+
+
+def scene_text_ignores_elder_for_scene_elements(
+    scene_text: str, elder_response: str, scene_elements: list[str] | None,
+) -> bool:
+    """True 代表長者這輪已經有實質內容，承接語卻完全沒有呼應到這句話，
+    反而把【眼前畫面元素】清單裡至少兩個物件詞串成一句話——回頭描述畫面
+    本身或更早的舊內容，不是在回應長者剛才這輪實際說的話，需要重新生成。
+    """
+    if not scene_text or not elder_response or not scene_elements:
+        return False
+    norm_elder = _PUNCT_STRIP_RE.sub("", elder_response)
+    if len(norm_elder) < _SCENE_DRIFT_MIN_ELDER_LEN:
+        return False
+    norm_scene = _PUNCT_STRIP_RE.sub("", scene_text)
+    if _longest_common_substring_len(norm_scene, norm_elder) >= 3:
+        return False
+    hits = sum(1 for el in scene_elements if el and el in scene_text)
+    return hits >= _SCENE_DRIFT_MIN_ELEMENT_HITS
+
+
+# ══════════════════════════════════════════════════════════════════════
+# AI冒用第一人稱，把長者的經歷講成自己的親身回憶
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-13稽核（使用者反映「承接語跟問題生成的品質」實測後補，同日
+# 再稽核、改用LLM語意分類）：orchestrator.py 的prompt早就明文規定「「我」
+# 只能用在表達AI自己聽完之後當下的情緒反應...不能延伸出AI自己的具體人生
+# 經歷、家人或童年往事（例如「我小時候」「我媽媽」）」，但這條規則從來
+# 沒有掛進 guarded_generate 的事後防護——這次批次品質實測，抓到多個
+# 真實案例：
+#   「我記得小時候阿嬤家過中秋，一定是全家一起吃月餅、柚子。」
+#   「我那時候是獨自撫養孩子，沒有人可以分擔。」
+#   「我想起來了，那時候我們家人都會圍在庭院裡看月亮...」
+#   「你說的話讓我想到小時候媽媽總是煮一鍋香噴噴的芋頭湯...」
+# 這幾句的問題都不是「複誦長者的話」或「離題描述畫面」，是AI直接編了
+# 一段屬於自己的人生經歷講出來，比前兩種失效更嚴重——長者可能有輕微
+# 認知障礙，被植入一段假記憶的風險比單純答非所問更高。
+#
+# 這條檢查最早是用regex（「我／我們」接固定收錄的關鍵詞：記得/想起/想念/
+# 那時候/以前/小時候/當年/家/媽媽/爸爸），後來實測發現至少兩個問題：
+#   1. false positive——長者自己說「我們家比較吃比較清淡」，AI用「你說」
+#      轉述這句話時，regex會把長者原話裡的「我們家」誤判成AI在宣稱親身
+#      經歷（後來加了「命中片段若原封不動出現在長者原話裡就不算違規」
+#      這個修正，但只是治標）。
+#   2. false negative——「想到」這個同義詞沒被regex收錄（只收了「想起」），
+#      同樣是冒用經歷的案例卻整句漏放。這類換句話說的講法窮舉不完，
+#      regex這條路線天生會一直有這種漏洞。
+# 兩種問題的根源相同：regex只能做字面比對，這件事本質上是語意判斷
+# （「這句話有沒有把AI自己講成有親身經歷」），改用LLM語意分類取代——跟
+# taboo_checker.py 的 llm_topic_check 是同一種設計：把判斷交給LLM本身
+# 做，不要求窮舉所有可能的字面組合，temperature=0求判斷盡量穩定、失敗
+# 就保守視為違規（fail-safe），理由都跟 llm_topic_check 一致。
+#
+# 2026-09-13稽核（使用者提案，實測後補）：這條檢查換成LLM分類後，實測
+# （manual_test_generation_timing.py）確認每次attempt多一趟LLM往返，
+# 8組真實案例耗時從92.5秒（regex版本）增加到174.3秒——這是換取「不受限
+# 於固定關鍵詞、能抓到同義詞變體」的直接代價，原本保留的regex實作
+# （_AI_PERSONAL_MEMORY_RE／_CLAUSE_END_RE／ai_claims_personal_memory）
+# 已移除。
+#
+# 2026-09-13稽核（使用者提案，看到上面的耗時數字後追加）：regex／LLM
+# 兩種版本都不留——regex有同義詞覆蓋不全的漏洞（見上方），LLM版本又讓
+# 每次attempt多一趟LLM往返、實測拉高將近一倍耗時，使用者權衡後決定這條
+# 事後檢查整個不掛進 guarded_generate，改回完全依賴 orchestrator.py 各
+# generate_fn 【任務】裡本來就有的「「我」只能用在表達AI自己聽完之後
+# 當下的情緒反應，不能延伸出具體人生經歷」這條prompt指示，不做事後偵測。
+#
+# 2026-09-13稽核（使用者提案，同一天稽核，實測後拿回）：批次品質測試
+# （manual_test_real_transcripts.py）用真實長者原話重跑，證實完全不做
+# 事後偵測後，這個失效模式確實會漏到最終送給長者聽的輸出（例如長者只說
+# 「我也忘記了」，最終承接語卻編出「我們以前常在家裡廚房煮飯給大家吃」；
+# 正式環境某次真實session也出現「你說的話讓我想起小時候爸爸帶著我們去
+# 菜市場」，只是那次剛好同時超過48字，被 ack_too_long 順便攔下來，不是
+# 被這條規則攔的）——代表這個風險是真實存在的，不是理論上的疑慮。
+#
+# 關鍵差異：之前拿掉是因為「每個attempt都查一次」，guarded_generate平均
+# 每次呼叫要重試2-3次才通過，等於每次都要多打2-3趟LLM，才會把耗時拉高
+# 將近一倍。改成「只在通過上面全部格式/內容規則、taboo檢查、準備真的
+# return result的那一刻查一次」——不管中間重試幾次，只有最後真正要送出
+# 的那個候選才查，用 manual_test_final_check_cost.py 對同一批17組真實
+# 資料實測：固定只多1次LLM呼叫、平均每組只多0.52秒（約多3%），跟「每次
+# attempt都查」的88%耗時代價不是同一個量級，值得用這個代價換回這條防護。
+# 若這次查到違規，一樣走下面 violations 收集／重試的路，不特殊處理，讓
+# 它跟其他規則共用同一份 max_retry 額度、同一份 retry_feedback 機制。
+_AI_MEMORY_CHECK_SYSTEM = (
+    "你正在協助審查懷舊治療AI對長者說的一句承接語，判斷這句話有沒有把AI自己"
+    "講成擁有親身經歷、家人、或童年/過去往事——例如AI自稱「我小時候」「我"
+    "媽媽」「我們家」，把長者的事講成AI自己也經歷過的事。AI在這段對話裡只是"
+    "聆聽者，沒有自己的人生經歷，這些具體內容只能屬於長者本人。"
+    "允許AI表達自己聽完之後當下的情緒反應（例如「我也覺得很溫暖」「聽你這樣"
+    "說，我也覺得很感動」），這不算違規；只有編造出具體的人生經歷、家人、"
+    "童年/過去往事才算違規。"
+)
+
+
+# 2026-09-14稽核（真實session實測抓到）：ai_claims_personal_memory_llm
+# 是丟給本地弱模型做的「是/否」二元判斷，這次連續在同一個session踩到兩次
+# 偽陰性——「聽到你提到家人，讓我想起了自己的親人。」「聽到你提到邊吃飯，
+# 讓我想起了年輕時和朋友們一起聚餐的歡樂時光。」都被判成「否」放行，
+# 送到長者端。這兩句都用了「(讓)我...想起」這個固定措辭自稱有一段記憶，
+# 跟同一天稍早出示圖片那句「聽你這樣說，我彷彿也看到了當時的畫面。」
+# 反過來被同一顆模型誤判成「是」（見 orchestrator.py 呼叫處補的
+# skip_ack_memory_check）合起來看，這顆本地模型在這個二元判斷任務上
+# 偽陽性、偽陰性都會發生，不夠穩定。
+#
+# 「(讓/使)我...想起」這個措辭本身——不管後面接的是不是明講自己的親人/
+# 童年——就是在暗示AI擁有一段屬於自己的記憶，跟_AI_MEMORY_CHECK_SYSTEM
+# 要擋的是同一件事，但這個特定措辭可以直接用規則比對抓，不需要再賭一次
+# 準確率不穩的LLM判斷。這條規則式檢查不取代 ai_claims_personal_memory_llm
+# （後者還要抓更多樣的冒用經歷措辭，例如直接寫「我小時候」「我媽媽」），
+# 是補上前者對這個特定措辭的漏洞、且不用額外LLM呼叫，可以放在LLM檢查
+# 之前當免費的第一道防線。
+_AI_RECOLLECTION_RE = re.compile(r"(我|讓我|使我)(也|都)?(回)?想起")
+
+
+def ack_claims_recollection(text: str) -> bool:
+    """True 代表承接語裡AI自稱「(讓)我想起/回想起」了什麼。這個措辭本身就是
+    在暗示AI有一段屬於自己的記憶，跟_COMPOSE_RULES「我」只能表達當下情緒
+    反應（不能是回憶）的規則矛盾，一律視為違規，不需要判斷後面接的內容
+    是不是真的講到親人/童年——只要AI自稱「想起」了什麼，這件事本身就不
+    成立。"""
+    if not text:
+        return False
+    return bool(_AI_RECOLLECTION_RE.search(text))
+
+
+async def ai_claims_personal_memory_llm(
+    text: str, elder_response: str, llm_service,
+) -> bool:
+    """見上方2026-09-13稽核：曾經retired過（每個attempt都查一次太貴），
+    後來改成只在 guarded_generate 最終準備return result前查一次，重新掛
+    回去了，呼叫點見 guarded_generate 內部。
+
+    2026稽核（使用者實測抓到，嘗試擴大後撤回）：曾經改成也查question欄位
+    （呼叫點把承接語＋問題合併成一段文字一起查），確實抓到一個真實案例
+    （「那時候我們家通常都會一起去哪裡吃這些呢？」），但問題欄位常見的
+    「你們」「大家」這類集體代名詞（問長者那一方，不是AI自稱）讓這支
+    LLM判斷穩定度明顯下降，補了system prompt說明「你們不算違規」後仍然
+    誤判（例如把完全沒有代名詞的「哪一道菜色最受歡迎呢？」判成違規），
+    誤判觸發的重試把平均耗時從11秒拉回16秒、也讓退回保底句的比例變高，
+    划不來，改回只查承接語（ack_check_text），這條檢查在這個範圍內原本
+    就驗證得很穩，不重新冒險擴大範圍。question 欄位偶爾出現「我們家」這類
+    冒用經歷是還沒解決的已知缺口，但比起誤判的代價，維持現狀更划算。
+
+    True 代表AI把長者的經歷講成自己的親身回憶／家人／童年往事，冒用第
+    一人稱經歷，需要重新生成。失敗（例如LLM服務逾時/回應解析不出來）時
+    保守視為違規，觸發重新生成，理由同 taboo_checker.py 的 llm_topic_check。"""
+    if not text:
+        return False
+    prompt = (
+        f"AI的承接語：「{text}」\n\n"
+        f"長者剛才實際說的話：「{elder_response or '（長者這輪沒有實質內容）'}」\n\n"
+        "這句承接語有沒有把AI自己講成擁有親身經歷、家人、或童年/過去往事，"
+        "而且這些具體內容並不是長者剛才這句話裡本來就有的？只回答「是」或"
+        "「否」，不要其他文字。"
+    )
+    try:
+        messages = [
+            {"role": "system", "content": _AI_MEMORY_CHECK_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+        raw = await llm_service.chat(messages, temperature=0)
+        return raw.strip().startswith("是")
+    except Exception as e:
+        logger.warning(f"[ResponseGuard] AI冒用經歷LLM語意檢查失敗: {e}，保守視為違規")
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 承接語／場景文字本身被寫成問句
 # ══════════════════════════════════════════════════════════════════════
 #
@@ -353,6 +870,39 @@ def scene_text_is_a_question(scene_text: str) -> bool:
     if not scene_text:
         return False
     return bool(_SCENE_TEXT_QUESTION_RE.search(scene_text))
+
+
+# 2026-09稽核：曾試過承接語是問句就直接拿去當question用（代換），通過率
+# 有改善，但常丟掉模型另外生成、內容更好的question，也讓「先接話再問」
+# 的兩段式結構消失，已還原。
+#
+# 這裡改用另一種修法：機械式修復。實測發現「承接語被寫成問句」這條規則
+# 觸發後，重試常常修不好（本地弱模型連續好幾次attempt還是寫成問句，見
+# 真實資料重播測試），最後燒光重試次數退回完全通用的保底句，比修不好的
+# 問句還糟。但這類違規裡有一大部分屬於「確認型問句」——句子本身的內容
+# 其實已經是完整的直述句，只是被加了「呢/嗎/？」這類疑問語尾詞/標點變成
+# 問句（例如「你以前常跟鄰居一起去爬後山嗎？」拿掉「嗎？」就是語意完整
+# 的直述句「你以前常跟鄰居一起去爬後山」）——這種情況不需要重新生成，
+# 直接把疑問語尾詞/標點拿掉就能修好，不用賭下一次LLM會不會又寫成問句。
+#
+# 但如果句子帶疑問詞（什麼/哪裡/哪個/誰/怎麼/為什麼/多少，見 _WH_MARKER_
+# RE），代表這句話本質上就是在問一件事（例如「你當年...是什麼感覺？」），
+# 不是「直述句+疑問語尾詞」，拿掉標點也還是語意上的問句，機械修補救不
+# 回來，這種情況仍然要走原本的重試流程。
+def repair_scene_text_question(scene_text: str) -> str | None:
+    """嘗試把「確認型問句」的承接語機械式修回直述句，回傳修好的文字；
+    修不回來（句子本身帶疑問詞）回傳 None，交給原本的重試機制處理。
+    見上方 2026-09稽核說明。"""
+    if not scene_text:
+        return None
+    if _WH_MARKER_RE.search(scene_text):
+        return None
+    repaired = _SCENE_TEXT_QUESTION_RE.sub("", scene_text).rstrip("，,、 ")
+    if not repaired:
+        return None
+    if not repaired.endswith(("。", "！", "…")):
+        repaired += "。"
+    return repaired
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -466,6 +1016,51 @@ def judgment_evidence_unsupported(evidence: str, elder_response: str) -> bool:
             continue
         return True
     return False
+
+
+# 錨點內容開放式、無法窮舉成固定詞表，沿用 judgment_evidence_unsupported 的
+# 引號宣稱＋substring 核對手法：STEP2/3 prompt 要求模型額外輸出「錨點：」，
+# 用引號逐字標出這題真正引用的來源片段，這裡核對是否真的存在。
+def question_anchor_unsupported(
+    anchor: str,
+    elder_response: str,
+    pre_image_detail: str,
+    scene_elements: list[str] | None,
+) -> bool:
+    """True 代表「錨點」欄位裡引號標出的內容，沒有出現在長者剛才說的話、
+    生圖前分享的內容、或畫面元素任何一項裡——是編造出來、跟真實素材無關的
+    話題，需要重新生成。沒有用引號（例如純時間回指「那個時候」，或寫「無」）
+    不算違規，只有「宣稱這是引用」卻找不到出處時才算。"""
+    if not anchor:
+        return False
+    sources = [elder_response or "", pre_image_detail or "", "、".join(scene_elements or [])]
+    normalized_sources = [_PUNCT_STRIP_RE.sub("", s) for s in sources if s]
+    if not normalized_sources:
+        return False
+    for match in _QUOTED_RE.finditer(anchor):
+        normalized_quote = _PUNCT_STRIP_RE.sub("", match.group())
+        if not normalized_quote:
+            continue
+        if not any(normalized_quote in src for src in normalized_sources):
+            return True
+    return False
+
+
+# 2026-09稽核：anchor沒加引號時 question_anchor_unsupported 不會檢查
+# （刻意設計，「那個時候」這種純時間回指不該被強迫套引號），但模型常把
+# anchor寫成一整句問句或改寫，完全不照格式卻因為沒引號而沒被攔到。anchor
+# 是除錯用欄位、不會念給長者聽，沒必要為了格式問題觸發重試，改成解析完
+# JSON後直接靜默正規化成「無」。
+def normalize_anchor(anchor: str) -> str:
+    """anchor 若不是「無」、也沒有用「」『』引號逐字標出來源，代表沒有照
+    格式寫，直接正規化成「無」，避免下游檢查拿到不成形的內容誤判、也不用
+    為了這個除錯欄位的格式問題另外觸發重試。"""
+    anchor = (anchor or "").strip()
+    if not anchor or anchor == "無":
+        return anchor
+    if _QUOTED_RE.search(anchor):
+        return anchor
+    return "無"
 
 
 # 2026-08-17稽核（實測後補）：分類「1」代表長者覺得圖跟記憶一致，但實測
@@ -600,12 +1195,19 @@ _BOOKISH_VC_RE = re.compile(r"做下來|說下去")
 # 完全不會讓人誤解的常用語，一併擋掉會誤傷正常講法。來源範例句已經同步改成
 # 「好熱鬧」（見 question_5w1h.txt 與下面 _KNOWN_PROMPT_EXAMPLES）。
 _HAOBU_RE = re.compile(r"好不熱鬧")
-# 2026-08-17稽核（實測後補）：closing.txt【收尾語規則】早就明文禁止「好了」
+# 2026-08-17稽核（實測後補）：closing.txt【收尾語生成流程】早就明文禁止「好了」
 # 「就先聊到這裡」「就到這邊」這類聽起來想結束對話、打發人的轉折語，但只有
 # prompt文字、從沒有對應的事後防護——這次實測抓到同一種毛病的變形：「不過
 # 現在時間不早了，我們也該回去了」，用「時間到了要送客」當藉口，一樣是趕人
 # 語氣，只是沒用到「好了」這幾個字，沒被口頭規則的具體例句涵蓋到。
 _RUSHING_CLOSING_RE = re.compile(r"時間不早|該回去了|該走了|該回家了")
+
+# question_5w1h.txt【禁止事項】禁止聊到與畫面無關的現代生活細節，但沒有
+# 對應的事後防護。只抓「今晚／今天晚上／今天早上／今天中午／昨天／明天」
+# 這類指向特定日曆日期的詞，不抓單獨的「今天」或「現在」——這兩個字在
+# 收尾語裡有合法用法（「謝謝你今天的分享」指今天這場療程；「現在想起
+# 那些精彩的料理時」是規則鼓勵的回想橋接句型），抓了會誤傷。
+_PRESENT_DAY_TIME_RE = re.compile(r"今晚|今天晚上|今天早上|今天中午|昨天|明天")
 
 # 2026-08-17稽核（實測後補）：長者看完AI示意圖、指出跟記憶不一樣（分類2/3，
 # 見 orchestrator.py _generate_image_reveal_reaction）時，實測案例承接語寫成
@@ -640,14 +1242,76 @@ _TRIVIALIZE_DISCREPANCY_RE = re.compile(
 # question_only_retry_fn 機制（見該函式說明）靠這份清單判斷「這個違規原因
 # 是不是保證跟其他欄位無關」，安全地只重新生成 question、不用讓已經驗證過的
 # 承接語跟著陪葬重生。double_question/memory_test/precise_fact/image_
-# description/comparison_trap/vague_association 都跟 too_long 一樣只查 q
-# （見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
+# description/comparison_trap/vague_association/present_day_time_reference
+# 都跟 too_long 一樣只查 q（見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
 # scene_text+q 的 combined，不在此列——沒辦法排除是 scene_text 那邊的問題。
 _QUESTION_ONLY_FORMAT_RULES = frozenset({
     "too_long", "double_question", "memory_test", "precise_fact",
     "image_description", "comparison_trap", "vague_association",
-    "sense_as_method",
+    "sense_as_method", "confused_tone", "inanimate_subject_misread",
+    "present_day_time_reference",
 })
+
+# ══════════════════════════════════════════════════════════════════════
+# STEP3補問的「問題」有沒有真的問到被指派的W維度（retired，未掛進
+# guarded_generate）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-13稽核（使用者提案後補，同日再稽核、實作後撤回）：一開始想補的
+# 問題是真的存在的——manual_test_pre_split_step3.py／manual_test_pre_ack_
+# removal_step3.py 實測發現本地模型常常答非所問（指定Who卻問成What、指定
+# Where卻問成How），一度把 question_misses_target_w 這個regex判準掛進
+# guarded_generate 的重試迴圈，命中就強制重試。
+#
+# 但後來核對 orchestrator.py 的 _ask_supplement（唯一的正式呼叫端）才發現
+# 這個問題早就有專屬機制在處理，而且比這條regex判準更完整：_generate_
+# supplement_question 的 prompt 本身就刻意要求「順著長者剛才的話自然地
+# 深入問下去，不是在核對清單」——允許模型自然延伸到target_w以外、但還沒
+# 問過的維度，不強制鎖死角度；_ask_supplement 生成完之後另外呼叫
+# _classify_question_dimension（LLM語意分類，不是regex字面比對）核對這題
+# 實際問的是哪個維度，只有「答到的維度剛好是這輪已經涵蓋過的（等於白問，
+# 浪費這輪補問名額）」或「target_w是Why、卻沒問成Why（Why名額得來不易）」
+# 這兩種情況，才會帶著具體retry_feedback在guarded_generate外面多打一次，
+# 其餘情況（自然延伸到別的、還沒問過的維度）視為合理、不強迫重打。
+#
+# 這裡加的regex判準只要沒出現target_w的字面標記詞就一律算違規，比
+# _ask_supplement的政策嚴格得多——等於在guarded_generate的重試迴圈裡，
+# 對本來就沒有要求「每次都精準命中」的維度多加了一條不該存在的強制
+# 條件，跟_ask_supplement既有設計互相打架，而且這件事發生在guarded_
+# generate內部的每一次retry attempt上，會增加同一次attempt要同時滿足
+# 的規則數量——剛好是這次稽核想解決的反方向。判準本身（判準函式跟
+# 常數）保留在這裡供之後參考，但不再掛進 check_format_rules／
+# guarded_generate；真的要處理「答非所問」，該調整或加強的是
+# _ask_supplement 那層既有機制，不是在這裡疊加一條更嚴格的regex。
+_W_DIRECTION_MARKERS: dict[str, re.Pattern] = {
+    "Where": re.compile(r"哪裡|哪個地方|哪一個地方|什麼地方|在哪|哪個場所"),
+    "Who": re.compile(r"誰|哪個人|哪些人|跟誰|和誰|哪一位"),
+    "When": re.compile(r"什麼時候|哪個季節|哪一年|人生階段|幾歲"),
+    "Why": re.compile(r"為什麼|為何|什麼原因|怎麼會"),
+}
+
+# 疊進 retry_feedback 的角度提示文字，跟 orchestrator.py 的 _W_HINT 用詞
+# 對齊（同樣理由不能直接 import，獨立維護一份，兩邊之後如果要調W維度的
+# 提示措辭記得同步改）。
+_W_DIRECTION_FEEDBACK_HINT = {
+    "Where": "哪裡、哪個地方、場所",
+    "Who": "誰、哪個人、關係",
+    "When": "什麼時候、季節、人生階段",
+    "Why": "為什麼、原因、動機",
+}
+
+
+def question_misses_target_w(question_text: str, target_w: str) -> bool:
+    """True 代表問題裡完全沒出現target_w這個W維度的字面標記詞——retired，
+    見上方稽核說明，不再掛進 guarded_generate，只保留判準本身供之後參考。
+    只對 Where／Who／When／Why 這4個標記詞相對明確的維度查核，What／How
+    暫時不查（這兩個維度問法太多樣，誤判率會太高）。"""
+    if not question_text:
+        return False
+    marker = _W_DIRECTION_MARKERS.get(target_w)
+    if marker is None:
+        return False
+    return not bool(marker.search(question_text))
 
 _PRECISE_FACT_RE = re.compile(r"哪一?年|什麼時候|幾點|叫什麼|哪一?位")
 # 「看到什麼/圖案/造型」這組字面漏掉了實測最常見的變形：「X裡/上/旁邊有什麼」
@@ -716,6 +1380,33 @@ _SENSE_METHOD_EXAMPLES = (
     "「那時候，有沒有嚐到什麼味道呢？」"
 )
 
+# 「是怎麼回事／怎麼一回事」：question_5w1h.txt【提問規則】已經明文禁止用這
+# 種問法問單純的舊物件/舊生活方式（見該檔「不要用『是怎麼回事』」那條），
+# 但只有 prompt 文字、沒有對應的事後防護——這個句型平常是問「發生了什麼
+# 意外/異常狀況」才會用的語氣，帶著疑惑、追問的味道，套用在單純懷舊的內容
+# 上（例如「那個時候的舊式爐灶是怎麼回事？」）會顯得像在質問，不像老朋友
+# 聊天，跟其他「用詞規則」（您/長者/先/咱們等）同一類問題，補上同一套防護。
+_CONFUSED_TONE_RE = re.compile(r"是怎麼回事|怎麼一回事")
+
+# 「工具/地點被誤讀成動詞的主詞」，例如「鐮刀收工前」——鐮刀不會收工。
+# 用已知工具/地點名詞當白名單，不籠統比對「名詞後面接這幾個動詞」：中文
+# 「動詞＋受詞」活動短語（例如「耙鹽收工前」，耙鹽＝工作本身）緊接收工/
+# 下田完全合理，只看動詞前有沒有人稱代名詞會誤傷這種合法用法。
+_INANIMATE_SUBJECT_NOUNS = ("長耙", "鐮刀", "鋤頭", "大石頭", "石頭", "扁擔")
+_INANIMATE_SUBJECT_VERBS = r"收工|下田|出門|跳(?:下去)?|走|爬"
+_INANIMATE_SUBJECT_RE = re.compile(
+    r"(?:" + "|".join(_INANIMATE_SUBJECT_NOUNS) + r")(?:" + _INANIMATE_SUBJECT_VERBS + r")"
+)
+
+
+def has_inanimate_subject_misread(text: str) -> bool:
+    """True 代表問題把工具/地點類名詞直接接在只有人才做得到的動詞前面
+    （例如「鐮刀收工前」——鐮刀不會收工），把工具/地點誤讀成動詞的主詞，
+    需要重新生成。"""
+    if not text:
+        return False
+    return bool(_INANIMATE_SUBJECT_RE.search(text))
+
 # 「您」：question_5w1h.txt 明文規定「稱呼長者一律用「你」...不要用「您」——
 # 「您」念起來太正式，會破壞老朋友聊天的溫暖感」，但這條規則之前也只有口頭
 # 指示、沒有對應的事後防護，2026-08 實測發現模型偶爾還是會漏用「您」。
@@ -729,146 +1420,250 @@ _NIN_RE = re.compile(r"您")
 # 太正式。這句話原本應該念成「你剛才提到跟家人一起在院子烤肉」，模型卻
 # 用第三人稱的「長者」取代了「你」，長者聽了會覺得AI在講別人的事、不是
 # 在跟自己說話。
-_THIRD_PERSON_ELDER_RE = re.compile(r"長者")
+#
+# 2026-09稽核：模型換用同義詞「長輩」一樣繞過檢查，補上。
+_THIRD_PERSON_ELDER_RE = re.compile(r"長者|長輩")
+
+# 「用長者本名稱呼」檢查（見 guarded_generate 內 elder_name 那段）原本是
+# `elder_name in text` 純字串包含判斷，對單一字姓氏會有明顯假陽性——很多
+# 中文姓氏本身就是常見量詞或常用字（張/林/黃/白/藍/金），例如姓「張」時，
+# 「這張圖」「一張照片」裡的「張」是量詞，跟稱呼長者完全無關，卻會被誤判
+# 成本名稱呼（2026-09稽核，實測案例：承接語「這張圖確實沒辦法把每個細節
+# 都畫得剛剛好」被誤判）。這裡只加一個簡單版：單一字姓名時，逐一檢查每次
+# 出現前面是不是緊接常見的量詞觸發字（一/這/那/幾/兩/每...），只要有一次
+# 不是接在這些字後面，才算真的違規；多字姓名不受影響、維持原本的純字串
+# 比對（多字姓名恰好跟常用詞組完全重疊的機率低很多，不特別處理）。
+_MEASURE_WORD_TRIGGER_CHARS = "一二三四五六七八九十兩幾每這那哪半數幾十"
 
 
-def check_format_rules(question_text: str, scene_text: str) -> tuple[str, str] | tuple[None, None]:
+def name_used_as_direct_address(text: str, elder_name: str) -> bool:
+    """True 代表 text 裡有把 elder_name 當稱呼詞用（排除單一姓氏字剛好是
+    常見量詞的假陽性，見上方稽核說明）。"""
+    if not elder_name or not text:
+        return False
+    if len(elder_name) != 1:
+        return elder_name in text
+    for i, ch in enumerate(text):
+        if ch != elder_name:
+            continue
+        preceded_by_measure_trigger = (
+            i > 0 and text[i - 1] in _MEASURE_WORD_TRIGGER_CHARS
+        )
+        if not preceded_by_measure_trigger:
+            return True
+    return False
+
+def check_format_rules(
+    question_text: str, scene_text: str,
+) -> list[tuple[str, str]]:
     """
     檢查 question_5w1h.txt 明文規定、但先前沒有對應事後防護的幾條格式/內容規則。
-    回傳 (違規原因代號, retry_feedback文字)；全部通過回傳 (None, None)。
+    回傳「所有」踩到的 (違規原因代號, retry_feedback文字) 組成的清單，一次生成
+    同時踩好幾條規則時，清單裡會有好幾筆；全部通過回傳空清單。
+
+    2026-09稽核（實測發現）：這支函式原本抓到第一條違規就直接 return，之後的
+    規則完全不會被檢查——不影響「有沒有被判定違規、要不要重新生成」這個結果
+    （guarded_generate 只要清單非空就會重試），但log只會印出「先抓到的那一條」，
+    讓人誤以為其他規則沒被抓到（實際案例：承接語同時踩了「長者：」第三人稱
+    跟問題太長，log只顯示too_long，third_person_elder_wording看起來像漏放，
+    其實只是排序在後面、沒機會被評估）。改成收集所有規則的結果，log能準確
+    反映這次生成實際踩了哪幾條，不影響既有的重試/攔截行為本身。
     """
     q = question_text or ""
     combined = f"{scene_text or ''}{q}"
+    violations: list[tuple[str, str]] = []
 
     length = len(_FORMAT_PUNCT_RE.sub("", q))
     if length > 30:
-        return "too_long", (
+        violations.append(("too_long", (
             f"上一次的問題「{q}」共{length}字，超過30字上限。這次請把這句話縮短到30字以內，"
             "可以拿掉不影響意思的修飾詞。"
-        )
+        )))
 
     if len(_DOUBLE_QUESTION_RE.findall(q)) > 1:
-        return "double_question", (
+        violations.append(("double_question", (
             f"上一次的問題「{q}」裡有兩個問號，等於一次問兩件事，長者會不知道先回答哪一個。"
             "這次請只保留一個問題。"
-        )
+        )))
 
     if _has_multi_wh_clauses(q):
-        return "double_question", (
+        violations.append(("double_question", (
             f"上一次的問題「{q}」用逗號連接了兩個各自帶疑問詞的分句，即使結尾只有一個"
             "問號，還是等於一次問兩件事，長者會不知道先回答哪一個。這次請只保留一個"
             "問題，拿掉其中一個分句。"
-        )
+        )))
 
     if _MEMORY_TEST_RE.match(q):
-        return "memory_test", (
+        violations.append(("memory_test", (
             f"上一次的問題「{q}」用「你還記得／記不記得」開頭，這是在測長者的記憶力而不是"
             "邀請他分享。這次請拿掉這個開頭，直接問內容本身。"
-        )
+        )))
 
     if _PRECISE_FACT_RE.search(q):
-        return "precise_fact", (
+        violations.append(("precise_fact", (
             f"上一次的問題「{q}」要求長者說出精確的地名/國家/時間/人名，這類問題長者答不出來"
             "時容易感到挫折。這次請改問過程、感受或互動，不要問需要精確事實性答案的問題。"
-        )
+        )))
 
     if _IMAGE_DESC_RE.search(q):
-        return "image_description", (
+        violations.append(("image_description", (
             f"上一次的問題「{q}」要長者描述這張AI示意圖裡的畫面內容（例如看到什麼、圖案、"
             "造型）。長者根本沒看過這張剛生成的圖，這樣問等於逼他編答案。這次請把畫面元素"
             "當成引子，問長者自己實際經歷過的事，不要問畫面本身有什麼。"
-        )
+        )))
 
     if _COMPARISON_TRAP_RE.search(q):
-        return "comparison_trap", (
+        violations.append(("comparison_trap", (
             f"上一次的問題「{q}」問「哪一種/哪一樣…比較受歡迎/常見/多」，答案是選一個"
             "名稱出來，不是敘事。這次請改問過程、感受或互動，例如改問長者怎麼跟客人"
             "介紹賣得最好的那款、或那件事帶給長者的感受。"
-        )
+        )))
 
     if _VAGUE_ASSOCIATION_RE.search(q):
-        return "vague_association", (
+        violations.append(("vague_association", (
             f"上一次的問題「{q}」問「X讓你想到什麼」，太抽象籠統、沒有具體切入點，長者"
             "常常只回一兩個字就結束。這次請改用情感/意義、陪伴的人、感官記憶其中一種"
             "具體角度切入，不要用這種籠統聯想問法。"
-        )
+        )))
 
     if _SENSE_METHOD_RE.search(q):
-        return "sense_as_method", (
+        violations.append(("sense_as_method", (
             f"上一次的問題「{q}」把「聽/聞/嚐」這類被動感官接收動作講成有「方法」"
             "可問（例如「你都怎麼聽」），聽起來很不自然——這類感官本來就沒有值得問"
             f"的「方法」。這次請改用這種自然問法：{_SENSE_METHOD_EXAMPLES}（都是"
             "「有沒有什麼X，讓你印象特別深呢」這種問印象/記憶本身的句型），套用"
             "同一個句型、換成跟這次情境相關的感官對象即可，不要用「你/你們+怎麼+"
             "聽/聞/嚐」這種句型。"
-        )
+        )))
+
+    if _CONFUSED_TONE_RE.search(q):
+        violations.append(("confused_tone", (
+            f"上一次的問題「{q}」用了「是怎麼回事／怎麼一回事」，這種問法平常是問"
+            "「發生了什麼意外／異常狀況」才會用的語氣，拿來問單純懷舊的舊物件、"
+            "舊生活方式會顯得像在質問，不像老朋友聊天。這次請改用「是什麼樣子的"
+            "呢」「是什麼樣的情形呢」這類自然問法，不要用「怎麼回事」。"
+        )))
+
+    if has_inanimate_subject_misread(q):
+        violations.append(("inanimate_subject_misread", (
+            f"上一次的問題「{q}」把工具或地點類名詞直接接在只有人才做得到的動詞"
+            "前面（例如「鐮刀收工前」——鐮刀不會自己收工，「大石頭跳下去前」——"
+            "大石頭不會自己跳），把工具/地點誤讀成動詞的主詞了。這次請把「你」"
+            "或「你們」放回動作真正的主詞位置（例如改問「耙鹽收工前，你都會做"
+            "什麼？」），不要讓物件或地點變成動詞的執行者。"
+        )))
 
     if _NIN_RE.search(combined):
-        return "nin_wording", (
+        violations.append(("nin_wording", (
             "上一次的內容用了「您」，這個字念起來太正式，會破壞老朋友聊天的溫暖感。"
             "這次請全部改用「你」稱呼長者。"
-        )
+        )))
 
     if _THIRD_PERSON_ELDER_RE.search(combined):
-        return "third_person_elder_wording", (
+        violations.append(("third_person_elder_wording", (
             f"上一次的內容「{combined}」用第三人稱的「長者」稱呼對方（例如「長者剛才"
             "提到...」），聽起來像案例紀錄，不是直接在跟長者說話。這次請把「長者」"
             "全部改成「你」，直接對長者說話。"
-        )
+        )))
 
     if _XIAN_RE.search(combined):
-        return "xian_wording", (
+        violations.append(("xian_wording", (
             "上一次的內容用了「先＋動詞」這種贅字句型（例如「先做什麼」「先準備」）。"
             "這次請拿掉「先」這個字，改成更口語自然的講法。"
-        )
+        )))
     if _ZANMEN_RE.search(combined):
-        return "zanmen_wording", (
+        violations.append(("zanmen_wording", (
             "上一次的內容用了「咱們／咱」，這是北方/大陸口語用詞，不是台灣長者平常會聽到的"
             "說法。這次請改用「我們」。"
-        )
+        )))
     if _DABASHOU_RE.search(combined):
-        return "dabashou_wording", (
+        violations.append(("dabashou_wording", (
             "上一次的內容用了「搭把手」，這是北方/大陸口語用詞。這次請改用「幫忙」「幫個忙」"
             "「來湊一腳」這類台灣長者會用的講法。"
-        )
+        )))
     if _SHOUCHANG_RE.search(combined):
-        return "shouchang_wording", (
+        violations.append(("shouchang_wording", (
             "上一次的內容把「收場」接「回家/下班/下工」，這是誤用——「收場」是抽象語境。"
             "這次描述收拾東西準備離開的具體動作請改用「收工」「收拾」。"
-        )
+        )))
     if _TOUYIJU_RE.search(combined):
-        return "touyiju_wording", (
+        violations.append(("touyiju_wording", (
             "上一次的內容用了省略「話」字的「頭一句」，這種縮略講法語法不完整。"
             "這次請寫成完整的「第一句話」。"
-        )
+        )))
     if _BOOKISH_VC_RE.search(combined):
-        return "bookish_verb_complement", (
+        violations.append(("bookish_verb_complement", (
             "上一次的內容用了「做下來」「說下去」這種讀起來生硬、像書面翻譯腔的動補搭配。"
             "這次請改用「做出來」「完成」「說出口」這類老朋友聊天真的會用的講法。"
-        )
+        )))
     if _HAOBU_RE.search(combined):
-        return "haobu_wording", (
+        violations.append(("haobu_wording", (
             "上一次的內容用了「好不熱鬧」，這是「好不＋形容詞＝很＋形容詞」的古典構句"
             "（意思其實是「很熱鬧」），但長者聽語音唸出來容易把「不」聽成字面否定、"
             "誤會成「不熱鬧」。這次請直接改用「好熱鬧」，不要用「好不」這種構句。"
-        )
+        )))
     if _RUSHING_CLOSING_RE.search(combined):
-        return "rushing_closing_wording", (
+        violations.append(("rushing_closing_wording", (
             f"上一次的內容用了「{combined}」裡的「時間不早了／該回去了」這類藉口時間到了"
             "要送客的講法，聽起來像在趕長者走，跟「好了，就先聊到這裡」是同一種毛病。"
             "這次請拿掉跟時間有關的藉口，直接用「回到現在」的感受或問題自然銜接，"
             "不要暗示長者耽誤了時間、該被送走了。"
-        )
+        )))
+    if _PRESENT_DAY_TIME_RE.search(q):
+        violations.append(("present_day_time_reference", (
+            f"上一次的問題「{q}」問的是「今晚／今天／昨天／明天」這種指向現實日曆"
+            "時間的具體事，長者這一輪聊的是「以前」「小時候」這種過去的回憶，這樣問"
+            "會把話題硬拉回現在或未來，跟懷舊治療要留在過去時空裡的原則矛盾。這次"
+            "請把時間詞改成「以前」「那時候」「那個時候」這類指向長者回憶裡那個"
+            "年代的講法，不要問長者今天/昨天/明天實際發生或會發生的事。"
+        )))
     if _TRIVIALIZE_DISCREPANCY_RE.search(combined):
-        return "trivialize_discrepancy_wording", (
+        violations.append(("trivialize_discrepancy_wording", (
             f"上一次的內容把長者指出AI畫面跟記憶不一樣這件事，講成「很有趣/好玩」這類"
             "輕鬆、當趣聞看待的詞——長者是認真在糾正AI畫錯的地方，這樣講會讓他覺得"
             "自己的記憶被當成好玩的事，不是被尊重地聽見，跟「沒關係/不重要」是同一種"
             "不合適的輕描淡寫。這次請拿掉「很有趣/好玩/好笑」這類詞，改用認真、"
             "珍惜長者記得這麼清楚的語氣接住。"
-        )
+        )))
 
-    return None, None
+    return violations
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 問題欄位一次問兩件事（多個問號）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09稽核（使用者提案，實測後補）：double_question 這條規則重試修不好
+# 的比例很高——本地弱模型收到「這次請只保留一個問題」的 retry_feedback
+# 後，常常只是把句子縮短（處理掉 too_long），卻沒有真的砍掉多問的那一句，
+# 燒光重試次數退回保底句（實際案例：round2 STEP2開放追問連續4次attempt都
+# 在問「你是怎麼做的呢？你們通常都一起煮還是一個人負責？菜色上有沒有什麼
+# 特別的拿手料理？...」這類疊加子問題，只有問號數量在減少，句子結構沒有
+# 真的收斂成一句，見真實pipeline重播測試）。
+#
+# 跟 repair_scene_text_question 同一種思路：觀察到的實際案例裡，第一個
+# 「？」前面的內容通常已經是一句語意完整、可以獨立成立的問題（例如「那
+# 時候,你們通常是怎麼一起煮的呢？」本身就問得通，後面「有沒有什麼特別的
+# 拿手料理呢？」是多餘的第二問）。機械式修法：直接截到第一個問號為止，
+# 不用再賭一次LLM會不會真的收斂成一句。
+#
+# 只處理「問號數量>1」這種情況——逗號連接兩個各自帶疑問詞分句、但結尾
+# 只有一個問號的複合問句（_has_multi_wh_clauses），兩個分句誰才是「真正
+# 該問的那一句」不明確（有時前一句其實是錨點被誤寫成問句，不是真的兩個
+# 問題），機械截斷容易砍錯方向，這種情況仍然走原本的重試流程。
+def repair_double_question(question_text: str) -> str | None:
+    """嘗試把「一次問兩件事」（多個問號）的問題機械式修回只保留第一問，
+    回傳修好的文字；修不回來（問號不到2個，或截斷後內容太短/是空的）
+    回傳 None，交給原本的重試機制處理。見上方稽核說明。"""
+    if not question_text:
+        return None
+    marks = list(_DOUBLE_QUESTION_RE.finditer(question_text))
+    if len(marks) < 2:
+        return None
+    repaired = question_text[:marks[0].end()].strip()
+    if len(_FORMAT_PUNCT_RE.sub("", repaired)) < 4:
+        return None
+    return repaired
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -890,6 +1685,10 @@ async def guarded_generate(
     text_keys: tuple[str, ...] = ("scene_text", "question"),
     fallback: dict | None = None,
     question_only_retry_fn=None,
+    retry_temperature: float | None = None,
+    check_scene_text_question: bool = True,
+    skip_ack_memory_check: bool = False,
+    skip_ack_checks: bool = False,
     **generate_kwargs,
 ) -> dict:
     """
@@ -902,7 +1701,23 @@ async def guarded_generate(
         taboo_words: 這位長者的禁忌詞列表；為空時跳過禁忌話題檢查，
                      但下方「示意圖當成真實地點」等檢查一律會執行
         llm_service: LLMService 實例
+        check_scene_text_question: 2026-09稽核（使用者提案）：STEP2/3
+                     （_generate_open_followup／_generate_supplement_
+                     question）不再要求承接語一定不能是問句——改成讓
+                     「承接語＋問題」整體讀起來像自然聊天（先呼應再問），
+                     不再用這條規則單獨判斷承接語本身的句型，避免逼模型
+                     在素材薄的時候硬拗出不通順的直述句、或耗光重試次數
+                     退回通用保底句。這兩支呼叫點傳 False 關掉這條檢查
+                     （見 scene_text_is_a_question／repair_scene_text_
+                     question 上方說明），其餘呼叫點維持 True 不受影響。
         max_retry:   違規時重新生成的次數上限
+        retry_temperature: 選用。低temperature下重試常輸出幾乎一字不差的
+                     句子，retry_feedback 沒能真的讓模型改變措辭；設了這個
+                     值後，第一次生成仍用 generate_fn 自己的預設temperature，
+                     只有從第2次起的重試（attempt>0）才改用這個更高的
+                     temperature，換取樣多樣性跳脫死循環。generate_fn 必須
+                     支援 temperature 這個參數，不支援的就不要傳，維持None
+                     （不影響任何重試行為）。
         text_keys:   要納入禁忌話題檢查的欄位名稱（不同生成函式的回傳key不一樣，
                      例如 _generate_open_followup 用 scene_text/question，
                      _generate_closing 用 closing_text/question，必須對齊，
@@ -924,6 +1739,34 @@ async def guarded_generate(
                      這支函式必須接受跟 generate_fn 相同的呼叫參數（含
                      retry_feedback），回傳至少含 "question" 的 dict（有
                      "covered_w" 就一併採用，沒有則視為空清單）。
+        skip_ack_memory_check: 選用。呼叫端如果已經用別的管道驗證過承接語
+                     不會冒用第一人稱經歷（例如 ack_composer.py 的
+                     compose_sentence，內部的 _validate_composed 已經查過
+                     同一件事），設 True 跳過這裡對 ack_check_text 的
+                     ai_claims_personal_memory_llm 檢查，省下重複查同一句話
+                     的LLM呼叫。預設 False，維持原本行為。
+        skip_ack_checks: 選用。2026-09-14稽核（使用者提案）：
+                     _generate_image_reveal_reaction 的 reaction_text 已經
+                     改成依classification查固定模板（見該常數
+                     _IMAGE_REVEAL_REACTION_TEMPLATES 上方說明），不是LLM
+                     現寫的內容——固定、已核可的模板文字，不需要再跑
+                     ack_check_text 那一整組規則（too_long／空泛套語／複誦／
+                     問句／冒用經歷…），每次都查等於白工，而且模板配上這組
+                     規則若剛好誤判，重試幾次都是同一句話配同一個判定，
+                     注定燒光重試額度（實測案例：模板「聽你這樣說，我彷彿
+                     也看到了當時的畫面。」被 ai_claims_personal_memory_llm
+                     穩定誤判成冒用經歷）。設 True 時把 ack_check_text／
+                     memory_check_text 都強制清空——這組規則清單裡的每一條
+                     函式本身都有「輸入是空字串就直接回傳不違規」的防呆
+                     （見各函式docstring），清空後這整組規則會全部自然
+                     跳過，不用另外用一堆if包住每一條規則。只影響
+                     reaction_text／scene_text／closing_text／emotional_text
+                     這幾個欄位的檢查，不影響 judgment_evidence／
+                     classification 那組獨立的檢查（那組驗證的是模型還在
+                     自由生成的分類判斷本身，不是固定模板，仍然需要驗證）。
+                     預設 False，維持原本行為；skip_ack_memory_check 在
+                     這個設True時形同多餘，但保留參數不衝突，兩個都設也
+                     不會有問題。
         **generate_kwargs: 原封不動轉給 generate_fn 的參數
 
     Returns:
@@ -934,6 +1777,15 @@ async def guarded_generate(
             "scene_text": SAFE_FALLBACK_SCENE_TEXT,
             "question": SAFE_FALLBACK_QUESTION,
         }
+
+    # 見 sanitize_elder_response_for_prompt 上方2026-09-13稽核：在唯一的
+    # 共用入口先收斂病態重複／過長的長者原話，避免拖著本地弱模型的「thinking」
+    # 欄位陷入複誦迴圈、生到被截斷。之後每次attempt重新複製的call_kwargs
+    # 都會沿用這份已經收斂過的版本，不用在迴圈裡重複處理。
+    if "elder_response" in generate_kwargs:
+        generate_kwargs["elder_response"] = sanitize_elder_response_for_prompt(
+            generate_kwargs["elder_response"]
+        )
 
     attempt = 0
     # 2026-08-18稽核（使用者提案，實測後補）：呼叫端可能已經自己帶了一次
@@ -956,6 +1808,11 @@ async def guarded_generate(
     locked_fields: dict | None = None
     while attempt <= max_retry:
         call_kwargs = dict(generate_kwargs)
+        # 見上方 retry_temperature 參數說明：只有從第2次呼叫起（attempt>0，
+        # 代表第一次已經違規過）才套用更高的temperature，第一次生成維持
+        # generate_fn自己的預設值不受影響。
+        if retry_temperature is not None and attempt > 0:
+            call_kwargs["temperature"] = retry_temperature
         combined_feedback = "\n".join(f for f in (base_retry_feedback, retry_feedback) if f)
         if combined_feedback:
             # 把上一次違反了什麼規則直接告訴模型，而不是原封不動再問一次——
@@ -976,78 +1833,77 @@ async def guarded_generate(
             result = await generate_fn(**call_kwargs)
         retry_feedback = ""
 
+        # 2026-09-13稽核（使用者提案，manual_test_real_normal_baseline.py
+        # 實測抓到「打地鼠」現象後補）：下面這一長串檢查原本是「命中第一條
+        # 就把 retry_feedback 設成那一條的訊息、直接 continue」，後面的檢查
+        # 完全沒機會執行——導致模型每次重試只拿到「上一次踩到哪一條」，看
+        # 不到「這次生成同時還踩了哪些其他規則」。實測重播真實案例發現這樣
+        # 會在幾條規則之間循環打轉（例如 attempt0 踩空泛套語、attempt1 改好
+        # 空泛卻踩超字數、attempt2 改短卻變成複誦、attempt3 改掉複誦又繞回
+        # 空泛套語），4次重試在同一批問題裡打轉、沒有真正朝「同時都通過」
+        # 收斂，白白燒光重試次數退回保底句。
+        #
+        # 改成：這裡到 check_format_rules 為止的每一條檢查都改成「收集」進
+        # violations 這個清單（(違規代號, retry_feedback文字, 是否可安全
+        # 只鎖定question重打) 三元組），全部檢查完才一次性組合所有訊息、
+        # 一次判斷是否要重試——模型每次重試都能看到「這次生成同時踩到的
+        # 全部規則」，不會顧此失彼。這不影響「有沒有要重試」這個結果本身
+        # （只要清單非空就會重試，跟原本邏輯相同），只影響「retry_feedback
+        # 裡看不看得到完整資訊」。
+        #
+        # 機械式修復（repair_scene_text_question／repair_double_question）
+        # 維持原本在檢查序列中間直接修正result／區域變數的做法，不算進
+        # violations清單——它們修好了就不用燒重試次數，這正是原本設計
+        # mechanical repair 的目的，這次整併不改變這件事。
+        #
+        # question_only_retry_fn 的鎖定語意：只有 treats_image_as_real_place
+        # 跟 is_yesno_question 這兩條純粹只查 question_text 本身，才標記為
+        # 「question-only safe」；其餘檢查（含 check_format_rules 裡不屬於
+        # _QUESTION_ONLY_FORMAT_RULES 的規則）一律不安全，只要 violations
+        # 清單裡出現任何一條不安全的規則，就解鎖整包重新生成——跟各條規則
+        # 原本個別的鎖定判斷邏輯一致，只是收集时机延後到全部檢查完之後。
+        violations: list[tuple[str, str, bool]] = []
+
         # 不論這位長者有沒有設禁忌詞，都要擋「把AI示意圖當成長者真的去過/
         # 認得的地方」這個問題模式（question_5w1h.txt 有寫但本地模型常常
         # 沒遵守，見 treats_image_as_real_place 上方註解）。
         question_text = result.get("question", "")
         if treats_image_as_real_place(question_text):
             logger.warning(
-                f"[ResponseGuard] 問題把AI示意圖當成真實地點: {question_text!r}，"
-                f"重新生成 (attempt={attempt})"
+                f"[ResponseGuard] 問題把AI示意圖當成真實地點: {question_text!r}"
             )
-            retry_feedback = (
+            violations.append(("image_as_real_place", (
                 f"上一次的問題「{question_text}」把AI生成的示意畫面當成長者真的去過、"
                 "認得的特定地方（用「有沒有」「是不是」「認得」「熟不熟悉」等語氣要長者"
                 "確認自己是否認識/去過/熟悉這個地方）。長者不可能認得剛生成的示意圖，"
                 "這樣問只會讓他困惑。這次請把畫面元素當成某一類經驗、某一種場景的引子，"
                 "改問這一類經驗的普遍情形，不要問長者對眼前這個特定畫面熟不熟悉、認不認得。"
-            )
-            # 這條規則只檢查 question_text，跟其他欄位（例如承接語）無關，
-            # 可以安全鎖定其餘欄位、下一輪只重生 question（見 question_only_
-            # retry_fn 參數說明）。
-            if question_only_retry_fn is not None:
-                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
-            attempt += 1
-            continue
+            ), True))
 
         # 更通用的是非題檢查（見 is_yesno_question 上方註解）：即使用「這樣的」
         # 泛稱逃過上面那條檢查，只要整句仍是「有/沒有」「是/不是」型的是非題，
         # 一樣擋下來重新生成。
         if is_yesno_question(question_text):
-            logger.warning(
-                f"[ResponseGuard] 問題是是非題: {question_text!r}，"
-                f"重新生成 (attempt={attempt})"
-            )
-            retry_feedback = (
+            logger.warning(f"[ResponseGuard] 問題是是非題: {question_text!r}")
+            violations.append(("yesno_question", (
                 f"上一次的問題「{question_text}」是是非題，只能回答「是/不是」或「有/沒有」。"
                 "這次請改成真正開放式的問題，不要用「嗎」結尾，也不要用「有沒有」「是不是」"
                 "「會不會」「認不認得」「熟不熟悉」這類詞（「A還是B」的二選一問法除外）。"
-            )
-            # 理由同上：只檢查 question_text，可以安全鎖定其餘欄位。
-            if question_only_retry_fn is not None:
-                locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
-            attempt += 1
-            continue
+            ), True))
 
         # scene_text_addresses_elder 這條檢查 2026-08-17 稽核後從這裡移除，
-        # 見該函式上方註解的retired說明——現在唯一還會產生scene_text欄位的
-        # 兩支函式（_generate_open_followup／_generate_supplement_question，
-        # 也就是STEP2/STEP3的承接語）本身的prompt都明確要求「稱呼長者一律
-        # 用『你』」「具體呼應長者剛才說的內容」，這條檢查對它們來說100%是
-        # 攔錯人（實測案例：「聽你這麼一說，大家在院子裡打鬧的樣子，應該很
-        # 有趣吧」這種正常呼應長者的承接語被誤擋）。真正該防的「把長者寫成
-        # 站在AI示意圖裡」這個情境，在_generate_image_reveal_reaction改用
-        # reaction_text當key之後就已經不會再命中scene_text這個key了。
-        scene_text_val = result.get("scene_text", "")
-
-        # 場景文字不能把畫面講成「這是一幅畫/示意圖」，用後設視角拉開跟長者的
-        # 距離（見 scene_text_frames_as_artwork 上方註解）。只查 scene_text，
-        # 理由同上一個檢查。
-        if scene_text_frames_as_artwork(scene_text_val):
-            logger.warning(
-                f"[ResponseGuard] 場景文字把畫面講成一幅畫/示意圖: {scene_text_val!r}，"
-                f"重新生成 (attempt={attempt})"
-            )
-            retry_feedback = (
-                f"上一次的場景文字「{scene_text_val}」把畫面講成「一幅畫」「示意圖」，"
-                "用後設視角在介紹一件作品，會讓長者覺得有距離感。這次請直接沉浸式描述"
-                "畫面裡的場景本身（例如直接寫「礦坑入口處，煤炭散落一地」），不要提到"
-                "「畫」「畫作」「插畫」「示意圖」這類詞。"
-            )
-            # 理由同上：查的是承接語／場景文字欄位，解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+        # 見該函式上方註解的retired說明。2026-09-07起STEP2/STEP3
+        # （_generate_open_followup／_generate_supplement_question）也不再
+        # 產生「scene_text」這個key（不再生成承接語，見 orchestrator.py
+        # 該次改動說明）——這個系統裡已經沒有任何 generate_fn 會回傳
+        # "scene_text" 這個 key 了。原本掛在這裡、只查 scene_text_val 的
+        # scene_text_frames_as_artwork（場景文字把畫面講成一幅畫/示意圖）
+        # 檢查沒有跟著整個刪掉——那個失效模式（模型把 scene_composition
+        # 構圖參考的殘留語感講成「一幅水彩畫描繪了...」）在唯一還會用到
+        # scene_composition 的 _generate_image_reveal_reaction／_generate_
+        # quick_end_recap（reaction_text）身上一樣可能發生，這條檢查改到
+        # 下面跟 is_generic_acknowledgment 等檢查共用的 ack_check_text
+        # （reaction_text）上，不再查已經永遠是空字串的 scene_text_val。
 
         # 同樣不論有沒有設禁忌詞：擋「原句照抄 question_5w1h.txt 範例」，
         # 這種輸出可能跟這次真正的畫面元素對不上（見 echoes_prompt_example 上方註解）。
@@ -1056,19 +1912,31 @@ async def guarded_generate(
         )
         if echoed_field:
             logger.warning(
-                f"[ResponseGuard] {echoed_field} 原句照抄了 prompt 範例: "
-                f"{result[echoed_field]!r}，重新生成 (attempt={attempt})"
+                f"[ResponseGuard] {echoed_field} 原句照抄了 prompt 範例: {result[echoed_field]!r}"
             )
-            retry_feedback = (
+            violations.append(("echoed_prompt_example", (
                 f"上一次的輸出「{result[echoed_field]}」原封不動照抄了 prompt 裡的範例句子，"
                 "沒有根據這次真正的【眼前畫面元素】與長者資料生成。這次請根據這次實際提供的"
                 "資料重新生成全新內容，不要使用範例裡的地點、物件或字句。"
+            ), False))
+
+        # 同一種「照抄範例」問題的另一種樣貌：模型把範例裡示範格式用的
+        # 「〇〇」佔位符號本身抄進真正要念給長者聽的內容（見
+        # leaks_placeholder_marker 上方註解），不是照抄整句範例、而是連
+        # 示範用的空格符號都沒填就直接輸出。
+        placeholder_field = next(
+            (k for k in text_keys if leaks_placeholder_marker(result.get(k, ""))), None
+        )
+        if placeholder_field:
+            logger.warning(
+                f"[ResponseGuard] {placeholder_field} 把範例佔位符號「〇」本身抄進輸出: "
+                f"{result[placeholder_field]!r}"
             )
-            # echoed_field 可能是 question 以外的欄位（例如承接語），不能排除
-            # 是被鎖定的欄位照抄範例，解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+            violations.append(("leaked_placeholder", (
+                f"上一次的輸出「{result[placeholder_field]}」把prompt範例裡示範格式用的"
+                "「〇〇」佔位符號本身直接抄進來，沒有換成長者這次實際講出的具體內容。"
+                "這次請換成長者這次真的提到的名稱或內容，不能出現「〇」這個字。"
+            ), False))
 
         # 生成內容出現範例句專屬人名「阿珠姐」，但這次真實資料裡沒有這個人
         # （見 leaks_example_person_name 上方註解）——combined 查全部 text_keys
@@ -1083,21 +1951,43 @@ async def guarded_generate(
         if leaks_example_person_name(combined_for_name_check, real_context):
             logger.warning(
                 f"[ResponseGuard] 輸出提到範例人名「阿珠姐」，但這次長者資料"
-                f"裡沒有這個人: {combined_for_name_check!r}，重新生成 (attempt={attempt})"
+                f"裡沒有這個人: {combined_for_name_check!r}"
             )
-            retry_feedback = (
+            violations.append(("leaked_example_name", (
                 f"上一次的輸出「{combined_for_name_check}」提到了「阿珠姐」，但這次長者"
                 "實際提供的資料裡完全沒有這個人——這是把 prompt 裡範例句的示範人名"
                 "誤植成真實內容了。這次請完全根據這次真正的長者資料重新生成，不要"
                 "使用「阿珠姐」這個名字，也不要使用範例句裡的其他地點、物件或字句。"
-            )
-            # 名字可能出現在承接語或問題任一欄位，不能排除是被鎖定的欄位造成，
-            # 解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+            ), False))
 
-        # 承接語／場景文字不能是空泛套語，沒有具體呼應長者剛才說的內容
+        # 用長者本名（而非「你」）直接稱呼長者——2026-09-09稽核（實測發現）：
+        # _generate_closing 的 user_content 本來就會放【長者資料】姓名欄位供
+        # 模型參考背景，但模型有時候會把這個姓名直接當成稱呼詞用在收尾語裡
+        # （例如「陳老先生，你今天跟我們分享了...」），這是很多通用聊天助理
+        # 學到的「用對方名字稱呼＝個人化、友善」的習慣，但跟這裡的角色守則
+        # 「稱呼長者一律用『你』，語氣像老朋友聊天」正好相反——老朋友聊天不會
+        # 一直用姓名+敬稱稱呼對方，這樣念出來反而更像客服應對的正式稱呼。
+        # scene_text_addresses_elder（上方定義）本來就有查長者本名的邏輯，但
+        # 那條規則設計時鎖定的是「長者被寫進生成圖片場景裡」這個問題，明文
+        # 排除了 closing_text／reaction_text 這類本來就該直接對長者說話的
+        # 欄位；這裡是同一個「姓名誤用」根源、但完全不同的失效模式（稱呼方式
+        # 而非場景敘述視角），所以另外用 combined_for_name_check（上面
+        # leaks_example_person_name 已經算好，含所有 text_keys 欄位）獨立檢查，
+        # 不受那條規則的排除範圍限制。
+        elder_name = (generate_kwargs.get("user") or {}).get("name", "")
+        if elder_name and name_used_as_direct_address(combined_for_name_check, elder_name):
+            logger.warning(
+                f"[ResponseGuard] 用長者本名「{elder_name}」稱呼，未改用「你」: "
+                f"{combined_for_name_check!r}"
+            )
+            violations.append(("name_direct_address", (
+                f"上一次的輸出「{combined_for_name_check}」直接用長者的姓名"
+                f"「{elder_name}」當稱呼詞。稱呼長者一律用「你」，不要用姓名或"
+                "任何敬稱——這樣念出來會像客服應對的正式稱呼，不像老朋友聊天。"
+                "這次請把提到姓名的地方全部改成「你」。"
+            ), False))
+
+        # 承接語不能是空泛套語，沒有具體呼應長者剛才說的內容
         # （見 is_generic_acknowledgment 上方註解）。
         #
         # 2026-08稽核：這裡原本只查 scene_text_val（寫死 "scene_text" 這個
@@ -1105,28 +1995,133 @@ async def guarded_generate(
         # 用的 "reaction_text" key完全沒被這條規則覆蓋到——那兩支函式的任務
         # 說明明明也要求「不能只是空泛的稱讚」（例如 _generate_quick_end_recap
         # 明講「不能只是空泛的稱讚（例如不寫「謝謝你告訴我這些」...」），卻沒有
-        # 對應的事後防護，是漏放。改成 scene_text_val 為空時退回讀 reaction_text
-        # ——不用像 check_format_rules 那樣完整迭代整個 text_keys，因為
-        # closing_text／emotional_text 的核心內容本來就常常合理包含「謝謝你的
-        # 分享」這類語意（收尾語、情緒支持的本質就是要感謝/肯定），套用這條
-        # 規則會造成大量誤判，只有 reaction_text 跟 scene_text 一樣是「呼應
-        # 長者剛才說的內容」性質的承接語，才適合共用同一條檢查。
-        ack_check_text = scene_text_val or result.get("reaction_text", "")
-        if is_generic_acknowledgment(ack_check_text):
+        # 對應的事後防護，是漏放。closing_text／emotional_text 的核心內容本來
+        # 就常常合理包含「謝謝你的分享」這類語意（收尾語、情緒支持的本質就是
+        # 要感謝/肯定），套用這條規則會造成大量誤判，只有 reaction_text 是
+        # 「呼應長者剛才說的內容」性質的承接語，才適合共用下面這組檢查。
+        # STEP2/3 的 _generate_open_followup／_generate_supplement_question
+        # 也回傳 scene_text（承接語），跟 reaction_text 一樣要受這幾條規則
+        # 保護；兩個key不會同時非空（每個generate_fn只回傳其中一個），or一下即可。
+        # skip_ack_checks=True 時（見上方參數說明：reaction_text 是固定
+        # 模板，不是LLM現寫的），強制清空成空字串——下面整組規則的每一條
+        # 函式本身都有「輸入是空字串就不算違規」的防呆，清空後這組規則
+        # 會全部自然跳過，不用另外包一層if判斷每一條規則。
+        ack_check_text = (
+            "" if skip_ack_checks
+            else result.get("reaction_text") or result.get("scene_text", "")
+        )
+
+        # 2026-09-14稽核（真實session實測抓到）：closing_text／emotional_text
+        # 這類欄位「天生不會被指派進 ack_check_text」，原意是讓
+        # is_generic_acknowledgment／echo 這類「有沒有呼應長者剛才那句話」
+        # 性質的規則不要誤判 closing_text 合理包含的「謝謝你的分享」語意
+        # （見上方2026-08稽核），但這個排除範圍不小心連 AI自稱想起／冒用
+        # 經歷這兩條規則也一起排除掉了——這兩條跟「像不像承接語」完全無關，
+        # AI不該自稱有任何記憶，不管是在承接語、收尾語、還是情緒回應裡講
+        # 出來都一樣不該發生。真實session連續兩次收尾語出現「讓我也想起了
+        # 小時候媽媽煮飯的味道」「我們一起做料理的過程」這種明顯冒用經歷的
+        # 內容，就是因為從來沒被這兩條規則檢查過。這裡另外算一份只給這兩條
+        # 規則用的檢查對象，涵蓋 closing_text／emotional_text，其餘規則
+        # （too_long／generic／echo／is_question等）維持只查 ack_check_text
+        # 不受影響。
+        memory_check_text = (
+            ""
+            if skip_ack_checks
+            else ack_check_text
+            or result.get("closing_text", "")
+            or result.get("emotional_text", "")
+        )
+        memory_check_label = (
+            "承接語" if ack_check_text
+            else "收尾語" if result.get("closing_text")
+            else "情緒回應" if result.get("emotional_text")
+            else "承接語"
+        )
+
+        # 承接語／場景文字超過字數上限（見 ack_text_too_long 上方註解）。
+        ack_over_length = ack_text_too_long(ack_check_text)
+        if ack_over_length is not None:
             logger.warning(
-                f"[ResponseGuard] 承接語是空泛套語: {ack_check_text!r}，"
-                f"重新生成 (attempt={attempt})"
+                f"[ResponseGuard] 承接語超過48字（實際{ack_over_length}字）: {ack_check_text!r}"
             )
-            retry_feedback = (
+            violations.append(("ack_too_long", (
+                f"上一次的承接語「{ack_check_text}」共{ack_over_length}字，明顯超過"
+                "30字目標太多。這次請把這句話縮短到30字左右（1-2句），可以拿掉"
+                "不影響意思的修飾詞，保留最能具體呼應長者剛才說的內容的部分就好。"
+            ), False))
+
+        # 承接語把畫面講成「這是一幅畫/示意圖」（見 scene_text_frames_as_
+        # artwork 上方註解），跟上面 is_generic_acknowledgment 共用同一組
+        # ack_check_text。
+        if scene_text_frames_as_artwork(ack_check_text):
+            logger.warning(f"[ResponseGuard] 承接語把畫面講成一幅畫/示意圖: {ack_check_text!r}")
+            violations.append(("ack_frames_artwork", (
+                f"上一次的承接語「{ack_check_text}」把畫面講成「一幅畫」「示意圖」，"
+                "用後設視角在介紹一件作品，會讓長者覺得有距離感。這次請直接沉浸式描述"
+                "畫面裡的場景本身（例如直接寫「礦坑入口處，煤炭散落一地」），不要提到"
+                "「畫」「畫作」「插畫」「示意圖」這類詞。"
+            ), False))
+
+        if is_generic_acknowledgment(ack_check_text):
+            logger.warning(f"[ResponseGuard] 承接語是空泛套語: {ack_check_text!r}")
+            violations.append(("ack_generic", (
                 f"上一次的承接語「{ack_check_text}」是千篇一律的空泛套語，沒有具體"
                 "呼應長者剛才說的內容（提到誰、提到什麼事）。這次請具體引用長者剛才"
                 "說的話裡提到的人事物，例如「聽起來那段跟○○一起做工的日子很熱鬧呢」"
                 "這種寫法，不要用套語帶過。"
+            ), False))
+
+        # AI自稱「(讓)我想起/回想起」了什麼——見 ack_claims_recollection
+        # 上方2026-09-14稽核：這個特定措辭下面的 ai_claims_personal_memory_llm
+        # LLM判斷抓不穩（真實session連續2輪放行），改用規則比對免費先擋，
+        # 不管 skip_ack_memory_check 有沒有設（那個參數只是省下面LLM那次
+        # 呼叫，這條規則比對本來就不用呼叫LLM，一律都要查）。
+        if ack_claims_recollection(memory_check_text):
+            logger.warning(f"[ResponseGuard] {memory_check_label}疑似AI自稱想起了什麼: {memory_check_text!r}")
+            violations.append(("ack_claims_recollection", (
+                f"上一次的{memory_check_label}「{memory_check_text}」寫了「(讓)我想起」"
+                "這類措辭，等於AI自稱擁有一段屬於自己的記憶——AI在這段對話裡只是"
+                "聆聽者，沒有自己的人生經歷，不能說任何事「讓我想起」了什麼。這次"
+                "請把「我」的部分改成單純表達你聽完之後當下的情緒反應（例如「我也"
+                "覺得很溫暖」），不要用「想起」這個字。"
+            ), False))
+
+        # 承接語／場景文字幾乎整段複誦長者剛才那句話，不是用自己的話轉述
+        # （見 scene_text_echoes_elder_response 上方註解）——跟上面
+        # is_generic_acknowledgment 是同一類「承接語沒有盡到承接語該做的事」
+        # 問題，只是失效方向相反（一個是完全不呼應、一個是原話照搬），放在
+        # 一起檢查。
+        echo_elder_response_val = generate_kwargs.get("elder_response", "")
+        if scene_text_echoes_elder_response(ack_check_text, echo_elder_response_val):
+            logger.warning(
+                f"[ResponseGuard] 承接語幾乎整段複誦長者原話: {ack_check_text!r}"
+                f"（長者原話: {echo_elder_response_val!r}）"
             )
-            # 這條規則查的正是承接語欄位本身，解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+            violations.append(("ack_echoes_elder", (
+                f"上一次的承接語「{ack_check_text}」幾乎是把長者剛才說的話"
+                f"「{echo_elder_response_val}」整段原封不動複誦一次，只是加了"
+                "「你說」之類的前綴——這不是真正的回應，長者會覺得AI只是把自己"
+                "剛講的話念回來，沒有真的在聽。這次請用自己的話簡短轉述或給出"
+                "反應（例如點出這件事讓人感覺到的心情、或具體挑其中一個細節"
+                "回應），不要把長者整句話原封不動照抄一遍。"
+            ), False))
+
+        # 承接語完全沒呼應長者這輪的話，反而把畫面元素唸出來拼句（見
+        # scene_text_ignores_elder_for_scene_elements 上方註解）——跟上面
+        # echo檢查是相反方向的失效，一個是抄過頭、一個是完全沒接住。
+        if scene_text_ignores_elder_for_scene_elements(
+            ack_check_text, echo_elder_response_val, generate_kwargs.get("scene_elements"),
+        ):
+            logger.warning(
+                f"[ResponseGuard] 承接語沒呼應長者這輪的話，改成描述畫面元素: "
+                f"{ack_check_text!r}（長者原話: {echo_elder_response_val!r}）"
+            )
+            violations.append(("ack_ignores_elder", (
+                f"上一次的承接語「{ack_check_text}」完全沒有呼應長者剛才這輪"
+                f"實際說的話「{echo_elder_response_val}」，反而把畫面元素描述"
+                "了一遍，讀起來像沒在聽長者剛剛說的內容。這次請具體回應長者"
+                "這輪這句話本身（提到誰、提到什麼事），不要繞回去描述畫面。"
+            ), False))
 
         # 承接語／場景文字本身不能被寫成問句（見 scene_text_is_a_question
         # 上方註解）。跟上面 is_generic_acknowledgment 共用同一組 scene_text／
@@ -1137,41 +2132,76 @@ async def guarded_generate(
         # 回答的問題，曾經是這條規則唯一的例外（見git歷史）——使用者決定
         # 把這個分類併入「有差異」分類，不再追問「哪裡不一樣」，所有分類的
         # 承接語現在都不該是問句，這條規則不再需要例外。
-        if scene_text_is_a_question(ack_check_text):
-            logger.warning(
-                f"[ResponseGuard] 承接語被寫成問句: {ack_check_text!r}，"
-                f"重新生成 (attempt={attempt})"
-            )
-            retry_feedback = (
-                f"上一次的承接語「{ack_check_text}」本身被寫成一句問句（用「呢」"
-                "「嗎」結尾或直接用問號收尾）。承接語的工作是接住長者剛才的話，"
-                "不是提問，真正的提問要留給緊接著的「問題：」欄位，不然長者會"
-                "被連問兩次、語氣也會顯得矛盾。這次請把承接語改寫成直述句"
-                "（不要用「呢」「嗎」或問號收尾），該問的內容留到「問題：」"
-                "欄位再問。"
-            )
-            # 這條規則查的正是承接語欄位本身，解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+        #
+        # 這是機械式修復（跟 repair_double_question 同一類），不算進
+        # violations——修得回來就不用燒重試次數；修不回來才算違規、加進
+        # violations 清單。
+        # 2026-09-14稽核（真實session實測抓到）：查的對象改成 memory_check_
+        # text，理由跟上面冒用經歷那兩條規則同一批稽核——closing_text從沒
+        # 被這條規則檢查過，真實session抓到收尾語本身被寫成問句（「...你
+        # 現在有什麼正向的情緒和感受呢？」），跟後面獨立的question欄位
+        # 兜在一起變成連問兩個問題，長者聽起來會困惑。
+        if check_scene_text_question and scene_text_is_a_question(memory_check_text):
+            repaired_ack = repair_scene_text_question(memory_check_text)
+            if repaired_ack is not None:
+                # 機械修得回來（確認型問句，拿掉疑問語尾詞/標點就是完整
+                # 直述句）：直接修正、不燒重試次數，見 repair_scene_text_
+                # question 上方稽核說明。修正後的文字要繼續走下面幾條也
+                # 查 ack_check_text 的規則（承接語跟問題重複／搶答為什麼），
+                # 所以連同 result 跟這兩個變數本身一起更新。
+                ack_key = (
+                    "reaction_text" if result.get("reaction_text")
+                    else "scene_text" if result.get("scene_text")
+                    else "closing_text" if result.get("closing_text")
+                    else "emotional_text"
+                )
+                logger.info(
+                    f"[ResponseGuard] {memory_check_label}被寫成問句，機械修復成直述句: "
+                    f"{memory_check_text!r} → {repaired_ack!r}"
+                )
+                result[ack_key] = repaired_ack
+                ack_check_text = repaired_ack if ack_key in ("reaction_text", "scene_text") else ack_check_text
+                memory_check_text = repaired_ack
+            else:
+                logger.warning(f"[ResponseGuard] {memory_check_label}被寫成問句: {memory_check_text!r}")
+                violations.append(("ack_is_question", (
+                    f"上一次的{memory_check_label}「{memory_check_text}」本身被寫成一句問句"
+                    "（用「呢」「嗎」結尾或直接用問號收尾）。這個欄位的工作是接住長者剛才的話，"
+                    "不是提問，真正的提問要留給緊接著的「問題：」欄位，不然長者會"
+                    f"被連問兩次、語氣也會顯得矛盾。這次請把{memory_check_label}改寫成"
+                    "直述句（不要用「呢」「嗎」或問號收尾），該問的內容留到「問題：」"
+                    "欄位再問。"
+                ), False))
+
+        # 2026-09-14稽核（使用者提出）：收尾語／情緒回應只要句子裡出現
+        # 「？」就整句不合格，不只是「結尾被寫成問句」才算——上面
+        # scene_text_is_a_question 只抓結尾（呢/嗎/？收尾），問號出現在
+        # 句子中間（例如「你今天過得如何？很期待聽你說」這種先問一句再
+        # 接別的話）不會被那條規則攔到，但一樣會讓長者聽起來像被問了
+        # 問題、不知道該不該回答。只套用在收尾語／情緒回應這兩個欄位——
+        # scene_text／reaction_text 維持原本「只查結尾」的規則不變，這兩個
+        # 欄位性質不同：收尾語是療程真正收尾、安撫情緒的最後一句話，不該
+        # 帶有任何提問語氣，跟STEP2/3那種「承接語+問題」還可以稍微鬆一點
+        # 的情境不一樣。
+        if memory_check_label in ("收尾語", "情緒回應") and ("？" in memory_check_text or "?" in memory_check_text):
+            logger.warning(f"[ResponseGuard] {memory_check_label}裡出現問號: {memory_check_text!r}")
+            violations.append(("ack_contains_question_mark", (
+                f"上一次的{memory_check_label}「{memory_check_text}」裡面出現了問號，"
+                "不管問號在句子開頭、中間還是結尾都不行——這個欄位不能帶有任何"
+                "提問語氣，真正的提問留給緊接著的「問題：」欄位。這次請把問號跟"
+                "帶著問句語氣的部分整個拿掉或改寫成直述句。"
+            ), False))
 
         # 承接語跟問題文字幾乎一模一樣（見 scene_text_duplicates_question
         # 上方註解）。跟上面兩條共用同一組 scene_text／reaction_text 判準理由。
         if scene_text_duplicates_question(ack_check_text, question_text):
-            logger.warning(
-                f"[ResponseGuard] 承接語跟問題文字重複: {ack_check_text!r}，"
-                f"重新生成 (attempt={attempt})"
-            )
-            retry_feedback = (
+            logger.warning(f"[ResponseGuard] 承接語跟問題文字重複: {ack_check_text!r}")
+            violations.append(("ack_question_duplicate", (
                 f"上一次的輸出把承接語跟問題都寫成同一句「{ack_check_text}」。"
                 "這是兩個不同的欄位：承接語負責用直述句呼應長者剛才說的話，"
                 "問題負責問一個長者還沒被問過的新方向，兩者內容不能相同。"
                 "這次請把這兩個欄位分開寫成不同的內容。"
-            )
-            # 兩個欄位都牽涉在違規判準裡，不能排除是被鎖定的欄位造成，解鎖。
-            locked_fields = None
-            attempt += 1
-            continue
+            ), False))
 
         # 承接語先把「為什麼」的答案講成既定事實，問題又問一次同一個為
         # 什麼（見 scene_text_preempts_why_question 上方註解）。跟上面
@@ -1180,21 +2210,16 @@ async def guarded_generate(
         if scene_text_preempts_why_question(ack_check_text, question_text):
             logger.warning(
                 f"[ResponseGuard] 承接語已經斷定原因、問題卻又問一次為什麼: "
-                f"承接語={ack_check_text!r} 問題={question_text!r}，"
-                f"重新生成 (attempt={attempt})"
+                f"承接語={ack_check_text!r} 問題={question_text!r}"
             )
-            retry_feedback = (
+            violations.append(("ack_preempts_why", (
                 f"上一次的承接語「{ack_check_text}」已經用「是為了／是因為」"
                 f"把原因講成既定事實，但問題「{question_text}」卻又問一次"
                 "「為什麼」——長者會困惑：原因不是你剛剛才講的嗎，怎麼又問"
                 "一次？這次請不要在承接語裡自己編一個原因當事實講出來，"
                 "承接語只呼應長者已經明確說過的內容（例如提到的人事物本身），"
                 "原因留給「問題」欄位去問，不要在承接語裡先講答案。"
-            )
-            # 兩個欄位都牽涉在違規判準裡，不能排除是被鎖定的欄位造成，解鎖。
-            locked_fields = None
-            attempt += 1
-            continue
+            ), False))
 
         # 「判斷依據」欄位編造了長者沒說過的話（見 judgment_evidence_unsupported
         # 上方註解）。只有 _generate_image_reveal_reaction 這類有「判斷依據」
@@ -1205,21 +2230,16 @@ async def guarded_generate(
         if judgment_evidence_unsupported(evidence_val, elder_response_val):
             logger.warning(
                 f"[ResponseGuard] 判斷依據引用了長者沒說過的話: {evidence_val!r}"
-                f"（長者原話: {elder_response_val!r}），重新生成 (attempt={attempt})"
+                f"（長者原話: {elder_response_val!r}）"
             )
-            retry_feedback = (
+            violations.append(("judgment_evidence_unsupported", (
                 f"上一次的「判斷依據」欄位寫「{evidence_val}」，但長者這次的原話是"
                 f"「{elder_response_val}」，裡面根本沒有這些內容——不能引用長者沒"
                 "說過的話當依據。這次請只根據長者這次實際說出的字詞判斷；如果長者"
                 "的反應內容很簡短、看不出明確的差異或情緒線索（例如只有語助詞、"
                 "簡短回應），判斷依據就老實寫「反應內容簡短，看不出明確線索」，"
                 "不要編造長者沒說過的話。"
-            )
-            # 判斷依據影響後面分類跟承接語的推理，不能排除是被鎖定的欄位造成，
-            # 解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+            ), False))
 
         # 分類「1」（肯定/一致）但判斷依據或長者原話裡卻出現「不像」這類
         # 否定相似詞——證據寫對了、分類數字卻選反，見
@@ -1232,47 +2252,85 @@ async def guarded_generate(
             logger.warning(
                 f"[ResponseGuard] 分類={classification_val!r}（肯定/一致）但判斷"
                 f"依據或長者原話裡有否定相似詞: 判斷依據={evidence_val!r} "
-                f"長者原話={elder_response_val!r}，重新生成 (attempt={attempt})"
+                f"長者原話={elder_response_val!r}"
             )
-            retry_feedback = (
+            violations.append(("classification_contradicts_negation", (
                 f"上一次判成分類1（長者覺得圖跟記憶一致），但長者這次的原話"
                 f"「{elder_response_val}」裡明確出現「不像」「不一樣」這類否定"
                 "相似詞，代表長者其實是在講差異，不是肯定——這次請重新完整"
                 "讀一遍長者的原話，如果裡面有明確的否定相似詞，就不能判成"
                 "分類1，要改判成分類2（有差異）。"
-            )
-            # 分類影響後面承接語的推理跟措辭，不能排除是被鎖定的欄位造成，
-            # 解鎖退回整包重新生成。
-            locked_fields = None
-            attempt += 1
-            continue
+            ), False))
 
         # classification_lacks_discrepancy_evidence 已 retired，不再掛在這裡
         # ——見該函式上方 2026-08-18 稽核說明（分類2、3合併後，原本只排除
         # 分類3的誤判風險，現在會出現在合併後的分類2身上）。
 
+        # 問題錨點跟長者上一句話無關的話題跳躍（見 question_anchor_unsupported
+        # 上方註解）。只有 STEP2/STEP3 的 generate_fn 有「anchor」欄位，其餘
+        # 沒有這個 key，result.get 拿到空字串，函式本身直接回 False，不受影響。
+        anchor_val = result.get("anchor", "")
+        if question_anchor_unsupported(
+            anchor_val, elder_response_val,
+            generate_kwargs.get("pre_image_detail", ""),
+            generate_kwargs.get("scene_elements"),
+        ):
+            logger.warning(f"[ResponseGuard] 問題錨點編造、找不到出處: {anchor_val!r}")
+            violations.append(("anchor_unsupported", (
+                f"上一次的「錨點」欄位寫「{anchor_val}」，但這個內容沒有出現在"
+                "長者剛才說的話、長者生圖前分享的內容，或眼前畫面元素裡——這是"
+                "自己編造、跟這次真實素材無關的話題（例如長者在講三杯雞，問題"
+                "卻突然問起滷豬腳）。這次請重新讀一遍【長者剛才說的話】，只根據"
+                "長者這次實際提到的具體人事物、或畫面元素本身出題，不要無中生"
+                "有一個新的具體事物。"
+            ), False))
+
+        # 「問題」欄位如果是「多個問號疊加子問題」，先嘗試機械式修復（見
+        # repair_double_question 上方稽核說明），不用等下面 check_format_
+        # rules 判定違規後才燒一次重試次數。修好之後仍要往下走 check_
+        # format_rules，讓修復後的文字接受其餘規則檢查（例如截斷後第一句
+        # 本身還是太長，一樣要被抓到）。這也是機械式修復，不算進violations。
+        repaired_question = repair_double_question(question_text)
+        if repaired_question is not None and repaired_question != question_text:
+            logger.info(
+                f"[ResponseGuard] 問題一次問兩件事（多個問號），機械修復成單一"
+                f"問題: {question_text!r} → {repaired_question!r}"
+            )
+            result["question"] = repaired_question
+            question_text = repaired_question
+
         # 格式/內容規則（too_long、double_question、memory_test、精確地名時間、
         # 要求描述畫面內容、已知用詞瑕疵，詳見 check_format_rules 上方註解）。
-        # 2026-08 稽核發現這裡原本直接用上面的 scene_text_val（寫死只讀 "scene_text"
-        # 這個 key），導致 closing_text／emotional_text 這類換了 key 名稱的欄位
-        # 從沒被「您/先/咱們/搭把手」等用詞檢查覆蓋到——改成組合 text_keys 裡除了
-        # question 以外的所有欄位，讓每一種 generate_fn 的非問題欄位都受到保護。
+        # check_format_rules 自己已經會一次收集完所有踩到的格式規則，這裡
+        # 把它的結果併進同一份 violations 清單，讓格式規則也能跟上面這些
+        # 內容規則一起在同一次retry_feedback裡回報。
         wording_check_text = "".join(result.get(k, "") for k in text_keys if k != "question")
-        format_rule, format_feedback = check_format_rules(question_text, wording_check_text)
-        if format_rule:
+        format_violations = check_format_rules(question_text, wording_check_text)
+        if format_violations:
+            format_rules = [code for code, _ in format_violations]
             logger.warning(
-                f"[ResponseGuard] 格式/內容規則違規({format_rule}): "
-                f"question={question_text!r} scene_text={scene_text_val!r}，重新生成 (attempt={attempt})"
+                f"[ResponseGuard] 格式/內容規則違規({', '.join(format_rules)}): "
+                f"question={question_text!r} 其他欄位={wording_check_text!r}"
             )
-            # 只有 _QUESTION_ONLY_FORMAT_RULES 裡的規則保證只查 question_text
-            # 本身（見該常數說明），其餘規則（nin/xian/zanmen等）查的是
-            # scene_text_val+question 的 combined，沒辦法排除是被鎖定的欄位
-            # 造成違規，一律解鎖。
-            if question_only_retry_fn is not None and format_rule in _QUESTION_ONLY_FORMAT_RULES:
+            all_question_only = all(code in _QUESTION_ONLY_FORMAT_RULES for code in format_rules)
+            for code, feedback in format_violations:
+                violations.append((code, feedback, all_question_only))
+
+        # 收集完上面全部規則，一次判斷是否要重試——只要有任何一條違規，
+        # 就把「這次生成同時踩到的所有規則」整理成一份retry_feedback一起
+        # 交給模型，不再是「命中第一條就走、其餘完全不檢查」（見本段落
+        # 開頭2026-09-13稽核）。
+        if violations:
+            codes = [code for code, _, _ in violations]
+            logger.warning(f"[ResponseGuard] 這次生成共踩到{len(violations)}條規則: {codes}，重新生成 (attempt={attempt})")
+            # 只有全部踩到的規則都標記為 question-only safe，才能安全鎖住
+            # 其餘欄位、下一輪只重生 question；任何一條不是，就解鎖整包
+            # 重新生成（跟各條規則原本個別的判斷邏輯一致）。
+            if question_only_retry_fn is not None and all(safe for _, _, safe in violations):
                 locked_fields = {k: v for k, v in result.items() if k not in ("question", "covered_w")}
             else:
                 locked_fields = None
-            retry_feedback = format_feedback
+            retry_feedback = "\n".join(feedback for _, feedback, _ in violations)
             attempt += 1
             continue
 
@@ -1305,7 +2363,67 @@ async def guarded_generate(
                 attempt += 1
                 continue
 
+        # AI冒用第一人稱、把長者的經歷講成自己的親身回憶——見
+        # ai_claims_personal_memory_llm 上方2026-09-13稽核說明：曾經因為
+        # 「每個attempt都查一次」太貴被拿掉，後來改成只在這裡（上面全部
+        # 格式/內容規則、taboo檢查都已經通過，準備真的return result的
+        # 這一刻）查一次，固定只多一趟LLM往返，不隨重試次數翻倍。
+        #
+        # 2026-09-14稽核：查的對象改成 memory_check_text（見上方
+        # ack_check_text 後面那段定義說明）——原本只查 ack_check_text
+        # （scene_text／reaction_text），closing_text／emotional_text完全
+        # 沒被這條規則保護過，真實session抓到收尾語出現「讓我也想起了
+        # 小時候媽媽煮飯的味道」這種明顯冒用經歷卻沒被攔下來，才補上。
+        #
+        # 2026稽核（實測抓到，嘗試擴大後撤回）：曾經改成也合併查
+        # question 欄位（抓到「那時候我們家通常都會一起去哪裡吃這些呢？」
+        # 這類真實案例），但問題欄位常見的「你們」「大家」集體代名詞讓這支
+        # LLM判斷穩定度明顯下降，補了system prompt後仍然誤判，誤判觸發的
+        # 重試把平均耗時拉回production現狀、退回保底句的比例也變高，划不
+        # 來，改回只查承接語——見 ai_claims_personal_memory_llm 上方同一則
+        # 稽核。question 欄位偶爾冒用經歷是還沒解決的已知缺口。
+        #
+        # skip_ack_memory_check：見上方參數說明，orchestrator.py 用
+        # ack_composer 算好承接語時，這句話已經在 compose_sentence 內部
+        # 查過同一件事，這裡再查一次是白工，呼叫端傳 True 跳過。
+        if memory_check_text and not skip_ack_memory_check:
+            claims_memory = await ai_claims_personal_memory_llm(
+                memory_check_text, echo_elder_response_val, llm_service,
+            )
+            if claims_memory:
+                logger.warning(f"[ResponseGuard] {memory_check_label}疑似AI冒用第一人稱經歷: {memory_check_text!r}")
+                retry_feedback = (
+                    f"上一次的{memory_check_label}「{memory_check_text}」疑似把長者的經歷"
+                    "講成AI自己的親身回憶、家人或童年/過去往事——AI在這段對話裡只是"
+                    "聆聽者，沒有自己的人生經歷，這些具體內容只能屬於長者本人。「我」"
+                    "只能用來表達你聽完之後當下的情緒反應（例如「我也覺得很溫暖」），"
+                    "不能延伸出具體的人生經歷、家人、童年往事。這次請把「我」的"
+                    "部分改成單純的情緒反應，或乾脆拿掉，不要編造屬於你自己的經歷。"
+                )
+                locked_fields = None
+                attempt += 1
+                continue
+
         return result
 
     logger.error(f"[ResponseGuard] 重試{max_retry}次仍違規，退回安全保底語句")
     return fallback
+
+
+# 2026-09-13稽核（使用者提案，實測後撤回）：曾經試過 race_guarded_generate——
+# 平行發出多份完全相同的 guarded_generate 呼叫（不改內部邏輯），取第一個
+# 做完的當結果，賭「這次會不會一次就通過檢查」的隨機性，只要有一份走運就
+# 不用等其他份重試完。獨立小規模實驗證實GPU確實有餘裕同時處理多個請求
+# （3個平行請求~9.7s，比3個循序請求~16.75s少約42%），但套進
+# manual_test_transition_speed.py 的完整流程實測後發現：對「內容特別薄、
+# 模型穩定答不好」的輸入（例如反覆用來壓力測試的「我們幾個小孩子都搶著
+# 顧火，怕肉烤焦被媽媽罵」），失敗機率不是獨立骰骰子——平行發出去的好幾份
+# 幾乎會同時各自踩雷、同時需要重試，等於好幾份一起搶同一張GPU、彼此拖慢
+# 對方，賭了好幾次卻沒有一次真正走運，反而比單一份循序執行更慢（實測
+# 「回合內話題延續判斷」平均耗時不減反增，21.32s vs 之前16~18s）。這個
+# 技巧的前提「每次嘗試失敗與否要有夠高的獨立變異性」對這類穩定答不好的
+# 輸入不成立，套用後淨效果是中性偏負（多花GPU資源、時間沒有變快），
+# 已經撤回、恢復成單一 guarded_generate。保留這段說明供之後參考——如果
+# 之後正式環境觀察到「大部分輸入其實答得出來、只有少數難答」這個分佈，
+# 這個技巧對那些「答得出來但偶爾運氣不好」的輸入仍然可能有幫助，只是
+# 不適合當作解決「這句話模型就是穩定答不好」這類案例的手段。

@@ -4,15 +4,8 @@
 import { useState } from "react"; // React 狀態管理
 import Link from "next/link"; // Next.js 的路由連結元件
 import type { Session, SessionRound, Case } from "@/lib/types"; // 引入型別定義
-
-
-// 情緒文字對應的顏色（適當 → 綠色，亢奮 → 紅色，焦躁 → 黃色，低落 → 灰色）
-const EMOTION_DOT: Record<string, string> = {
- 適當: "#34c759",
- 亢奮: "#fb2c36",
- 焦躁: "#f0c52c",
- 低落: "#888888",
-};
+import { EMOTION_COLORS, DIMENSION_COLORS, groupSignalsByDimension, reasonCaption } from "@/lib/emotionSignals";
+import { EmotionBar } from "@/components/EmotionBar";
 
 
 // 歷史活動報告元件，接收活動資料、個案資料、各回合紀錄
@@ -26,6 +19,7 @@ export function HistorySessionView({
  rounds: SessionRound[];
 }) {
  const [showModal, setShowModal] = useState(false);
+ const [expandedRoundId, setExpandedRoundId] = useState<string | null>(null);
  const heartRound = rounds.find((r) => r.type === "心得");
 
 
@@ -119,10 +113,14 @@ export function HistorySessionView({
 
        {/* 逐筆渲染每個回合卡片 */}
        {rounds.map((round) => {
-         const dotColor = EMOTION_DOT[round.emotion] ?? "#888";
+         const dotColor = EMOTION_COLORS[round.emotion] ?? "#888";
+         const hasReasoning = round.engagementPct != null && round.happinessPct != null && round.agitationPct != null;
+         const expanded = expandedRoundId === round.id;
+         const signalsByDimension = groupSignalsByDimension(round.signalCodes ?? []);
          return (
            // 白色圓角卡片，左右對齊內容
-           <div key={round.id} className="bg-white rounded-xl px-6 py-5 flex items-center justify-between">
+           <div key={round.id} className="bg-white rounded-xl overflow-hidden">
+           <div className="px-6 py-5 flex items-center justify-between">
 
 
              {/* 左側：類型標籤 + 秒數 + 場景名稱 + 長者回應 */}
@@ -148,7 +146,7 @@ export function HistorySessionView({
              </div>
 
 
-             {/* 右側：情緒指示燈 + 查看按鈕（僅第一筆） */}
+             {/* 右側：情緒指示燈 + 判斷依據展開按鈕 + 查看按鈕 */}
              <div className="flex items-center gap-5">
 
 
@@ -158,6 +156,21 @@ export function HistorySessionView({
                  {round.emotion}
                </span>
 
+               {hasReasoning && (
+                 <button
+                   type="button"
+                   onClick={() => setExpandedRoundId(expanded ? null : round.id)}
+                   className="flex items-center gap-1 bg-[#f9fafb] border border-[#e5e7eb] rounded-full px-3 py-1.5 text-[13px] text-[#555] hover:bg-[#f0f0f0] transition-colors"
+                 >
+                   判斷依據
+                   <svg
+                     viewBox="0 0 20 20" width="14" height="14" fill="none"
+                     style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .15s" }}
+                   >
+                     <path d="M5 7.5l5 5 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                   </svg>
+                 </button>
+               )}
 
                {round.type === "心得" ? (
                  <button
@@ -175,6 +188,18 @@ export function HistorySessionView({
                  </Link>
                )}
              </div>
+           </div>
+
+           {expanded && hasReasoning && (
+             <div className="bg-[#f9fafb] px-6 py-5 border-t border-[#eee] flex flex-col gap-3">
+               <p className="text-[12px] text-[#9aa1ab]">{reasonCaption(round.happinessPct!, round.agitationPct!)}</p>
+               <div className="flex gap-8 flex-wrap">
+                 <EmotionBar label="投入度" pct={round.engagementPct!} color={DIMENSION_COLORS.engagement} codes={signalsByDimension.engagement} dimension="engagement" />
+                 <EmotionBar label="臉部表情（正負向）" pct={round.happinessPct!} color={DIMENSION_COLORS.happiness} codes={signalsByDimension.happiness} dimension="happiness" />
+                 <EmotionBar label="肢體與語調（激動程度）" pct={round.agitationPct!} color={DIMENSION_COLORS.agitation} codes={signalsByDimension.agitation} dimension="agitation" />
+               </div>
+             </div>
+           )}
            </div>
          );
        })}
