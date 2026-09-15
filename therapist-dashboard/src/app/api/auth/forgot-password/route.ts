@@ -57,13 +57,21 @@ export async function POST(req: NextRequest) {
   `;
 
   try {
-    await getResend().emails.send({
+    const result = await getResend().emails.send({
       from: "Rememo <noreply@re-memo.com>",
       to: email,
       subject: "Rememo 密碼重設驗證碼",
       html: buildResetCodeEmail(code),
     });
-  } catch {
+    // Resend SDK 對 API 層級的錯誤（例如網域未驗證、from 位址不合法）不一定會
+    // throw，而是回在 result.error 裡——只 catch 沒檢查這個欄位的話，
+    // 這類錯誤會被完全吃掉、前端誤以為寄信成功。
+    if (result.error) {
+      console.error("[ForgotPassword] Resend 回傳錯誤:", result.error);
+      return NextResponse.json({ error: "驗證碼寄送失敗，請稍後再試" }, { status: 500 });
+    }
+  } catch (e) {
+    console.error("[ForgotPassword] 寄信例外:", e);
     return NextResponse.json({ error: "驗證碼寄送失敗，請稍後再試" }, { status: 500 });
   }
 
