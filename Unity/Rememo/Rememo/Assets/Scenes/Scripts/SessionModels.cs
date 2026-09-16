@@ -35,6 +35,14 @@ public class SessionStateData
     public int question_count;
     public int supplement_count;
     public string topic_category;
+    // 這場療程實際選定的主題（治療師 start_scene 指定，後端 start_round 用
+    // topic_override 蓋過病患預設興趣後存進這裡，見 app/routers/session.py
+    // SessionState.today_topic 說明）。跟這個 class 其餘欄位同一種坑——沒
+    // 宣告在這裡的話，Unity 反序列化時會把這個欄位丟掉，state 傳回後端時
+    // 自然也不含它，process_response 每次重新 get_user() 拿到的就會是病患
+    // 預設興趣，不是這場療程實際的主題，生圖時的「今日主題」因此跟長者
+    // 實際聊的話題對不上。
+    public string today_topic;
     // 2026-08-27稽核：跟這個 class 其餘欄位同一種坑——round 1 開場分類過
     // 這個主題適合哪些感官（見 app/orchestrator.py _classify_topic_senses），
     // 沒宣告在這裡的話，round 2/3 用 topic_senses 判斷「這個主題還有哪些
