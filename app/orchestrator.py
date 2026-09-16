@@ -2111,6 +2111,15 @@ class TherapyOrchestrator:
             "topic_category": category,  # 開場已分類過，後續問題生成需要時直接複用，不重複分類
             "topic_senses": topic_senses,  # 開場已分類過，後續感官追蹤需要時直接複用，不重複分類
             "cached_rag_memories": cached_rag_memories,  # 開場已撈過，fallback需要時直接讀
+            # process_response 每次都會重新呼叫 self.user_profile.get_user()
+            # 拿最新的 user dict，但那支函式回傳的 today_topic 只是「病患
+            # preferences 第一項」這個預設值（見 DBUserProfileClient.get_user
+            # 說明），不知道這場療程當初實際選的主題（治療師在 start_scene
+            # 指定、上面透過 topic_override 蓋掉的那個）。存進 state 讓
+            # process_response 讀到後蓋回去，不然長者才剛回答完的主題到了
+            # 生圖那一步又被換回病患的預設興趣，生出跟長者剛講的話對不上的
+            # 「今日主題」。
+            "today_topic": user["today_topic"],
         }
 
         return {
@@ -2203,6 +2212,11 @@ class TherapyOrchestrator:
             "cached_rag_memories": [],
             "pre_image_q1_answer": "",
             "pre_image_detail": pre_image_detail,
+            # user 這裡是 start_round 一開始就用 topic_override 蓋過的正確
+            # 版本（見該函式），round 2 期間 process_response 每次都會重新
+            # get_user() 拿到病患預設興趣、需要靠 state 存的這份蓋回去，
+            # 見 start_round 對應欄位的說明。
+            "today_topic": user["today_topic"],
         }
         result = await self._handle_image_reveal_answer(
             user, synthetic_state, last_elder_response, emotion,
@@ -2273,6 +2287,7 @@ class TherapyOrchestrator:
             "cached_rag_memories": [],
             "pre_image_q1_answer": "",
             "pre_image_detail": "",
+            "today_topic": user["today_topic"],
         }
         return {
             "user_name": user["name"],
@@ -2897,6 +2912,14 @@ class TherapyOrchestrator:
         user = await self.user_profile.get_user(user_id)
         if not user:
             raise ValueError(f"找不到使用者: {user_id}")
+        # get_user() 回傳的 today_topic 只是病患 preferences 第一項這個預設值
+        # （見 DBUserProfileClient.get_user 說明），不是這場療程實際選的主題
+        # ——start_round 當初用 topic_override 蓋過、存進 state["today_topic"]
+        # 的才是真正的主題，這裡要蓋回去，不然生圖時的「今日主題」會變回
+        # 病患預設興趣，跟長者這回合實際聊的話題兜不上（例如療程主題是
+        # 「過新年」，生圖卻寫成病患預設興趣「做料理」）。
+        if state.get("today_topic"):
+            user = {**user, "today_topic": state["today_topic"]}
 
         # ── 第三回合（closing）是單輪問答，長者這句回答直接結束本回合／整場
         # 療程，交給既有 _end_action 的 current_round>=3 分支（見
