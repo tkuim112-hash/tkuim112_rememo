@@ -726,6 +726,13 @@ class SessionState(BaseModel):
     # 範圍時直接複用，不用重複分類。同樣需要宣告在這裡才能透過 API 往返存活，
     # 理由同上面 question_count/supplement_count 的說明。
     topic_category: str | None = None
+    # 這場療程實際選定的主題（治療師 start_scene 指定，orchestrator.py
+    # start_round 用 topic_override 蓋過 DBUserProfileClient.get_user() 回傳
+    # 的病患預設興趣後存進這裡）。process_response 每次都會重新 get_user()，
+    # 拿到的又是那個預設值，要靠這個欄位存的正確主題蓋回去，不然生圖時的
+    # 「今日主題」會跟長者實際聊的話題對不上。同樣需要宣告在這裡才能透過
+    # API 往返存活，理由同上面 topic_category。
+    today_topic: str | None = None
     # 生圖前 Q1 開場時就對 today_topic 本身分類過適合哪些感官（見
     # orchestrator.py _classify_topic_senses、_SENSE_EXCLUDED_TOPIC_
     # CATEGORIES），供後續感官追蹤（covered_senses／skipped_senses）需要

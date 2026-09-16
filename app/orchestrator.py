@@ -1531,6 +1531,55 @@ def _backstop_what_copula(dimension: str | None, question_text: str) -> str | No
     return dimension
 
 
+# _classify_question_dimension 專用，跟 _backstop_what_copula 同一套「已知
+# 失效模式，靠關鍵詞規則直接覆蓋，不再賭模型這次判斷準不準」的做法，
+# 2026-09-14 依同一原則擴大到六個 W 維度都各自配一組不含糊的字面疑問詞：
+# 實測發現本地模型會把「你通常從哪裡開始準備晚餐呢？」這種字面上明顯
+# 在問地點的問題誤判成 Who（見 session 73916d4f round2 的實例：
+# target_w=Who，_generate_supplement_question 生出這句問地點的題目，
+# _classify_question_dimension 卻判成 Who，沒被攔下，導致這題跟本回合
+# 剛問過的「你當年煮晚餐給家人吃時，通常會在哪裡準備呢？」語意幾乎
+# 重複，長者聽起來像被問了兩次一樣的問題，Who 這個維度也從沒被真的
+# 問到）——這種「生成時說是要問A維度，模型卻順著長者的話問成明顯是
+# 別的維度B，核對時又剛好也判成A」的失效模式沒有理由只出現在
+# Where/Who 這一組，其他維度兩兩之間一樣可能踩到，所以每個維度都配一
+# 組關鍵詞，同一套規則套用。
+#
+# 每組詞刻意避開會撞到其他維度的字：
+# - When 不能用「早餐／午餐／晚餐」這類餐別詞——這些詞常常只是問題在
+#   講的「事」本身（例如「你通常從哪裡開始準備晚餐呢」問的是 Where，
+#   句子裡卻剛好出現「晚餐」），拿來當 When 的判斷依據會誤判，只留
+#   「什麼時候／幾點」這種真正的時間疑問句型。
+# - What 只留「是什麼／什麼事／什麼東西／發生什麼事」，不能用裸的
+#   「什麼」——「什麼時候」「什麼地方」「為什麼」都含「什麼」兩字，會
+#   跟 When／Where／Why 自己的詞組疊在一起。
+_W_DIMENSION_MARKERS = {
+    "Where": re.compile(r"哪裡|哪兒|哪個地方|什麼地方|在哪"),
+    "Who":   re.compile(r"誰|哪位|哪個人"),
+    "What":  re.compile(r"是什麼|什麼事|什麼東西|發生什麼事"),
+    "When":  re.compile(r"什麼時候|幾點|哪一年|幾歲"),
+    "How":   re.compile(r"怎麼|如何|怎樣"),
+    "Why":   re.compile(r"為什麼|什麼原因"),
+}
+
+
+def _backstop_dimension_markers(dimension: str | None, question_text: str) -> str | None:
+    """
+    _classify_question_dimension 專用，見上方 _W_DIMENSION_MARKERS 說明。
+
+    列出問題字面上出現了哪幾個維度的不含糊疑問詞——只有剛好出現一個
+    （代表這題字面上不模稜兩可）、而且跟模型原本的分類結果不同時，才
+    覆蓋成那個維度；一個都沒出現（規則覆蓋不到，維持模型判斷）或同時
+    出現兩個以上（題目字面上就同時問到多個維度，例如「你通常在哪裡
+    跟誰一起吃晚餐呢」同時有地點跟人物疑問詞，不武斷二選一）都不覆蓋，
+    交給模型自己判斷。
+    """
+    hits = [w for w, pattern in _W_DIMENSION_MARKERS.items() if pattern.search(question_text)]
+    if len(hits) == 1 and hits[0] != dimension:
+        return hits[0]
+    return dimension
+
+
 # 純粹主觀偏好/情緒詞（例如「喜歡」）不描述任何具體氣味或味道，卻可能被
 # 模型同時標成「嗅覺」跟「味覺」的證據——跟 _void_pure_time_evidence_
 # from_other_dims 同一套「拿掉已知的非實質內容詞彙後，如果什麼都不剩，
@@ -2062,6 +2111,15 @@ class TherapyOrchestrator:
             "topic_category": category,  # 開場已分類過，後續問題生成需要時直接複用，不重複分類
             "topic_senses": topic_senses,  # 開場已分類過，後續感官追蹤需要時直接複用，不重複分類
             "cached_rag_memories": cached_rag_memories,  # 開場已撈過，fallback需要時直接讀
+            # process_response 每次都會重新呼叫 self.user_profile.get_user()
+            # 拿最新的 user dict，但那支函式回傳的 today_topic 只是「病患
+            # preferences 第一項」這個預設值（見 DBUserProfileClient.get_user
+            # 說明），不知道這場療程當初實際選的主題（治療師在 start_scene
+            # 指定、上面透過 topic_override 蓋掉的那個）。存進 state 讓
+            # process_response 讀到後蓋回去，不然長者才剛回答完的主題到了
+            # 生圖那一步又被換回病患的預設興趣，生出跟長者剛講的話對不上的
+            # 「今日主題」。
+            "today_topic": user["today_topic"],
         }
 
         return {
@@ -2154,6 +2212,11 @@ class TherapyOrchestrator:
             "cached_rag_memories": [],
             "pre_image_q1_answer": "",
             "pre_image_detail": pre_image_detail,
+            # user 這裡是 start_round 一開始就用 topic_override 蓋過的正確
+            # 版本（見該函式），round 2 期間 process_response 每次都會重新
+            # get_user() 拿到病患預設興趣、需要靠 state 存的這份蓋回去，
+            # 見 start_round 對應欄位的說明。
+            "today_topic": user["today_topic"],
         }
         result = await self._handle_image_reveal_answer(
             user, synthetic_state, last_elder_response, emotion,
@@ -2224,6 +2287,7 @@ class TherapyOrchestrator:
             "cached_rag_memories": [],
             "pre_image_q1_answer": "",
             "pre_image_detail": "",
+            "today_topic": user["today_topic"],
         }
         return {
             "user_name": user["name"],
@@ -2848,6 +2912,14 @@ class TherapyOrchestrator:
         user = await self.user_profile.get_user(user_id)
         if not user:
             raise ValueError(f"找不到使用者: {user_id}")
+        # get_user() 回傳的 today_topic 只是病患 preferences 第一項這個預設值
+        # （見 DBUserProfileClient.get_user 說明），不是這場療程實際選的主題
+        # ——start_round 當初用 topic_override 蓋過、存進 state["today_topic"]
+        # 的才是真正的主題，這裡要蓋回去，不然生圖時的「今日主題」會變回
+        # 病患預設興趣，跟長者這回合實際聊的話題兜不上（例如療程主題是
+        # 「過新年」，生圖卻寫成病患預設興趣「做料理」）。
+        if state.get("today_topic"):
+            user = {**user, "today_topic": state["today_topic"]}
 
         # ── 第三回合（closing）是單輪問答，長者這句回答直接結束本回合／整場
         # 療程，交給既有 _end_action 的 current_round>=3 分支（見
@@ -2987,8 +3059,14 @@ class TherapyOrchestrator:
             category = state.get("topic_category")
             if not category or category not in _FIVE_W1H_BANK:
                 print(f"  → 主題分類失敗（{category!r}），略過Q2直接生圖")
+                # 這裡一定要傳 True，不能沿用 has_usable_detail（恆為 False，
+                # 見上面 if has_usable_detail 分支已經把 True 的情況攔截掉）——
+                # 上面註解說的「直接拿Q1這句去生圖」要靠 detail_is_usable=True
+                # 才會讓 _start_scene_after_detail 真的採用 elder_detail，
+                # 傳 has_usable_detail 會讓它誤判成「內容太空洞」，退回
+                # cached_rag_memories，等於分類失敗時完全沒用到長者剛講的話。
                 return await self._start_scene_after_detail(
-                    user, state, elder_detail, detail_is_usable=has_usable_detail,
+                    user, state, elder_detail, detail_is_usable=True,
                     on_generating_image=on_generating_image,
                 )
             # 情境1 vs 情境2：核對Q1這句話有沒有涵蓋Where/When/How/Why任一
@@ -4131,7 +4209,8 @@ class TherapyOrchestrator:
         )
         raw = (await self.llm.ask(prompt, temperature=0)).strip()
         classified = raw if raw in _W_ORDER else None
-        return _backstop_what_copula(classified, question_text)
+        classified = _backstop_what_copula(classified, question_text)
+        return _backstop_dimension_markers(classified, question_text)
 
     async def _classify_question_sense(self, question_text: str) -> str | None:
         """
