@@ -152,7 +152,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
       <div className="max-w-[680px] w-full mx-auto flex flex-col gap-5">
         {/* 標題 */}
         <div className="flex flex-col gap-1">
-          <h1 className="text-[28px] font-bold text-[#1a1a1a] mt-[0.8%]">開始療程</h1>
+          <h1 className="text-[28px] font-bold text-[#1a1a1a] mt-[0.8%]">開始活動</h1>
         </div>
 
         {/* 長者 */}
@@ -171,7 +171,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
             )}
             <div>
               <p className="text-[17px] font-medium text-[#1a1a1a]">{caseData.name}</p>
-              <p className="text-[13px] text-[#888]">第 {nextSession} 次療程</p>
+              <p className="text-[13px] text-[#888]">第 {nextSession} 次活動</p>
             </div>
           </div>
         </div>
@@ -185,7 +185,7 @@ export default function StartSessionPage({ params }: { params: Promise<{ id: str
                 ? "AI 建議：載入中…"
                 : suggestedTopic
                 ? `AI 建議：${suggestedTopic}（上次反應最佳）`
-                : "尚無歷史療程資料，暫無 AI 建議，可手動輸入場景描述"}
+                : "尚無歷史活動資料，暫無 AI 建議，可手動輸入場景描述"}
             </p>
           </div>
           <p className="text-[13px] text-[#888] mt-0.5">或手動輸入場景描述</p>

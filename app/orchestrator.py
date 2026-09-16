@@ -3036,8 +3036,14 @@ class TherapyOrchestrator:
             category = state.get("topic_category")
             if not category or category not in _FIVE_W1H_BANK:
                 print(f"  → 主題分類失敗（{category!r}），略過Q2直接生圖")
+                # 這裡一定要傳 True，不能沿用 has_usable_detail（恆為 False，
+                # 見上面 if has_usable_detail 分支已經把 True 的情況攔截掉）——
+                # 上面註解說的「直接拿Q1這句去生圖」要靠 detail_is_usable=True
+                # 才會讓 _start_scene_after_detail 真的採用 elder_detail，
+                # 傳 has_usable_detail 會讓它誤判成「內容太空洞」，退回
+                # cached_rag_memories，等於分類失敗時完全沒用到長者剛講的話。
                 return await self._start_scene_after_detail(
-                    user, state, elder_detail, detail_is_usable=has_usable_detail,
+                    user, state, elder_detail, detail_is_usable=True,
                     on_generating_image=on_generating_image,
                 )
             # 情境1 vs 情境2：核對Q1這句話有沒有涵蓋Where/When/How/Why任一
