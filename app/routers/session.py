@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
-from db.models import TherapySession, TherapyRound, RoundExchange, WarmupCardResult, Therapist
+from db.models import TherapySession, TherapyRound, RoundExchange, WarmupCardResult, Therapist, Patient
 from services.closing_templates import build_closing_invitation
 from services.audio_bank import lookup_audio_key
 from routers.sensor import _pct, ENGAGEMENT_RANGE, HAPPINESS_RANGE, AGITATION_RANGE
@@ -865,12 +865,36 @@ async def session_pending(
 async def active_patients(
     request: Request,
     therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """供治療師個案列表的「活動中」徽章 polling 用。TTL 到期（見 /session/pending）
-    或療程結束（見 _compute_and_save_assessment）都會讓病患從這份清單消失。"""
+    或療程結束（見 _compute_and_save_assessment）都會讓病患從這份清單消失。
+
+    patient:*:active 這個 key 本身沒有機構區隔（寫入處散落在好幾個地方，見檔案開頭
+    _ACTIVE_INITIAL_TTL 說明，逐一補機構前綴風險較高），所以掃出來的清單一律先當成
+    「候選」，回傳前在這裡用呼叫者的 organization_id 過濾一次，避免把其他機構病患的
+    活動狀態洩漏給不相干的治療師（2026-09-30 稽核發現的跨機構資料外洩）。
+    """
     r = request.app.state.redis
-    ids = [key.split(":")[1] async for key in r.scan_iter(match="patient:*:active")]
-    return {"patient_ids": ids}
+    candidate_ids = [key.split(":")[1] async for key in r.scan_iter(match="patient:*:active")]
+    if not candidate_ids:
+        return {"patient_ids": []}
+
+    therapist = (
+        await db.execute(select(Therapist).where(Therapist.id == therapist_id))
+    ).scalar_one_or_none()
+    if therapist is None or therapist.organization_id is None:
+        return {"patient_ids": []}
+
+    numeric_ids = [int(pid) for pid in candidate_ids if pid.isdigit()]
+    result = await db.execute(
+        select(Patient.id).where(
+            Patient.organization_id == therapist.organization_id,
+            Patient.id.in_(numeric_ids),
+        )
+    )
+    own_ids = {str(pid) for (pid,) in result.all()}
+    return {"patient_ids": [pid for pid in candidate_ids if pid in own_ids]}
 
 
 @router.get("/{session_id}/status", summary="供治療師網頁 polling Unity 校正狀態")

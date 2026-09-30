@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
+
 import bcrypt
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import create_access_token, get_current_therapist_id, revoke_therapist_tokens
@@ -71,6 +73,14 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
         raise HTTPException(status_code=401, detail="電子信箱或密碼錯誤")
 
     await r.delete(fail_key)
+
+    # 供機構成員管理頁判斷「尚未登入」用（見 routers/organization.py list_members）。
+    await db.execute(
+        update(Therapist)
+        .where(Therapist.id == therapist.id)
+        .values(last_login_at=datetime.now(timezone.utc))
+    )
+    await db.commit()
 
     token = await create_access_token(r, therapist.id, therapist.organization_id)
     return LoginResponse(

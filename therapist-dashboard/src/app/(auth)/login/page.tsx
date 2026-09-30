@@ -169,12 +169,11 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* 底部：跳轉至註冊頁的連結 */}
+          {/* 公開自助註冊已關閉（見 (auth)/register/page.tsx 的說明），
+              這裡不放能自己點進去的連結，避免引導使用者去一個已經關閉的表單，
+              但完全不提還沒有帳號的人會不知道該怎麼辦，所以留一行純文字說明。 */}
           <p className="text-center text-[#666] text-[15px] lg:text-[17px]">
-            還沒有帳號？{" "}
-            <Link href="/register" className="font-medium text-[#1a1a1a] hover:underline">
-              立即註冊
-            </Link>
+            還沒有帳號？請洽管理者為您開通帳號
           </p>
         </div>
       </div>
