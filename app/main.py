@@ -20,7 +20,7 @@ from services.image import OpenAIImageService
 from services.rag_client import RealRAGClient   
 from privacy.deidentifier import Deidentifier
 from orchestrator import TherapyOrchestrator
-from routers import ws_stt, ws_calibration, session, sensor, auth, patient
+from routers import ws_stt, ws_calibration, session, sensor, auth, patient, organization
 
 
 def _silent_wav_bytes(seconds: float = 0.5, sample_rate: int = 16000) -> bytes:
@@ -145,6 +145,7 @@ app.include_router(session.router)
 app.include_router(sensor.router)
 app.include_router(auth.router)
 app.include_router(patient.router)
+app.include_router(organization.router)
 
 _media_dir = Path("/media/images")
 _media_dir.mkdir(parents=True, exist_ok=True)

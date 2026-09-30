@@ -8,9 +8,11 @@ export default function AccountPage() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [institution, setInstitution] = useState("");
   const [email, setEmail] = useState("");
+  const [isOrgAdmin, setIsOrgAdmin] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
   const [pwMsg, setPwMsg] = useState("");
 
@@ -21,6 +23,7 @@ export default function AccountPage() {
         setTherapistName(data.name ?? "");
         setInstitution(data.institution ?? "");
         setEmail(data.email ?? "");
+        setIsOrgAdmin(!!data.isOrgAdmin);
       })
       .catch(() => {});
   }, []);
@@ -81,8 +84,12 @@ export default function AccountPage() {
               type="text"
               value={institution}
               onChange={(e) => setInstitution(e.target.value)}
-              className={inputClass}
+              readOnly={!isOrgAdmin}
+              className={isOrgAdmin ? inputClass : `${inputClass} bg-[#f5f5f5] text-[#888] cursor-not-allowed`}
             />
+            {!isOrgAdmin && (
+              <p className="text-[13px] text-[#888]">機構名稱由多位治療師共用，只有管理者能修改</p>
+            )}
           </div>
 
           <div className="flex flex-col gap-2">
@@ -167,7 +174,10 @@ export default function AccountPage() {
         {/* 刪除帳號 */}
         <button
           type="button"
-          onClick={() => setShowDeleteDialog(true)}
+          onClick={() => {
+            setDeleteError("");
+            setShowDeleteDialog(true);
+          }}
           className="self-start text-[#e05c3a] text-[14px] font-medium hover:text-[#c04a2c] transition-colors ml-[2%] mt-[2%]"
         >
           刪除帳號
@@ -188,6 +198,7 @@ export default function AccountPage() {
               <h2 className="text-[18px] font-semibold text-[#1a1a1a]">確定要刪除帳號嗎？</h2>
               <p className="text-[14px] text-[#888]">此操作無法復原，所有資料將永久刪除。</p>
             </div>
+            {deleteError && <p className="text-[13px] text-[#e05c3a]">{deleteError}</p>}
             <div className="flex gap-3 justify-end">
               <button
                 type="button"
@@ -199,7 +210,13 @@ export default function AccountPage() {
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch("/api/therapist/me", { method: "DELETE" });
+                  setDeleteError("");
+                  const res = await fetch("/api/therapist/me", { method: "DELETE" });
+                  if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    setDeleteError(data.error ?? "刪除失敗，請稍後再試");
+                    return;
+                  }
                   window.location.href = "/login";
                 }}
                 className="px-5 py-2 rounded-xl text-[14px] font-medium text-white bg-[#e05c3a] hover:bg-[#c04a2c] transition-colors"

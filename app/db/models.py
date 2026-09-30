@@ -2,7 +2,7 @@
 SQLAlchemy ORM models，對應 database/m6_db_schema.sql 的表。
 """
 from datetime import datetime, date
-from sqlalchemy import String, Integer, Text, Date, DateTime, Float, ForeignKey, func
+from sqlalchemy import String, Integer, Text, Date, DateTime, Float, Boolean, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 from db.session import Base
 
@@ -29,6 +29,15 @@ class Therapist(Base):
     specialization: Mapped[str | None] = mapped_column(Text)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password: Mapped[str] = mapped_column(Text, nullable=False)
+    # 機構管理者：能透過 /organization/members 新增、移除同機構的其他治療師帳號。
+    is_org_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # 從未登入過就是 NULL，供成員列表顯示「尚未登入」提醒管理者告知對方帳密。
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # 治療師後台登入（therapist-dashboard api/auth/login/route.ts）的失敗次數鎖定，
+    # 比照 app/routers/auth.py 那組給 Unity 登入用的 Redis 版鎖定邏輯——Next.js
+    # 那邊沒有 Redis 可用，改用這兩個欄位在 Postgres 做一樣的事。
+    failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class Patient(Base):
@@ -47,6 +56,11 @@ class Patient(Base):
     taboo_words: Mapped[str | None] = mapped_column(Text)
     scene_weights: Mapped[str | None] = mapped_column(Text)
     avatar: Mapped[str | None] = mapped_column(Text)
+    # 主要照顧者聯絡資訊：純參考用（姓名/關係/電話），跟 family 那個舊有的
+    # 「緊急聯絡人」自由文字欄位是兩回事，故意分開存，不互相取代。
+    caregiver_name: Mapped[str | None] = mapped_column(Text)
+    caregiver_relationship: Mapped[str | None] = mapped_column(Text)
+    caregiver_phone: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
@@ -178,6 +192,46 @@ class AuditLog(Base):
     )
 
 
+class PatientTodo(Base):
+    """個案詳情頁「追蹤與備註」分頁的待追蹤事項：故意不分類別，單純文字＋
+    勾選完成，比照目標客戶機構原本用 Word 手動記錄的操作習慣。"""
+    __tablename__ = "patient_todos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("patients.id", ondelete="CASCADE")
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_done: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    priority: Mapped[str] = mapped_column(Text, nullable=False, server_default="一般")
+    due_date: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+
+class PatientNote(Base):
+    """個案詳情頁「追蹤與備註」分頁的備註時間軸：單一不分類別的自由文字，
+    理由同 PatientTodo——強制選分類會讓介面比 Word 打字還麻煩。"""
+    __tablename__ = "patient_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("patients.id", ondelete="CASCADE")
+    )
+    author_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("therapists.id", ondelete="SET NULL")
+    )
+    # 顯示用的署名，使用者可自由填寫（例如「家屬（女兒）」轉述的內容），
+    # 不一定等於 author_id 對應的實際登入帳號——author_id 只負責稽核追蹤
+    # 誰真的登入建立了這筆備註。
+    author_name: Mapped[str | None] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+
 class PasswordResetCode(Base):
     __tablename__ = "password_reset_codes"
 
@@ -188,3 +242,6 @@ class PasswordResetCode(Base):
         DateTime, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # 猜錯次數：verify-code／reset-password 用來擋暴力猜 6 碼驗證碼
+    # （100 萬種組合），見那兩支 route.ts 的說明。
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")

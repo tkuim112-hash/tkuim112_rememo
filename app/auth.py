@@ -6,8 +6,12 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from db.deps import get_db
+from db.models import Therapist
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -55,6 +59,7 @@ def _decode_dashboard_session(token: str) -> dict:
 async def get_current_therapist_id(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> int:
     """FastAPI dependency：驗證呼叫者是已登入的治療師，回傳 therapist_id。
 
@@ -78,9 +83,45 @@ async def get_current_therapist_id(
         payload = _decode_dashboard_session(cookie_token)
         therapist_id = payload.get("therapistId")
         if therapist_id is not None:
-            return int(therapist_id)
+            therapist_id = int(therapist_id)
+            # cookie 這顆 JWT 本身沒有像 Unity token 的 ver 可以撤銷，帳號被機構
+            # 管理者移除（見 routers/organization.py remove_member）或自己刪除帳號
+            # 後，cookie 在瀏覽器裡最長還能再撐 7 天——這裡現查一次 DB 確認帳號
+            # 還存在，讓「移除後立即失去存取權限」對瀏覽器登入的治療師也成立。
+            exists = (
+                await db.execute(select(Therapist.id).where(Therapist.id == therapist_id))
+            ).scalar_one_or_none()
+            if exists is None:
+                raise HTTPException(status_code=401, detail="帳號已不存在，請重新登入")
+            return therapist_id
 
     raise HTTPException(status_code=401, detail="請先登入")
+
+
+async def get_current_therapist(
+    therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
+) -> Therapist:
+    """回傳目前登入治療師的完整資料列（機構、是否為管理者等）。
+
+    is_org_admin 一律從 DB 現查，不放進 JWT/cookie claim——管理者權限被收回時
+    （見 routers/organization.py 的移除治療師）要立即生效，不能讓舊 token
+    在過期前繼續被當成管理者用。"""
+    therapist = (
+        await db.execute(select(Therapist).where(Therapist.id == therapist_id))
+    ).scalar_one_or_none()
+    if therapist is None:
+        raise HTTPException(status_code=401, detail="找不到使用者，請重新登入")
+    return therapist
+
+
+async def require_org_admin(
+    therapist: Therapist = Depends(get_current_therapist),
+) -> Therapist:
+    """FastAPI dependency：只有機構管理者能呼叫（見 routers/organization.py）。"""
+    if therapist.organization_id is None or not therapist.is_org_admin:
+        raise HTTPException(status_code=403, detail="需要機構管理者權限")
+    return therapist
 
 
 async def get_therapist_id_from_ws_token(redis, token: str) -> int:
