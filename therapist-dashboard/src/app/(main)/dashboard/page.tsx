@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import type { Case } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
+import { EMOTION_COLORS } from "@/lib/emotionSignals";
 
 export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
@@ -14,6 +15,7 @@ export default function DashboardPage() {
   // 一律在渲染當下用這份 id 清單即時算出。
   const [activePatientIds, setActivePatientIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "attention" | "active">("all");
   const [displayName, setDisplayName] = useState("");
   const [displayInstitution, setDisplayInstitution] = useState("");
   const [isOrgAdmin, setIsOrgAdmin] = useState(false);
@@ -57,9 +59,16 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const filtered = cases
+  const withActive = cases.map((c) => ({ ...c, isActive: activePatientIds.has(c.id) }));
+  const attentionCount = withActive.filter((c) => c.needsAttention).length;
+  const activeCount = withActive.filter((c) => c.isActive).length;
+  const filtered = withActive
     .filter((c) => c.name.includes(search))
-    .map((c) => ({ ...c, isActive: activePatientIds.has(c.id) }));
+    .filter((c) => {
+      if (statusFilter === "attention") return c.needsAttention;
+      if (statusFilter === "active") return c.isActive;
+      return true;
+    });
   const isEmpty = cases.length === 0;
 
   return (
@@ -121,22 +130,46 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* 搜尋列 */}
-        <div className="relative">
-          <svg
-            width="18" height="18" viewBox="0 0 24 24" fill="none"
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-[#888]"
-          >
-            <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜尋個案姓名..."
-            className="w-full bg-white border border-[#e0e0e0] rounded-xl pl-12 pr-4 py-4 text-[15px] text-[#1a1a1a] placeholder:text-[#1a1a1a]/40 outline-none focus:border-[#1a1a1a] transition-colors"
-          />
+        {/* 搜尋列＋狀態篩選 */}
+        <div className="flex flex-col gap-3">
+          <div className="relative">
+            <svg
+              width="18" height="18" viewBox="0 0 24 24" fill="none"
+              className="absolute left-4 top-1/2 -translate-y-1/2 text-[#888]"
+            >
+              <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜尋個案姓名..."
+              className="w-full bg-white border border-[#e0e0e0] rounded-xl pl-12 pr-4 py-4 text-[15px] text-[#1a1a1a] placeholder:text-[#1a1a1a]/40 outline-none focus:border-[#1a1a1a] transition-colors"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            {(
+              [
+                { key: "all", label: `全部 (${cases.length})` },
+                { key: "attention", label: `需留意 (${attentionCount})` },
+                { key: "active", label: `活動中 (${activeCount})` },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setStatusFilter(f.key)}
+                className={`rounded-full px-4 py-2.5 text-[14px] font-medium whitespace-nowrap transition-colors ${
+                  statusFilter === f.key
+                    ? "bg-[#1a1a1a] text-white"
+                    : "bg-white border border-[#e0e0e0] text-[#666] hover:bg-[#f5f5f5]"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* 內容區：空狀態或個案列表 */}
@@ -155,7 +188,9 @@ export default function DashboardPage() {
           <div className="flex flex-col gap-3">
             {filtered.length === 0 ? (
               <div className="bg-white rounded-2xl flex flex-col items-center justify-center gap-4 py-24">
-                <p className="text-[16px] text-[#888]">找不到符合「{search}」的個案</p>
+                <p className="text-[16px] text-[#888]">
+                  {search ? `找不到符合「${search}」的個案` : "沒有符合篩選條件的個案"}
+                </p>
               </div>
             ) : (
               filtered.map((c) => (
@@ -177,6 +212,12 @@ export default function DashboardPage() {
                     <div>
                       <p className="text-[19px] font-medium text-[#1a1a1a] leading-tight">{c.name}</p>
                       <p className="text-[14px] text-[#888] mt-0.5">最近活動：{c.lastSession}</p>
+                      <p
+                        className="text-[13px] mt-0.5 font-medium"
+                        style={{ color: c.needsAttention ? EMOTION_COLORS.焦躁 : "#aaa" }}
+                      >
+                        {c.needsAttention ? "⚠ 近期情緒轉差，建議關心" : "近期活動穩定"}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">

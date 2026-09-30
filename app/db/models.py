@@ -56,6 +56,11 @@ class Patient(Base):
     taboo_words: Mapped[str | None] = mapped_column(Text)
     scene_weights: Mapped[str | None] = mapped_column(Text)
     avatar: Mapped[str | None] = mapped_column(Text)
+    # 主要照顧者聯絡資訊：純參考用（姓名/關係/電話），跟 family 那個舊有的
+    # 「緊急聯絡人」自由文字欄位是兩回事，故意分開存，不互相取代。
+    caregiver_name: Mapped[str | None] = mapped_column(Text)
+    caregiver_relationship: Mapped[str | None] = mapped_column(Text)
+    caregiver_phone: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
@@ -182,6 +187,46 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(Text, nullable=False)
     resource: Mapped[str | None] = mapped_column(Text)
     ip_address: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+
+class PatientTodo(Base):
+    """個案詳情頁「追蹤與備註」分頁的待追蹤事項：故意不分類別，單純文字＋
+    勾選完成，比照目標客戶機構原本用 Word 手動記錄的操作習慣。"""
+    __tablename__ = "patient_todos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("patients.id", ondelete="CASCADE")
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_done: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    priority: Mapped[str] = mapped_column(Text, nullable=False, server_default="一般")
+    due_date: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+
+class PatientNote(Base):
+    """個案詳情頁「追蹤與備註」分頁的備註時間軸：單一不分類別的自由文字，
+    理由同 PatientTodo——強制選分類會讓介面比 Word 打字還麻煩。"""
+    __tablename__ = "patient_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("patients.id", ondelete="CASCADE")
+    )
+    author_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("therapists.id", ondelete="SET NULL")
+    )
+    # 顯示用的署名，使用者可自由填寫（例如「家屬（女兒）」轉述的內容），
+    # 不一定等於 author_id 對應的實際登入帳號——author_id 只負責稽核追蹤
+    # 誰真的登入建立了這筆備註。
+    author_name: Mapped[str | None] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
