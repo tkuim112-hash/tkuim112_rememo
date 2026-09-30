@@ -16,6 +16,7 @@ export default function DashboardPage() {
   const [search, setSearch] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [displayInstitution, setDisplayInstitution] = useState("");
+  const [isOrgAdmin, setIsOrgAdmin] = useState(false);
 
   useEffect(() => {
     fetch("/api/therapist/me")
@@ -23,6 +24,7 @@ export default function DashboardPage() {
       .then((data) => {
         setDisplayName(data.name ?? "");
         setDisplayInstitution(data.institution ?? "");
+        setIsOrgAdmin(!!data.isOrgAdmin);
       })
       .catch(() => {});
 
@@ -67,8 +69,17 @@ export default function DashboardPage() {
       <nav className="bg-white rounded-2xl shadow-sm px-8 py-5 flex items-center justify-between">
         <span className="text-[25px] font-medium text-[#1a1a1a] tracking-tight">
           {displayInstitution}　{displayName}
+          {isOrgAdmin && <span className="text-[16px] text-[#888] font-normal">（管理者）</span>}
         </span>
         <div className="flex items-center gap-4">
+          {isOrgAdmin && (
+            <Link
+              href="/members"
+              className="border border-[#1a1a1a] rounded-xl px-5 py-2.5 text-[15px] font-medium text-[#1a1a1a] hover:bg-[#f5f5f5] transition-colors"
+            >
+              機構成員管理
+            </Link>
+          )}
           <Link
             href="/account"
             className="border border-[#1a1a1a] rounded-xl px-5 py-2.5 text-[15px] font-medium text-[#1a1a1a] hover:bg-[#f5f5f5] transition-colors"

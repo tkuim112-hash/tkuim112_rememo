@@ -2,7 +2,7 @@
 SQLAlchemy ORM models，對應 database/m6_db_schema.sql 的表。
 """
 from datetime import datetime, date
-from sqlalchemy import String, Integer, Text, Date, DateTime, Float, ForeignKey, func
+from sqlalchemy import String, Integer, Text, Date, DateTime, Float, Boolean, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 from db.session import Base
 
@@ -29,6 +29,15 @@ class Therapist(Base):
     specialization: Mapped[str | None] = mapped_column(Text)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password: Mapped[str] = mapped_column(Text, nullable=False)
+    # 機構管理者：能透過 /organization/members 新增、移除同機構的其他治療師帳號。
+    is_org_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # 從未登入過就是 NULL，供成員列表顯示「尚未登入」提醒管理者告知對方帳密。
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # 治療師後台登入（therapist-dashboard api/auth/login/route.ts）的失敗次數鎖定，
+    # 比照 app/routers/auth.py 那組給 Unity 登入用的 Redis 版鎖定邏輯——Next.js
+    # 那邊沒有 Redis 可用，改用這兩個欄位在 Postgres 做一樣的事。
+    failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class Patient(Base):
@@ -188,3 +197,6 @@ class PasswordResetCode(Base):
         DateTime, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # 猜錯次數：verify-code／reset-password 用來擋暴力猜 6 碼驗證碼
+    # （100 萬種組合），見那兩支 route.ts 的說明。
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
