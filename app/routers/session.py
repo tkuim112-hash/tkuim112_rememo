@@ -6,14 +6,14 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from audit import log_access
 from auth import get_current_therapist_id
 from db.deps import get_db
-from db.models import TherapySession, TherapyRound, RoundExchange, WarmupCardResult
+from db.models import TherapySession, TherapyRound, RoundExchange, WarmupCardResult, Therapist, Patient
 from services.closing_templates import build_closing_invitation
 from services.audio_bank import lookup_audio_key
 from routers.sensor import _pct, ENGAGEMENT_RANGE, HAPPINESS_RANGE, AGITATION_RANGE
@@ -250,17 +250,37 @@ async def _get_or_create_round(
 
     rounds 的 upsert 走 ON CONFLICT DO NOTHING（搭配 rounds(session_id, round_number)
     唯一約束），避免同一回合被併發請求（例如前端重試）SELECT-then-INSERT 出重複列。
+
+    sessions 這半段以前也是 ON CONFLICT DO NOTHING，2026-09稽核發現這樣會
+    「鎖死」第一個成功建立這筆 session 的呼叫端當時知道的資料——實際流程裡
+    暖身動作（session_warmup_card_result）比正式開始療程（/session/start）
+    更早呼叫到這裡，但暖身當下只知道 therapist_id，不知道 patient_id，
+    導致 sessions.patient_id／organization_id 永遠是 NULL：DO NOTHING 讓
+    之後 /session/start 帶著正確 patient_id 來的那次 insert 完全被忽略，
+    不會補回去。改成 DO UPDATE＋COALESCE，只在欄位目前是 NULL 時才用這次
+    呼叫帶來的值補上，不會覆蓋掉已經存在的正確值，不論哪個呼叫端先建立
+    這筆 session 都能被後面知道更多資訊的呼叫端補完。
     """
-    stmt = (
-        pg_insert(TherapySession)
-        .values(
-            session_uuid=session_id,
-            patient_id=patient_id,
-            therapist_id=therapist_id,
-            date=date.today(),
-            mode="interactive",
-        )
-        .on_conflict_do_nothing(index_elements=["session_uuid"])
+    stmt = pg_insert(TherapySession).values(
+        session_uuid=session_id,
+        patient_id=patient_id,
+        therapist_id=therapist_id,
+        organization_id=(
+            select(Therapist.organization_id)
+            .where(Therapist.id == therapist_id)
+            .scalar_subquery()
+            if therapist_id is not None else None
+        ),
+        date=date.today(),
+        mode="interactive",
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["session_uuid"],
+        set_={
+            "patient_id": func.coalesce(TherapySession.patient_id, stmt.excluded.patient_id),
+            "therapist_id": func.coalesce(TherapySession.therapist_id, stmt.excluded.therapist_id),
+            "organization_id": func.coalesce(TherapySession.organization_id, stmt.excluded.organization_id),
+        },
     )
     await db.execute(stmt)
     await db.flush()
@@ -845,12 +865,36 @@ async def session_pending(
 async def active_patients(
     request: Request,
     therapist_id: int = Depends(get_current_therapist_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """供治療師個案列表的「活動中」徽章 polling 用。TTL 到期（見 /session/pending）
-    或療程結束（見 _compute_and_save_assessment）都會讓病患從這份清單消失。"""
+    或療程結束（見 _compute_and_save_assessment）都會讓病患從這份清單消失。
+
+    patient:*:active 這個 key 本身沒有機構區隔（寫入處散落在好幾個地方，見檔案開頭
+    _ACTIVE_INITIAL_TTL 說明，逐一補機構前綴風險較高），所以掃出來的清單一律先當成
+    「候選」，回傳前在這裡用呼叫者的 organization_id 過濾一次，避免把其他機構病患的
+    活動狀態洩漏給不相干的治療師（2026-09-30 稽核發現的跨機構資料外洩）。
+    """
     r = request.app.state.redis
-    ids = [key.split(":")[1] async for key in r.scan_iter(match="patient:*:active")]
-    return {"patient_ids": ids}
+    candidate_ids = [key.split(":")[1] async for key in r.scan_iter(match="patient:*:active")]
+    if not candidate_ids:
+        return {"patient_ids": []}
+
+    therapist = (
+        await db.execute(select(Therapist).where(Therapist.id == therapist_id))
+    ).scalar_one_or_none()
+    if therapist is None or therapist.organization_id is None:
+        return {"patient_ids": []}
+
+    numeric_ids = [int(pid) for pid in candidate_ids if pid.isdigit()]
+    result = await db.execute(
+        select(Patient.id).where(
+            Patient.organization_id == therapist.organization_id,
+            Patient.id.in_(numeric_ids),
+        )
+    )
+    own_ids = {str(pid) for (pid,) in result.all()}
+    return {"patient_ids": [pid for pid in candidate_ids if pid in own_ids]}
 
 
 @router.get("/{session_id}/status", summary="供治療師網頁 polling Unity 校正狀態")
@@ -1365,15 +1409,28 @@ async def session_warmup_card_result(
     symmetry_pct = body.symmetry_pct if body.symmetry_pct >= 0 else None
 
     try:
-        session_stmt = (
-            pg_insert(TherapySession)
-            .values(
-                session_uuid=session_id,
-                therapist_id=therapist_id,
-                date=date.today(),
-                mode="interactive",
-            )
-            .on_conflict_do_nothing(index_elements=["session_uuid"])
+        # 暖身通常比正式療程開始（/session/start）更早呼叫到這裡，這裡建立
+        # 的 session 佔位列當時只知道 therapist_id、不知道 patient_id——用
+        # DO UPDATE＋COALESCE（跟 _get_or_create_round 同一套修法，見該函式
+        # 說明）只補目前是 NULL 的欄位，不蓋掉之後 /session/start 已經寫入
+        # 的正確 patient_id，organization_id 則直接從 therapist_id 查表補上。
+        session_stmt = pg_insert(TherapySession).values(
+            session_uuid=session_id,
+            therapist_id=therapist_id,
+            organization_id=(
+                select(Therapist.organization_id)
+                .where(Therapist.id == therapist_id)
+                .scalar_subquery()
+            ),
+            date=date.today(),
+            mode="interactive",
+        )
+        session_stmt = session_stmt.on_conflict_do_update(
+            index_elements=["session_uuid"],
+            set_={
+                "therapist_id": func.coalesce(TherapySession.therapist_id, session_stmt.excluded.therapist_id),
+                "organization_id": func.coalesce(TherapySession.organization_id, session_stmt.excluded.organization_id),
+            },
         )
         await db.execute(session_stmt)
         await db.flush()

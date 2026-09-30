@@ -22,6 +22,10 @@ function ResetPasswordForm() {
   const [loading, setLoading] = useState(false);
   const searchParams = useSearchParams();
   const email = searchParams.get("email") ?? "";
+  const code = searchParams.get("code") ?? "";
+  // 沿用 verify-email 頁面判斷是不是「新帳號第一次設定密碼」的同一個標記，
+  // 純粹是文案不同，API 呼叫（/api/auth/reset-password）完全一樣。
+  const isSetup = searchParams.get("mode") === "setup";
 
   async function handleSubmit(e: { preventDefault: () => void }) {
     e.preventDefault();
@@ -37,7 +41,7 @@ function ResetPasswordForm() {
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, code, password }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -69,8 +73,12 @@ function ResetPasswordForm() {
 
           {/* 標題與說明 */}
           <div className="flex flex-col items-center gap-2 text-center">
-            <h1 className="text-[32px] font-semibold text-[#1a1a1a]">密碼更新成功</h1>
-            <p className="text-[17px] text-[#888]">您現在可以使用新密碼登入您的帳號</p>
+            <h1 className="text-[32px] font-semibold text-[#1a1a1a]">
+              {isSetup ? "帳號設定完成" : "密碼更新成功"}
+            </h1>
+            <p className="text-[17px] text-[#888]">
+              {isSetup ? "您現在可以用這組密碼登入 Rememo" : "您現在可以使用新密碼登入您的帳號"}
+            </p>
           </div>
 
           {/* 返回登入按鈕 */}
@@ -102,8 +110,12 @@ function ResetPasswordForm() {
 
         {/* 標題與說明 */}
         <div className="flex flex-col items-center gap-2 text-center">
-          <h1 className="text-[28px] font-semibold text-[#1a1a1a]">重設您的密碼</h1>
-          <p className="text-[15px] text-[#888]">請在下方輸入新密碼以變更您的密碼</p>
+          <h1 className="text-[28px] font-semibold text-[#1a1a1a]">
+            {isSetup ? "設定您的登入密碼" : "重設您的密碼"}
+          </h1>
+          <p className="text-[15px] text-[#888]">
+            {isSetup ? "這是您第一次使用，請設定一組登入密碼" : "請在下方輸入新密碼以變更您的密碼"}
+          </p>
         </div>
 
         {/* 表單 */}
@@ -172,7 +184,7 @@ function ResetPasswordForm() {
             disabled={loading}
             className="w-full bg-[#1a1a1a] text-white rounded-xl py-4 font-medium hover:bg-[#333] transition-colors text-[16px] mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? "處理中..." : "重設密碼"}
+            {loading ? "處理中..." : isSetup ? "設定密碼" : "重設密碼"}
           </button>
         </form>
 

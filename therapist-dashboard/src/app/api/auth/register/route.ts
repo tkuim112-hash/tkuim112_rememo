@@ -1,38 +1,13 @@
-import { NextRequest, NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
-import sql from "@/lib/db";
-import { createSession } from "@/lib/session";
+import { NextResponse } from "next/server";
 
-export async function POST(req: NextRequest) {
-  const { username, institution, email, password } = await req.json();
-
-  if (!username || !institution || !email || !password) {
-    return NextResponse.json({ error: "請填寫所有欄位" }, { status: 400 });
-  }
-
-  if (password.length < 8 || !/[a-z]/.test(password) || !/[A-Z]/.test(password)) {
-    return NextResponse.json({ error: "密碼至少需要 8 個字元，且包含大小寫字母" }, { status: 400 });
-  }
-
-  const [existing] = await sql`SELECT id FROM therapists WHERE email = ${email}`;
-  if (existing) {
-    return NextResponse.json({ error: "此 Email 已被註冊" }, { status: 409 });
-  }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  const [org] = await sql`
-    INSERT INTO organizations (name, email, password)
-    VALUES (${institution}, ${email}, ${hashedPassword})
-    RETURNING id
-  `;
-
-  const [therapist] = await sql`
-    INSERT INTO therapists (organization_id, name, email, password)
-    VALUES (${org.id}, ${username}, ${email}, ${hashedPassword})
-    RETURNING id
-  `;
-
-  await createSession(therapist.id, org.id);
-  return NextResponse.json({ ok: true }, { status: 201 });
+// 公開自助註冊已關閉：任何人只要填表單就能自建機構、自封管理者，機構之間雖然
+// 彼此隔離、不會外洩別人的資料，但完全沒有驗證「這個人是不是真的有資格代表
+// 這個機構」，被視為信任模型上的疑慮。新機構起始帳號改成只能由平台方用
+// app/create_organization.py 手動開通（同一套「寄驗證信讓對方自己設密碼」的
+// 機制，只是多了建立機構那一步），不再開放公開表單自助建立。
+export async function POST() {
+  return NextResponse.json(
+    { error: "本平台暫不開放自助註冊，請洽系統管理者為您的機構開通帳號" },
+    { status: 403 }
+  );
 }

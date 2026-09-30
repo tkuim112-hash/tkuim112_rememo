@@ -24,6 +24,26 @@ export interface Case {
   hobbies?: string;
   mode?: string;
   isActive?: boolean;
+  // 近期情緒趨勢（個案列表用）：最近 3 次場次的 emotional_status，最新在前；
+  // needsAttention 是套用 3 中取 2 規則（見 api/cases/route.ts）算好的結果，
+  // 前端直接顯示文字，不用再重算一次規則。
+  recentEmotions?: (string | null)[];
+  needsAttention?: boolean;
+}
+
+export interface PatientTodo {
+  id: string;
+  content: string;
+  isDone: boolean;
+  priority: string;
+  dueDate: string | null;
+}
+
+export interface PatientNote {
+  id: string;
+  content: string;
+  authorName: string;
+  createdAt: string;
 }
 
 export interface Session {

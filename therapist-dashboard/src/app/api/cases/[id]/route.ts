@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { logAccess } from "@/lib/audit";
+import { computeNeedsAttention } from "@/lib/emotionTrend";
 
 const AVATAR_COLORS = ["#d4e4f7", "#f7e4d4", "#e4f7d4", "#f7d4e4", "#e4d4f7", "#f7f0d4"];
 
 function mapPatient(p: Record<string, unknown>) {
   const id = p.id as number;
+  const recentEmotions = Array.isArray(p.recent_emotions) ? (p.recent_emotions as (string | null)[]) : [];
   return {
     id: id.toString(),
     name: p.name,
@@ -26,6 +28,8 @@ function mapPatient(p: Record<string, unknown>) {
     gender: "unknown",
     mode: "輕度模式",
     notes: [p.occupation, p.family, p.preferences].filter(Boolean).join("；"),
+    recentEmotions,
+    needsAttention: computeNeedsAttention(recentEmotions),
   };
 }
 
@@ -39,7 +43,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       p.id, p.name, p.birth_year, p.hometown, p.occupation,
       p.family, p.preferences, p.taboo_words, p.avatar,
       (SELECT COUNT(*)::int FROM sessions s WHERE s.patient_id = p.id) AS total_sessions,
-      (SELECT TO_CHAR(MAX(s.date), 'YYYY/MM/DD') FROM sessions s WHERE s.patient_id = p.id) AS last_session
+      (SELECT TO_CHAR(MAX(s.date), 'YYYY/MM/DD') FROM sessions s WHERE s.patient_id = p.id) AS last_session,
+      (
+        SELECT ARRAY_AGG(recent.emotional_status)
+        FROM (
+          SELECT emotional_status FROM sessions
+          WHERE patient_id = p.id
+          ORDER BY date DESC
+          LIMIT 3
+        ) recent
+      ) AS recent_emotions
     FROM patients p
     WHERE p.id = ${parseInt(id)} AND p.organization_id = ${session.organizationId}
   `;
@@ -62,12 +75,17 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!session) return NextResponse.json({ error: "未登入" }, { status: 401 });
 
   const { id } = await params;
-  const { birthYear, birthPlace, career, family, hobbies, tabooTopics, avatar } = await req.json();
+  const { name, birthYear, birthPlace, career, family, hobbies, tabooTopics, avatar } = await req.json();
+
+  if (!name || !(name as string).trim()) {
+    return NextResponse.json({ error: "請填寫姓名" }, { status: 400 });
+  }
 
   const tabooStr = Array.isArray(tabooTopics) ? tabooTopics.join("、") : (tabooTopics ?? "");
 
   const [updated] = await sql`
     UPDATE patients SET
+      name        = ${(name as string).trim()},
       birth_year  = ${birthYear ? parseInt(birthYear) : 0},
       hometown    = ${birthPlace ?? ""},
       occupation  = ${career ?? ""},
@@ -88,7 +106,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       p.id, p.name, p.birth_year, p.hometown, p.occupation,
       p.family, p.preferences, p.taboo_words, p.avatar,
       (SELECT COUNT(*)::int FROM sessions s WHERE s.patient_id = p.id) AS total_sessions,
-      (SELECT TO_CHAR(MAX(s.date), 'YYYY/MM/DD') FROM sessions s WHERE s.patient_id = p.id) AS last_session
+      (SELECT TO_CHAR(MAX(s.date), 'YYYY/MM/DD') FROM sessions s WHERE s.patient_id = p.id) AS last_session,
+      (
+        SELECT ARRAY_AGG(recent.emotional_status)
+        FROM (
+          SELECT emotional_status FROM sessions
+          WHERE patient_id = p.id
+          ORDER BY date DESC
+          LIMIT 3
+        ) recent
+      ) AS recent_emotions
     FROM patients p WHERE p.id = ${parseInt(id)}
   `;
 

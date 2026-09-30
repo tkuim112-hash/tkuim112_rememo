@@ -23,6 +23,11 @@ function VerifyEmailForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const email = searchParams.get("email") ?? "";
+  // setup：機構管理者新增帳號（或 create_organization.py 開通新機構）觸發的
+  // 首次設定密碼流程，跟使用者自己忘記密碼時走的是同一套頁面，只是文案不同
+  // ——全新帳號沒有「舊密碼」可以重設，用「忘記密碼」的措辭會讓人一頭霧水。
+  const mode = searchParams.get("mode");
+  const isSetup = mode === "setup";
 
   async function handleVerify() {
     setError("");
@@ -38,7 +43,12 @@ function VerifyEmailForm() {
         setError(data.error ?? "驗證失敗，請稍後再試");
         return;
       }
-      router.push(`/reset-password?email=${encodeURIComponent(email)}`);
+      // 帶著驗證碼一起過去：reset-password 那支 API 自己也要重新比對 verification_code
+      // 才能真的設密碼（見該 route.ts 的說明），不能只讓這裡驗證過就算數。
+      const otpValue = otp.join("");
+      router.push(
+        `/reset-password?email=${encodeURIComponent(email)}&code=${encodeURIComponent(otpValue)}${isSetup ? "&mode=setup" : ""}`
+      );
     } catch {
       setError("網路連線失敗，請稍後再試");
     } finally {
@@ -53,7 +63,7 @@ function VerifyEmailForm() {
       const res = await fetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, mode }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -118,7 +128,9 @@ function VerifyEmailForm() {
 
         {/* 標題與說明 */}
         <div className="flex flex-col items-center gap-2 text-center">
-          <h1 className="text-[28px] font-semibold text-[#1a1a1a]">驗證您的電子信箱</h1>
+          <h1 className="text-[28px] font-semibold text-[#1a1a1a]">
+            {isSetup ? "啟用您的帳號" : "驗證您的電子信箱"}
+          </h1>
           <p className="text-[15px] text-[#888]">我們已將驗證碼發送至</p>
           <p className="text-[15px] text-[#1a1a1a] font-medium">{email}</p>
         </div>
@@ -166,9 +178,9 @@ function VerifyEmailForm() {
           </button>
         </div>
 
-        {/* 返回 */}
+        {/* 返回：setup 情境下沒有「忘記密碼」這個上一步可以回，導去登入頁 */}
         <Link
-          href="/forgot-password"
+          href={isSetup ? "/login" : "/forgot-password"}
           className="text-[14px] text-[#888] hover:text-[#1a1a1a] transition-colors flex items-center gap-1"
         >
           ← 返回
