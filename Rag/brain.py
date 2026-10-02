@@ -1,17 +1,15 @@
 import os
 from qdrant_client import QdrantClient, models
 from langchain_qdrant import QdrantVectorStore
-from langchain_ollama import OllamaEmbeddings
+from embeddings import get_embeddings
 
 class ElderlyAI:
     def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
         qdrant_collection = os.getenv("QDRANT_COLLECTION", "safe_reminiscence")
-        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        embedding_model = os.getenv("EMBEDDING_MODEL", "bge-m3")
 
-        self.embeddings = OllamaEmbeddings(model=embedding_model, base_url=ollama_host)
+        self.embeddings = get_embeddings()
 
         self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
 
@@ -21,7 +19,8 @@ class ElderlyAI:
             self.client.create_collection(
                 collection_name=qdrant_collection,
                 vectors_config=models.VectorParams(
-                    size=1024,   # bge-m3 的維度
+                    size=1024,   # jina-embeddings-v3 預設輸出維度（跟 bge-m3 一樣是 1024，
+                                 # 但向量空間不相容，換模型後舊資料仍需整批重新 embedding）
                     distance=models.Distance.COSINE,
                 )
             )
@@ -47,7 +46,12 @@ class ElderlyAI:
         中文短句之間即使主題不相關，cosine 相似度本來就常落在 0.4-0.6 這段
         （句長/句式結構相似也會拉高分數），0.5 太容易放進「表面像但語意無關」
         的結果。這次同時修掉了 ingest.py 存入內容是詞語沙拉的根因問題，
-        threshold 調整算是第二層防線，不是唯一解法。"""
+        threshold 調整算是第二層防線，不是唯一解法。
+
+        2026-10 換成 jina-embeddings-v3 後實測（260 筆既有資料全量重新
+        embedding 完）：不相關查詢（如「股票市場分析」)分數落在 0.15 左右，
+        相關查詢（如「廚房」對到「我家廚房」)落在 0.70-0.80，區隔比 bge-m3
+        明顯很多，0.65 這個門檻換模型後繼續適用，暫不調整。"""
         hits = self.db.similarity_search_with_score(
             query, k=limit,
             filter=models.Filter(must=[

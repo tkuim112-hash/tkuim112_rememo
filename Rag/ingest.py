@@ -3,8 +3,8 @@ import re
 from datetime import datetime, timezone
 from ckip_transformers.nlp import CkipWordSegmenter, CkipPosTagger
 from langchain_qdrant import QdrantVectorStore
-from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from embeddings import get_embeddings
 
 def base_clean(text):
     text = re.sub(r'<[^>]+>|https?://\S+', '', text)
@@ -50,16 +50,16 @@ def process_and_save(elder_id, raw_text, session_id="", emotion=""):
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
     qdrant_collection = os.getenv("QDRANT_COLLECTION", "safe_reminiscence")
-    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    embedding_model = os.getenv("EMBEDDING_MODEL", "bge-m3")
-    embeddings = OllamaEmbeddings(model=embedding_model, base_url=ollama_host)
-    
+    # get_embeddings() 底層的 SentenceTransformer 模型是程序內 singleton
+    # （見 embeddings.py _get_model()），這裡呼叫不會每次都重新載入權重。
+    embeddings = get_embeddings()
+
     base = base_clean(raw_text)
     # 2026-08-20 稽核：改用 base（完整原句）而非 ckip_refine 過的詞性白名單
     # 結果去做 embedding/存入——ckip_refine 只留 Na/Nb/Nc/Nd/VA/VC/V_2/A 再
     # join() 硬拼接，會把句子拆成失去語序/文法的詞語沙拉（實測庫內資料出現
-    # 「背字佳人煮飯」「抖子音樂腰晃腦」這類不可讀字串），bge-m3 這類 embedding
-    # 模型是針對自然語言訓練的，餵詞語沙拉會讓向量失真，導致檢索撈到看似關鍵字
+    # 「背字佳人煮飯」「抖子音樂腰晃腦」這類不可讀字串），embedding 模型是針對
+    # 自然語言訓練的，餵詞語沙拉會讓向量失真，導致檢索撈到看似關鍵字
     # 重疊、實際語意無關的記憶。ckip_refine/AdvancedCleaner 保留在程式碼裡，
     # 之後如果要另外做關鍵字標籤/分類可以用，但不再用來決定存入 Qdrant 的內容。
 

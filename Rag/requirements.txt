@@ -4,6 +4,13 @@ pydantic
 ckip-transformers
 langchain-qdrant
 langchain-text-splitters
+langchain-core
 qdrant-client
-langchain-ollama
 torch
+sentence-transformers
+einops
+# jina-embeddings-v3 用 trust_remote_code 載入的自訂 modeling code是寫給
+# transformers 4.x 系列的，transformers 5.x 內部重構了模型載入邏輯
+# （_finalize_model_loading 存取 all_tied_weights_keys 這個新版才有的屬性），
+# 跟這顆模型的自訂程式碼不相容，會在載入模型時直接拋 AttributeError。
+transformers<5
