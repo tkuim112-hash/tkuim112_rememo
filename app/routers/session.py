@@ -71,11 +71,15 @@ def _to_float(val) -> float | None:
 
 
 async def _synthesize_safe(tts, **kwargs) -> str | None:
-    """TTS 服務離線/逾時（例如本機 GPU 資源被 Ollama 占用時沒開 TTS）不該擋住整個
-    回合開場/回應流程，跟圖片生成失敗一樣採不影響主流程的降級：長者端這段沒有語音，
-    但場景文字、問題、圖片仍正常運作。"""
+    """TTS 服務離線/逾時不該擋住整個回合開場/回應流程，跟圖片生成失敗一樣採
+    不影響主流程的降級：長者端這段沒有語音，但場景文字、問題、圖片仍正常運作。
+
+    2026-10 稽核：原本走本地 BlueMagpie-TTS（settings.tts_host），但其聲學
+    骨幹 VoxCPM2 是中國（OpenBMB/清華）開源模型，換成跟 _synthesize_edge_safe
+    一樣呼叫 edge-tts（微軟雲端），兩者參數介面本來就相容（見 tts.py
+    synthesize_edge 說明），不影響呼叫端。"""
     try:
-        return await tts.synthesize(**kwargs)
+        return await tts.synthesize_edge(**kwargs)
     except Exception as e:
         print(f"[TTS] 語音合成失敗（不影響主流程，長者端這段沒有語音）: {e}")
         return None

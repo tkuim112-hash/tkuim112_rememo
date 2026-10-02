@@ -24,15 +24,12 @@ class Settings(BaseSettings):
 
     # === STT (faster-whisper-server) ===
     stt_host: str = "http://stt:8000"
-    # 中文微調過的 Whisper checkpoint（BELLE-2），interim（即時預覽）跟
-    # 最終辨識統一都用這個模型：即時預覽文字實際上只有分享頁的打字機動畫
-    # 會顯示給人看（見 Unity ShareController.cs），其餘場景長者根本看不到
-    # 辨識中的文字（GameController.cs／MicController.cs），BELLE-2 常駐 GPU
-    # 又只處理短音訊片段，沒有必要為了 interim 額外維護一個較不準的快模型。
-    stt_model: str = "XA9/Belle-faster-whisper-large-v3-zh-punct"
-
-    # === TTS (BlueMagpie-TTS 本地語音合成) ===
-    tts_host: str = "http://tts:8080"
+    # interim（即時預覽）跟最終辨識統一都用這個模型：即時預覽文字實際上只有
+    # 分享頁的打字機動畫會顯示給人看（見 Unity ShareController.cs），其餘場景
+    # 長者根本看不到辨識中的文字（GameController.cs／MicController.cs），
+    # 模型常駐 GPU 又只處理短音訊片段，沒有必要為了 interim 額外維護一個
+    # 較不準的快模型。
+    stt_model: str = "Systran/faster-whisper-large-v3"
 
     # === Face Emotion (py-feat，取代 Kinect 內建 Face API) ===
     face_service_host: str = "http://face-service:8000"
