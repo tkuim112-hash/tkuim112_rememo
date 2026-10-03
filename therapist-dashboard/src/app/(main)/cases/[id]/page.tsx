@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { Case, Session, PatientTodo, PatientNote } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
 import { EMOTION_COLORS } from "@/lib/emotionSignals";
+import TrendsTab from "./_components/TrendsTab";
 
 // 跟後端 /api/cases/[id]/tracking 的 ORDER BY 保持一致（未完成優先、
 // 高優先排最前面、同優先度再依到期日從近到遠排、沒設到期日的排最後），
@@ -78,7 +79,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
   const [caseNotFound, setCaseNotFound] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsError, setSessionsError] = useState(false);
-  const [tab, setTab] = useState<"info" | "history" | "tracking">("info");
+  const [tab, setTab] = useState<"info" | "history" | "trends" | "tracking">("info");
   const [isEditing, setIsEditing] = useState(false);
   // DB 的 status='in_progress' 可能是療程被中斷後永遠卡住、從沒變成
   // completed，不能直接當「現在真的活動中」用來導去 LiveSessionView（否則
@@ -543,7 +544,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
 
         {/* Tabs */}
         <div className="flex gap-6 border-b border-[#e0e0e0]">
-          {(["info", "history", "tracking"] as const).map((t) => (
+          {(["info", "history", "trends", "tracking"] as const).map((t) => (
             <button
               key={t}
               type="button"
@@ -554,7 +555,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                   : "border-transparent text-[#888] hover:text-[#1a1a1a]"
               }`}
             >
-              {t === "info" ? "基本資料" : t === "history" ? "歷次活動" : "追蹤與備註"}
+              {t === "info" ? "基本資料" : t === "history" ? "歷次活動" : t === "trends" ? "趨勢分析" : "追蹤與備註"}
             </button>
           ))}
         </div>
@@ -688,6 +689,8 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
             )}
           </div>
         )}
+
+        {tab === "trends" && <TrendsTab caseId={id} />}
 
         {tab === "tracking" && (
           <div className="flex flex-col gap-3">

@@ -21,7 +21,6 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --ws-ping-interval 20 --ws-ping-timeout 60
     depends_on:
       - ollama
-      - tts
       - face-service
       - db
     environment:
@@ -63,17 +62,18 @@ services:
     container_name: tku-care-rag-service-1
     volumes:
       - ./Rag:/app                                    # 程式碼熱更新，改完 restart 即生效
-      - ./models/ckip_cache:/root/.cache/huggingface  # CKIP 模型只下載一次
+      # CKIP 跟 jina-embeddings-v3（見 Rag/embeddings.py）都是透過
+      # huggingface_hub 下載、快取在同一個預設路徑，共用這個 volume
+      # 避免每次重建容器都重下
+      - ./models/ckip_cache:/root/.cache/huggingface
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     depends_on:
       - qdrant
-      - ollama
     environment:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY}
       - QDRANT_COLLECTION=${QDRANT_COLLECTION}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - OLLAMA_HOST=http://ollama:11434
     restart: always
 
     # 向量資料庫
@@ -105,36 +105,6 @@ services:
       - BACKUP_KEEP_DAYS=7
       - BACKUP_ENCRYPTION_PASSPHRASE=${QDRANT_BACKUP_PASSPHRASE}
     restart: always
-
-  # M3: 本地語音合成 (BlueMagpie-TTS, RTX 50 系列/Blackwell 專用建置)
-  tts:
-    build:
-      context: ./bluemagpie
-      dockerfile: Dockerfile
-    container_name: tku-care-tts-1
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
-      - MODEL_ID=OpenFormosa/BlueMagpie-TTS
-      - MODEL_LOCAL_DIR=/workspace/models/BlueMagpie-TTS
-      - CFG_VALUE=2.0
-      - INFER_STEPS=10
-      - TARGET_RATE=4.0
-      - TTS_SEED=42
-      # 要用你自己的聲音：
-      - SPEAKER_CENTROID_PT=/workspace/references/Peichi_centroid.pt
-    volumes:
-      - ./models/bluemagpie:/workspace/models
-      - ./bluemagpie/references:/workspace/references
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
 
   # 前端 (Next.js)
   frontend:
@@ -250,7 +220,7 @@ services:
     container_name: tku-care-stt-1
     environment:
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
-      - WHISPER__TTL=-1  # 模型常駐，不閒置卸載；BELLE 微調模型冷啟動要 10 分鐘以上，
+      - WHISPER__TTL=-1  # 模型常駐，不閒置卸載；冷啟動耗時不小，
                          # 中途被卸載重載會讓 /ws/stt 最終辨識逾時、整條連線被打斷（見
                          # app/routers/ws_stt.py 的逾時例外處理）。
                          # 注意：這個 image 的 PRELOAD_MODELS 設定只會預先註冊模型名稱、

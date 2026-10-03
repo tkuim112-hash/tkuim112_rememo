@@ -117,6 +117,24 @@ export interface WarmupSummary {
   manualCount: number;
 }
 
+// 趨勢分析頁用：每一次活動一個資料點，見 /api/cases/[id]/trends。
+// emotionalStatus 直接是 sessions.emotional_status（適當/亢奮/焦躁/低落），
+// 跟 Session.rating/overallEmotion 同一個欄位——情緒是既有的分類標籤，不要
+// 另外發明一個連續數值出來。
+export interface SessionTrendPoint {
+  id: string;
+  date: string;
+  dateDisplay: string;
+  sessionNumber: number;
+  score: number | null;
+  emotionalStatus: string | null;
+  avgResponseTime: number | null;
+  jointAnglePct: number | null;
+  smoothnessPct: number | null;
+  symmetryPct: number | null;
+  avgDurationSeconds: number | null;
+}
+
 export interface ActiveSession {
   sessionId: string;
   caseId: string;
