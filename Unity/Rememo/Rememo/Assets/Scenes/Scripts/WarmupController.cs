@@ -29,8 +29,23 @@ public class WarmupController : MonoBehaviour
 
     IEnumerator WaitForCalibrationThenTherapistStart()
     {
-        while (calibrationManager != null && !calibrationManager.IsCalibrated)
+        // exe 第一次執行時 Kinect 插件要解壓 NuiDatabase，會呼叫 KinectInterop.RestartLevel：
+        // 先刪掉 KinectManager 物件（校正程式就掛在上面）再重載場景。物件被刪的那一瞬間
+        // calibrationManager 會變成 null，不能因此當成校正完成，要重新去找、繼續等。
+        // 場景裡本來就沒有校正程式（一開始就找不到）才沿用舊行為直接放行。
+        bool hadCalibrationManager = calibrationManager != null;
+        while (true)
         {
+            if (calibrationManager == null)
+            {
+                if (!hadCalibrationManager) break;
+                calibrationManager = Object.FindFirstObjectByType<KinectCalibrationManager>();
+            }
+            else if (calibrationManager.IsCalibrated)
+            {
+                break;
+            }
+
             statusBadge.sprite = detectingSprite;
             yield return null;
         }
