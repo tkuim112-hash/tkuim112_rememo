@@ -1,10 +1,8 @@
-from datetime import datetime, timezone
-
 import bcrypt
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import create_access_token, get_current_therapist_id, revoke_therapist_tokens
@@ -78,7 +76,7 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     await db.execute(
         update(Therapist)
         .where(Therapist.id == therapist.id)
-        .values(last_login_at=datetime.now(timezone.utc))
+        .values(last_login_at=func.now())
     )
     await db.commit()
 
