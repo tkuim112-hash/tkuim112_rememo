@@ -39,19 +39,13 @@ class ElderlyAI:
             embedding=self.embeddings
         )
 
-    def retrieve_memories(self, elder_id, query, limit=3, score_threshold=0.65):
+    def retrieve_memories(self, elder_id, query, limit=3, score_threshold=0.48):
         """單次向量搜尋：查一次、依 Qdrant 回傳的真實相似度排序，低於門檻的結果直接排除（避免硬湊不相關記憶）。
 
-        2026-08-20 稽核：門檻從 0.5 調到 0.65——bge-m3 這類多語 embedding 模型，
-        中文短句之間即使主題不相關，cosine 相似度本來就常落在 0.4-0.6 這段
-        （句長/句式結構相似也會拉高分數），0.5 太容易放進「表面像但語意無關」
-        的結果。這次同時修掉了 ingest.py 存入內容是詞語沙拉的根因問題，
-        threshold 調整算是第二層防線，不是唯一解法。
-
-        2026-10 換成 jina-embeddings-v3 後實測（260 筆既有資料全量重新
-        embedding 完）：不相關查詢（如「股票市場分析」)分數落在 0.15 左右，
-        相關查詢（如「廚房」對到「我家廚房」)落在 0.70-0.80，區隔比 bge-m3
-        明顯很多，0.65 這個門檻換模型後繼續適用，暫不調整。"""
+        門檻 0.48 是針對 orchestrator.py 的短查詢「關於{主題}」校準的：相關記憶
+        分數多在 0.5 以上，不相關主題最高約 0.47。門檻跟查詢寫法、embedding 模型
+        綁在一起，改其中任何一個都要用真實資料重新校準；校準資料量還少，之後應
+        定期人工抽查。"""
         hits = self.db.similarity_search_with_score(
             query, k=limit,
             filter=models.Filter(must=[
