@@ -107,6 +107,32 @@ function describeMetric(values: number[], unit: SeriesSpec["unit"], decimals: nu
   };
 }
 
+// 把各場的點連成線：相鄰兩場都有值畫實線；中間有缺資料的場次（例如沒做暖身）
+// 就用虛線跨過去，趨勢連得起來，又看得出那幾場沒有資料。
+function buildLinePaths(pts: ({ x: number; y: number } | null)[]) {
+  const solid: string[] = [];
+  const gaps: string[] = [];
+  let current = "";
+  let prev: { x: number; y: number } | null = null;
+  let prevIdx = -1;
+  for (let i = 0; i < pts.length; i++) {
+    const pt = pts[i];
+    if (!pt) continue;
+    const xy = `${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`;
+    if (prev && i - prevIdx > 1) {
+      if (current) solid.push(current);
+      gaps.push(`M${prev.x.toFixed(1)} ${prev.y.toFixed(1)} L${xy}`);
+      current = `M${xy}`;
+    } else {
+      current += current ? ` L${xy}` : `M${xy}`;
+    }
+    prev = pt;
+    prevIdx = i;
+  }
+  if (current) solid.push(current);
+  return { solid, gaps };
+}
+
 function StatCard({ label, value, unit, delta }: { label: string; value: number | null; unit: string; delta: { text: string; cls: string } | null }) {
   return (
     <div className="bg-white rounded-xl px-5 py-4 flex flex-col gap-1.5">
@@ -211,20 +237,13 @@ function LineChart({
       })}
 
       {seriesPts.map(({ spec, pts }) => {
-        const segments: string[] = [];
-        let current = "";
-        pts.forEach((pt) => {
-          if (!pt) {
-            if (current) segments.push(current);
-            current = "";
-            return;
-          }
-          current += current ? ` L${pt.x.toFixed(1)} ${pt.y.toFixed(1)}` : `M${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`;
-        });
-        if (current) segments.push(current);
+        const { solid, gaps } = buildLinePaths(pts);
         return (
           <g key={spec.key}>
-            {segments.map((d, i) => (
+            {gaps.map((d, i) => (
+              <path key={`g${i}`} d={d} fill="none" stroke={spec.color} strokeWidth={1.5} strokeDasharray="4 4" opacity={0.45} />
+            ))}
+            {solid.map((d, i) => (
               <path key={i} d={d} fill="none" stroke={spec.color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
             ))}
             {pts.map((pt, i) =>
@@ -306,17 +325,7 @@ function EmotionTimeline({ points }: { points: SessionTrendPoint[] }) {
   const pts = points.map((p, i) =>
     p.emotionalStatus ? { x: xAt(i), y: rowY(p.emotionalStatus), color: EMOTION_COLORS[p.emotionalStatus] ?? "#999" } : null
   );
-  const segments: string[] = [];
-  let current = "";
-  pts.forEach((pt) => {
-    if (!pt) {
-      if (current) segments.push(current);
-      current = "";
-      return;
-    }
-    current += current ? ` L${pt.x.toFixed(1)} ${pt.y.toFixed(1)}` : `M${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`;
-  });
-  if (current) segments.push(current);
+  const { solid, gaps } = buildLinePaths(pts);
 
   return (
     <div className="overflow-x-auto overflow-y-hidden -mx-1 px-1">
@@ -348,7 +357,10 @@ function EmotionTimeline({ points }: { points: SessionTrendPoint[] }) {
           );
         })}
 
-        {segments.map((d, i) => (
+        {gaps.map((d, i) => (
+          <path key={`g${i}`} d={d} fill="none" stroke="#c3c2b7" strokeWidth={1.5} strokeDasharray="4 4" opacity={0.6} />
+        ))}
+        {solid.map((d, i) => (
           <path key={i} d={d} fill="none" stroke="#c3c2b7" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
         ))}
         {pts.map((pt, i) =>
