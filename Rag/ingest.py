@@ -14,11 +14,32 @@ def base_clean(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 
+# Whisper 在靜音/雜音片段常見的幻覺輸出：同一個字或短句一直重複（「對對對對…」
+# 「要用手要用手要用手…」），或是訓練資料裡的字幕台詞。這類片段沒有語意，
+# 對任何查詢都可能拿到中等分數、被撈去生圖，所以不存入。
+_REPEAT_RUN = re.compile(r"(.{1,6}?)\1{3,}")   # 1-6 字的單位連續重複 4 次以上
+_HALLUCINATION_PHRASES = ("明鏡與點點", "點贊訂閱", "訂閱轉發", "打賞支持", "字幕由", "Amara.org", "請不吝")
+
+
+def is_junk_chunk(chunk):
+    """判斷片段是不是 STT 幻覺/無意義內容，是的話不存入 Qdrant。
+
+    重複內容佔比門檻取 0.5，太低會誤擋「好好好好，我們去公園走走」這種正常口語。"""
+    text = re.sub(r"[\s,.!?:;、]", "", chunk)
+    if not text:
+        return True
+    if any(p in chunk for p in _HALLUCINATION_PHRASES):
+        return True
+    covered = sum(len(m.group(0)) for m in _REPEAT_RUN.finditer(text))
+    if covered / len(text) >= 0.5:
+        return True
+    # 長片段但幾乎都是同幾個字（重複單位超過 6 字、上面的規則抓不到時的備援）
+    return len(text) >= 20 and len(set(text)) / len(text) < 0.2
+
+
 class AdvancedCleaner:
-    """2026-08-20 稽核：ckip_refine 目前沒有任何呼叫端在用（存入 Qdrant 的
-    文字改用 base_clean 的完整原句，見 process_and_save 說明），這裡保留
-    給之後如果要另外做關鍵字標籤/分類用。CkipWordSegmenter/CkipPosTagger
-    是重量級模型，故不隨模組載入就初始化，只有真的呼叫 ckip_refine 時才建。"""
+    """目前沒有呼叫端在用（存入 Qdrant 的是完整原句，見 process_and_save），
+    保留給之後做關鍵字標籤/分類。CKIP 模型很重，只在真的呼叫時才建立。"""
     def __init__(self):
         self.ws = CkipWordSegmenter(model="albert-base", device=-1)
         self.pos = CkipPosTagger(model="albert-base", device=-1)
@@ -55,18 +76,16 @@ def process_and_save(elder_id, raw_text, session_id="", emotion=""):
     embeddings = get_embeddings()
 
     base = base_clean(raw_text)
-    # 2026-08-20 稽核：改用 base（完整原句）而非 ckip_refine 過的詞性白名單
-    # 結果去做 embedding/存入——ckip_refine 只留 Na/Nb/Nc/Nd/VA/VC/V_2/A 再
-    # join() 硬拼接，會把句子拆成失去語序/文法的詞語沙拉（實測庫內資料出現
-    # 「背字佳人煮飯」「抖子音樂腰晃腦」這類不可讀字串），embedding 模型是針對
-    # 自然語言訓練的，餵詞語沙拉會讓向量失真，導致檢索撈到看似關鍵字
-    # 重疊、實際語意無關的記憶。ckip_refine/AdvancedCleaner 保留在程式碼裡，
-    # 之後如果要另外做關鍵字標籤/分類可以用，但不再用來決定存入 Qdrant 的內容。
+    # 存完整原句，不用 ckip_refine 的詞性過濾結果：過濾後硬拼接會變成失去語序
+    # 的詞語沙拉（如「抖子音樂腰晃腦」），embedding 失真、檢索會撈到語意無關的記憶。
 
-    # chunk_size 從 50 調到 120：50 字（CKIP過濾後常常剩不到10個字）太容易把
-    # 句子從中間切斷，語意稀薄的短片段 embedding 更容易跟其他主題混淆。
+    # chunk_size 120：太短容易把句子從中間切斷，語意稀薄的片段容易跟其他主題混淆。
     splitter = RecursiveCharacterTextSplitter(chunk_size=120, chunk_overlap=20)
     chunks = splitter.split_text(base)
+    kept = [c for c in chunks if not is_junk_chunk(c)]
+    if len(kept) < len(chunks):
+        print(f"[ingest] elder_id={elder_id} 略過 {len(chunks) - len(kept)}/{len(chunks)} 個 STT 幻覺/無意義片段")
+    chunks = kept
     created_at = datetime.now(timezone.utc).isoformat()
     metadatas = [
         {

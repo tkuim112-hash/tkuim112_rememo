@@ -90,7 +90,10 @@ function deltaBadge(values: number[], unit: SeriesSpec["unit"], decimals: number
   };
 }
 
+// 有效值不到 2 筆就回傳 null，讓呼叫端跳過這一項——空陣列硬算會得到 NaN，
+// 而 NaN 的比較全是 false，會被誤判成「下降」並觸發「建議留意」。
 function describeMetric(values: number[], unit: SeriesSpec["unit"], decimals: number, lowerIsBetter: boolean) {
+  if (values.length < 2) return null;
   const first = values[0];
   const last = values[values.length - 1];
   const diff = last - first;
@@ -452,20 +455,27 @@ export default function TrendsTab({ caseId }: { caseId: string }) {
     insight = null;
   } else if (mode === "warmup") {
     const metrics = [
-      describeMetric(points.map((p) => p.jointAnglePct).filter((v): v is number => typeof v === "number"), "%", 0, false),
-      describeMetric(points.map((p) => p.smoothnessPct).filter((v): v is number => typeof v === "number"), "%", 0, false),
-      describeMetric(points.map((p) => p.symmetryPct).filter((v): v is number => typeof v === "number"), "%", 0, false),
-      describeMetric(points.map((p) => p.avgDurationSeconds).filter((v): v is number => typeof v === "number"), "秒", 1, true),
-    ];
-    const good = metrics.filter((m) => m.good === true).length;
-    const bad = metrics.filter((m) => m.good === false).length;
-    insight = {
-      title: "暖身活動趨勢小結",
-      tag: bad === 0 && good > 0 ? { text: "穩定進步", cls: "bg-[#e3f6ea] text-[#1a9e52]" } : good === 0 && bad > 0 ? { text: "建議留意", cls: "bg-[#fdeee0] text-[#b0661f]" } : { text: "變化不一", cls: "bg-[#fdeee0] text-[#b0661f]" },
-      body: `${rangeLabel}的資料中，關節活動度由${metrics[0].text}、平滑度由${metrics[1].text}、對稱性由${metrics[2].text}、平均動作時長由${metrics[3].text}。${
-        bad === 0 && good > 0 ? "整體呈穩定進步，建議維持目前的訓練強度與互動方式。" : good === 0 && bad > 0 ? "整體呈下滑趨勢，建議輔導員近期多加留意並適度調整活動安排。" : "各項指標變化方向不一致，建議搭配下方圖表個別觀察，留意退步的項目。"
-      }`,
-    };
+      { label: "關節活動度", m: describeMetric(points.map((p) => p.jointAnglePct).filter((v): v is number => typeof v === "number"), "%", 0, false) },
+      { label: "平滑度", m: describeMetric(points.map((p) => p.smoothnessPct).filter((v): v is number => typeof v === "number"), "%", 0, false) },
+      { label: "對稱性", m: describeMetric(points.map((p) => p.symmetryPct).filter((v): v is number => typeof v === "number"), "%", 0, false) },
+      { label: "平均動作時長", m: describeMetric(points.map((p) => p.avgDurationSeconds).filter((v): v is number => typeof v === "number"), "秒", 1, true) },
+    ].filter((x): x is { label: string; m: NonNullable<ReturnType<typeof describeMetric>> } => x.m != null);
+    const good = metrics.filter((x) => x.m.good === true).length;
+    const bad = metrics.filter((x) => x.m.good === false).length;
+    insight =
+      metrics.length === 0
+        ? {
+            title: "暖身活動趨勢小結",
+            tag: { text: "資料不足", cls: "bg-[#f0f0f0] text-[#888]" },
+            body: `${rangeLabel}的場次中尚無足夠的暖身動作資料（可能未進行暖身或全部略過），暫時無法判斷趨勢。`,
+          }
+        : {
+            title: "暖身活動趨勢小結",
+            tag: bad === 0 && good > 0 ? { text: "穩定進步", cls: "bg-[#e3f6ea] text-[#1a9e52]" } : good === 0 && bad > 0 ? { text: "建議留意", cls: "bg-[#fdeee0] text-[#b0661f]" } : { text: "變化不一", cls: "bg-[#fdeee0] text-[#b0661f]" },
+            body: `${rangeLabel}的資料中，${metrics.map((x) => `${x.label}由${x.m.text}`).join("、")}。${
+              bad === 0 && good > 0 ? "整體呈穩定進步，建議維持目前的訓練強度與互動方式。" : good === 0 && bad > 0 ? "整體呈下滑趨勢，建議輔導員近期多加留意並適度調整活動安排。" : bad === 0 && good === 0 ? "各項指標大致持平。" : "各項指標變化方向不一致，建議搭配下方圖表個別觀察，留意退步的項目。"
+            }`,
+          };
   } else {
     const statuses = points.map((p) => p.emotionalStatus).filter((v): v is string => v != null);
     const emotionFirst = statuses[0] ?? null;
@@ -480,16 +490,15 @@ export default function TrendsTab({ caseId }: { caseId: string }) {
         : `情緒從「${emotionFirst}」變化到「${emotionLast}」`
       : "情緒資料不足";
 
-    const metrics = [
-      describeMetric(points.map((p) => p.score).filter((v): v is number => typeof v === "number"), "分", 0, false),
-      describeMetric(points.map((p) => p.avgResponseTime).filter((v): v is number => typeof v === "number"), "秒", 1, true),
-    ];
+    const scoreM = describeMetric(points.map((p) => p.score).filter((v): v is number => typeof v === "number"), "分", 0, false);
+    const responseM = describeMetric(points.map((p) => p.avgResponseTime).filter((v): v is number => typeof v === "number"), "秒", 1, true);
+    const metrics = [scoreM, responseM].filter((m): m is NonNullable<typeof m> => m != null);
     const good = metrics.filter((m) => m.good === true).length + (emotionLast ? (emotionConcerning ? 0 : 1) : 0);
     const bad = metrics.filter((m) => m.good === false).length + (emotionLast ? (emotionConcerning ? 1 : 0) : 0);
     insight = {
       title: "懷舊活動趨勢小結",
       tag: bad === 0 && good > 0 ? { text: "穩定進步", cls: "bg-[#e3f6ea] text-[#1a9e52]" } : good === 0 && bad > 0 ? { text: "建議留意", cls: "bg-[#fdeee0] text-[#b0661f]" } : { text: "變化不一", cls: "bg-[#fdeee0] text-[#b0661f]" },
-      body: `${rangeLabel}的資料中，評估量表總分由${metrics[0].text}、${emotionText}、平均回應時間由${metrics[1].text}。${
+      body: `${rangeLabel}的資料中，${[scoreM && `評估量表總分由${scoreM.text}`, emotionText, responseM && `平均回應時間由${responseM.text}`].filter(Boolean).join("、")}。${
         bad === 0 && good > 0 ? "整體呈穩定進步，建議維持目前的訓練強度與互動方式。" : good === 0 && bad > 0 ? "整體呈下滑趨勢，建議輔導員近期多加留意並適度調整活動安排。" : "各項指標變化方向不一致，建議搭配下方圖表個別觀察，留意退步的項目。"
       }`,
     };
