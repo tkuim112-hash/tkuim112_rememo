@@ -38,6 +38,9 @@ services:
   ollama:
     image: ollama/ollama
     container_name: tku-care-ollama-1
+    restart: always
+    # 容器每次啟動都自動把 LLM 載進 GPU（見 docker/warmup/ollama-entrypoint.sh）
+    entrypoint: ["/bin/bash", "/warmup/ollama-entrypoint.sh"]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -45,8 +48,12 @@ services:
       - OLLAMA_KEEP_ALIVE=-1  # 模型常駐 GPU，不自動卸載，避免每次冷啟動要等30秒以上；
                               # 代價是永久佔用約 4.4-5GB VRAM，8GB顯卡上如果要同時開
                               # TTS/本機生圖等其他GPU服務，可用空間會變少
+      # 暖機用的模型與 context 長度，跟 app 共用 .env 的設定，兩邊才會一致
+      - WARMUP_MODEL=${OLLAMA_MODEL}
+      - WARMUP_NUM_CTX=${OLLAMA_NUM_CTX:-24576}
     volumes:
       - ./ollama_data:/root/.ollama
+      - ./docker/warmup:/warmup:ro
     deploy:
       resources:
         reservations:
@@ -78,7 +85,7 @@ services:
 
     # 向量資料庫
   qdrant:
-    image: qdrant/qdrant
+    image: qdrant/qdrant:v1.17.1
     container_name: tku-care-qdrant-1
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
@@ -218,19 +225,25 @@ services:
   stt:
     image: fedirz/faster-whisper-server:latest-cuda
     container_name: tku-care-stt-1
+    # 容器每次啟動都自動把 Whisper 載進 GPU（見 docker/warmup/stt-entrypoint.sh）；
+    # 保留 image 原本的 nvidia_entrypoint.sh，只換掉它要執行的指令
+    command: ["/bin/bash", "/warmup/stt-entrypoint.sh"]
     environment:
+      - WARMUP_MODEL=${STT_MODEL}
       - WHISPER_MODEL=base  # 第一次跑建議先用 base，速度最快
       - WHISPER__TTL=-1  # 模型常駐，不閒置卸載；冷啟動耗時不小，
                          # 中途被卸載重載會讓 /ws/stt 最終辨識逾時、整條連線被打斷（見
                          # app/routers/ws_stt.py 的逾時例外處理）。
                          # 注意：這個 image 的 PRELOAD_MODELS 設定只會預先註冊模型名稱、
                          # 不會真的載入權重（見 model_manager.py），所以沒有加在這裡；
-                         # 真正把權重載進 GPU 是靠 app 容器啟動時的暖機呼叫
-                         # （app/main.py _warmup_stt），常駐則靠這裡的 ttl=-1。
+                         # 真正把權重載進 GPU 是靠 stt 自己的啟動腳本
+                         # （docker/warmup/stt-entrypoint.sh）與 app 啟動時的
+                         # _warmup_stt（app/main.py），常駐則靠這裡的 ttl=-1。
     volumes:
       # 沒掛volume的話容器一重啟(重開機/更新映像)模型就要重新從HuggingFace下載一次，
       # 測試/demo當下網路不穩會很致命；掛上去讓 STT_MODEL 只下載一次。
       - ./models/whisper_cache:/root/.cache/huggingface
+      - ./docker/warmup:/warmup:ro
     deploy:
       resources:
         reservations:
