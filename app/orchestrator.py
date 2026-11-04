@@ -234,6 +234,12 @@ _JSON_GEN_NUM_PREDICT = 400
 # 模型照抄（例如過年主題問出「收工前」）。兩支函式的【任務】【幾條不能踩的
 # 線】已經各自寫明這一題要做的事，用詞規則由 guarded_generate 事後檢查，
 # 比照回合2開場（_regenerate_image_reveal_question）同一次精簡的做法。
+#
+# 2026-11-04（問題品質檢查，18場）：prohibitions.txt「禁止捏造」那條的反例
+# 原本寫了「裁縫師」「月餅」，模型當成長者說過的內容照抄——「你當裁縫師的
+# 日子…」「你最喜歡的月餅是什麼口味呢？」（長者講的是紡織廠、烤肉），反例
+# 改成不寫具體職業、食物名稱。這些 prompt 模組裡的範例都要避免寫出具體的
+# 人事物，模型分不清「這是範例」跟「這是長者說的」。
 _STEP23_SYSTEM_MODULES = ("role_and_topics.txt", "prohibitions.txt")
 
 # STEP2/STEP3 共用：要求模型額外交代「問題」引用了哪個來源，讓 response_guard.py

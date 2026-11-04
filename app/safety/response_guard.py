@@ -101,6 +101,48 @@ _WH_BEFORE_MA_RE = re.compile(r"什麼.{0,15}嗎")
 _ANYTHING_AFTER_HAVE_NOT_HAVE_RE = re.compile(r"有沒有.{0,6}什麼")
 
 
+# 2026-11-04（使用者確認）：回合2追問約1/4超過9秒，主因是被是非題規則擋下
+# 整題重新生成（每次多4-7秒）。測試log裡47句是非題，有一部分只差「有沒有」
+# 這三個字，換掉就是開放式問題，不用重新生成。只處理下面三種改了一定通順
+# 的句型，其餘照舊交給重試：
+#   1. 「有沒有…讓你印象(特別)深(刻)呢」→「最讓你印象深刻的是什麼呢」
+#      （「那個團圓飯的氣氛，有沒有讓你印象深刻呢？」）
+#   2. 「有沒有」後面幾個字內就有「哪」→ 直接拿掉「有沒有」
+#      （「你有沒有特別想起哪位家人呢？」→「你特別想起哪位家人呢？」）
+#   3. 「有沒有特別/其他＋…的X」→「有什麼特別/其他…的X」，一定要緊接
+#      「特別」或「其他」，而且中間不能有「到/了/過/起」這類動詞補語——
+#      「有沒有發出特別可愛的聲音」「有沒有感受到特別的氣氛」換成「有什麼」
+#      都不通，交給重試
+#   4. 句子裡已經有「哪」，只是用「嗎」結尾 →「嗎」換成「呢」
+#      （「你有聽到哪些特別的對話嗎？」→「你有聽到哪些特別的對話呢？」）
+_YESNO_IMPRESSION_LONG_RE = re.compile(r"有沒有讓你印象(?:特別)?深(?:刻)?(?:呢)?([？?])?$")
+_YESNO_BEFORE_WHICH_RE = re.compile(r"有沒有(?=[^，。？?]{0,6}哪)")
+# 「特別」後面一定要接到「的」（「有沒有特別喜歡的歌手」），不然會改出
+# 「你有什麼特別喜歡呢？」這種不通的句子（2026-11-04 實測）；「其他」後面
+# 直接接名詞（「有沒有其他美食」）。
+_YESNO_ADJ_NOUN_RE = re.compile(r"有沒有(其他|特別[^，。？?到了過起]{0,8}的)(?=[^，。？?的]{1,8}[呢？?])")
+_YESNO_WHICH_THEN_MA_RE = re.compile(r"哪[^，。？?]*嗎(?=[？?]?$)")
+
+
+def repair_yesno_question(text: str) -> str | None:
+    """把只差「有沒有」三個字的是非題機械改成開放式問題。改不了回傳 None。"""
+    if not text or not is_yesno_question(text):
+        return None
+    m = _YESNO_IMPRESSION_LONG_RE.search(text)
+    if m:
+        return text[: m.start()].rstrip("，, ") + "，最讓你印象深刻的是什麼呢？"
+    if _YESNO_BEFORE_WHICH_RE.search(text):
+        repaired = _YESNO_BEFORE_WHICH_RE.sub("", text, count=1)
+    elif _YESNO_WHICH_THEN_MA_RE.search(text):
+        repaired = re.sub(r"嗎([？?]?)$", r"呢\1", text)
+    else:
+        m = _YESNO_ADJ_NOUN_RE.search(text)
+        if not m or not m.group(1):
+            return None
+        repaired = text[: m.start()] + "有什麼" + m.group(1) + text[m.end():]
+    return None if is_yesno_question(repaired) else repaired
+
+
 def is_yesno_question(text: str) -> bool:
     """
     True 代表這句問題只能回答「是/不是」「有/沒有」，是是非題，需要重新生成。
@@ -834,8 +876,11 @@ def closing_claims_shared_experience(text: str) -> bool:
 #
 # 同日補「今天跟／今天和」：「今天跟大家一起烤肉的氛圍真好」「今天跟家人
 # 團圓飯的時光」。「今天跟你聊」這種講聊天本身的（後面接你／我）不擋。
+#
+# 同日再補「今天有」：「今天有小孩子在團圓飯裡玩耍的樣子，還真可愛！」。
+# 「今天有你分享」「今天有機會聽你說」不擋。
 _CLOSING_TODAY_EVENT_RE = re.compile(
-    r"(?:今天的|這次的|這次(?!的)|今天[跟和](?![你我]))"
+    r"(?:今天的|這次的|這次(?!的)|今天[跟和](?![你我])|今天有(?![你我]|機會|幸))"
     r"(?![^，。！？]{0,6}?(?:聊|分享|對話|談話|故事|回憶|點滴|內容|陪伴))"
     r"[一-鿿]"
 )
@@ -862,11 +907,45 @@ def _cjk_bigrams(text: str) -> set[str]:
 
 def closing_lacks_specific_content(closing_text: str, elder_said: str) -> bool:
     """True 代表收尾語沒有提到長者說過的任何具體內容（套句）。長者說過的話
-    是空的（拿不到逐字稿）時不判斷，回傳 False。"""
+    是空的（拿不到逐字稿）時不判斷，回傳 False。
+
+    呼叫端傳進來的是「收尾語＋問題」：2026-11-04 18場實測，只查收尾語時模型
+    很愛寫「聽你說完，我心裡也暖暖的。」，連擋幾次把重試次數用完，最後退回
+    更空泛的保底句。長者聽到的是收尾語跟問題兩句，只要其中一句帶到具體內容
+    就夠了。"""
     if not closing_text or not elder_said:
         return False
     shared = (_cjk_bigrams(closing_text) & _cjk_bigrams(elder_said)) - _CLOSING_COMMON_BIGRAMS
     return not shared
+
+
+# 2026-11-04（使用者實測，回合3 18場）：收尾語寫「團圓飯後的溫暖，我在你眼神
+# 裡都能看見。」——這是語音對話，AI看不到長者。抓「你的眼神／臉上／表情」
+# 跟「看到／看見你」；「看到你們全家」這種講回憶裡的場景、「看得出來你很
+# 懷念」這種口語的「感覺得到」不擋。
+_CLOSING_CLAIMS_SIGHT_RE = re.compile(
+    r"你的?(?:眼神|眼睛|眼裡|臉上|表情)|看(?:到|見)你(?!們)"
+)
+
+
+def closing_claims_to_see_elder(text: str) -> bool:
+    """True 代表收尾語寫成AI看得到長者（眼神、表情）。"""
+    if not text:
+        return False
+    return bool(_CLOSING_CLAIMS_SIGHT_RE.search(text))
+
+
+# 同日：收尾語用「…笑容滿面，對吧。」「你現在還能感受到吧。」收尾，等於要
+# 長者附和、而且後面緊接著還有一個真正的問題。這種句尾直接機械拿掉。
+_CLOSING_TAG_QUESTION_RE = re.compile(r"[，,]?\s*(?:對吧|是吧|對不對|吧)\s*([。！!]?)\s*$")
+
+
+def repair_closing_tag_question(text: str) -> str | None:
+    """拿掉收尾語句尾的「對吧／是吧／吧」。沒有這種句尾回傳 None。"""
+    if not text or not _CLOSING_TAG_QUESTION_RE.search(text):
+        return None
+    repaired = _CLOSING_TAG_QUESTION_RE.sub("", text).rstrip("，, ")
+    return f"{repaired}。" if repaired else None
 
 
 def closing_treats_memory_as_today(text: str) -> bool:
@@ -2044,6 +2123,17 @@ async def guarded_generate(
         # 更通用的是非題檢查（見 is_yesno_question 上方註解）：即使用「這樣的」
         # 泛稱逃過上面那條檢查，只要整句仍是「有/沒有」「是/不是」型的是非題，
         # 一樣擋下來重新生成。
+        #
+        # 先試機械修復（見 repair_yesno_question 上方說明），修得好就不燒
+        # 重試，跟 repair_double_question 同一個做法；修好的句子照樣要過
+        # 後面所有規則。
+        repaired_yesno = repair_yesno_question(question_text)
+        if repaired_yesno is not None:
+            logger.warning(
+                f"[ResponseGuard] 是非題機械修復成開放式問題: {question_text!r} → {repaired_yesno!r}"
+            )
+            result["question"] = repaired_yesno
+            question_text = repaired_yesno
         if is_yesno_question(question_text):
             logger.warning(f"[ResponseGuard] 問題是是非題: {question_text!r}")
             violations.append(("yesno_question", (
@@ -2249,10 +2339,26 @@ async def guarded_generate(
 
         # 收尾把AI寫成跟長者一起過了那段經歷（見 closing_claims_shared_
         # experience 上方說明）。收尾語跟問題都要查，實測兩個欄位都出現過。
+        # 收尾語句尾的「對吧／吧」機械拿掉（見 repair_closing_tag_question），
+        # 要在下面所有收尾檢查之前做，後面才檢查得到修好的版本。
+        repaired_closing = repair_closing_tag_question(result.get("closing_text", ""))
+        if repaired_closing is not None:
+            logger.warning(
+                f"[ResponseGuard] 收尾語句尾附和語機械拿掉: "
+                f"{result.get('closing_text')!r} → {repaired_closing!r}"
+            )
+            result["closing_text"] = repaired_closing
         closing_check_text = (
             f"{result.get('closing_text', '')} {result.get('question', '')}"
             if result.get("closing_text") else ""
         )
+        if closing_claims_to_see_elder(result.get("closing_text", "")):
+            logger.warning(f"[ResponseGuard] 收尾語寫成AI看得到長者: {result.get('closing_text')!r}")
+            violations.append(("closing_claims_sight", (
+                f"上一次的收尾語「{result.get('closing_text')}」寫成你看得到長者（眼神、表情），"
+                "但這是語音聊天，你看不到他。這次請只講你聽完的感受，或直接描述他說過的"
+                "那件事，不要提到他的眼神、表情或「看到你」。"
+            ), False))
         if closing_claims_shared_experience(closing_check_text):
             logger.warning(f"[ResponseGuard] 收尾把AI寫成一起經歷: {closing_check_text!r}")
             violations.append(("closing_shared_experience", (
@@ -2275,12 +2381,12 @@ async def guarded_generate(
                 generate_kwargs.get("elder_response", ""),
             ) if t
         )
-        if closing_lacks_specific_content(result.get("closing_text", ""), closing_elder_said):
+        if closing_lacks_specific_content(closing_check_text, closing_elder_said):
             logger.warning(f"[ResponseGuard] 收尾語沒提到具體內容: {result.get('closing_text')!r}")
             violations.append(("closing_generic", (
-                f"上一次的收尾語「{result.get('closing_text')}」沒有提到長者今天說過的任何"
-                "具體人事物，換成任何長者都能講，是套句。這次請在收尾語裡帶到長者說過的"
-                "一件具體的人事物（例如他提到的人、地方或做過的事），再接你聽完的感受。"
+                f"上一次的收尾「{closing_check_text.strip()}」沒有提到長者今天說過的任何"
+                "具體人事物，換成任何長者都能講，是套句。這次請在收尾語或問題裡帶到長者"
+                "說過的一件具體的人事物（例如他提到的人、地方或做過的事）。"
             ), False))
 
         # 承接語／場景文字幾乎整段複誦長者剛才那句話，不是用自己的話轉述
@@ -2492,6 +2598,25 @@ async def guarded_generate(
             logger.info(
                 f"[ResponseGuard] 問題一次問兩件事（多個問號），機械修復成單一"
                 f"問題: {question_text!r} → {repaired_question!r}"
+            )
+            result["question"] = repaired_question
+            question_text = repaired_question
+
+        # 2026-11-04（使用者確認，18場實測）：回合2開場6次把問題寫成「紡織廠
+        # 裡，長者最喜歡哪一項工作？」——prompt通篇用「長者」指對方，模型照抄
+        # 進問題，整題重打。問題本來就是對長者說的，「長者」直接換成「你」
+        # 一定通順，機械修復不燒重試。「長輩」不換：「家裡的長輩」講的是
+        # 長者的家人，換成「你」意思就錯了，照舊交給 third_person_elder_wording。
+        # 同日：模型的結束標記 </s> 漏進問題（「當時家人在吃什麼？</s>」），
+        # 會被TTS念出來，直接拿掉。
+        if "</s>" in question_text:
+            question_text = question_text.replace("</s>", "").strip()
+            result["question"] = question_text
+        if "長者" in question_text:
+            repaired_question = question_text.replace("長者", "你")
+            logger.warning(
+                f"[ResponseGuard] 問題用第三人稱「長者」，機械修復成「你」: "
+                f"{question_text!r} → {repaired_question!r}"
             )
             result["question"] = repaired_question
             question_text = repaired_question
