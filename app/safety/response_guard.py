@@ -807,6 +807,75 @@ def ack_claims_recollection(text: str) -> bool:
     return bool(_AI_RECOLLECTION_RE.search(text))
 
 
+# 2026-11-04（使用者實測，回合3收尾8場）：收尾把AI寫成跟長者一起過了
+# 那段經歷——「想到我們一起度過的新年夜」「很高興能和你一起迎接新的
+# 一年」「那時候我們一起迎新年」。只抓「我們一起」跟「我／能／可以＋和/跟你一起」，接的是經歷類
+# 動詞才算；「跟你一起過年的家人」這種問長者身邊的人、「今天和你一起聊」
+# 這種講這場聊天本身的都不算。
+_AI_SHARED_EXPERIENCE_RE = re.compile(
+    r"(?:我們|(?:我|能|可以).{0,4}?[和跟]你)一起"
+    r"(?:度過|迎接|迎|慶祝|過|吃|玩|看|守歲|圍爐|團圓|放)"
+)
+
+
+def closing_claims_shared_experience(text: str) -> bool:
+    """True 代表收尾語／收尾問題把AI寫成跟長者一起經歷了回憶裡的事。"""
+    if not text:
+        return False
+    return bool(_AI_SHARED_EXPERIENCE_RE.search(text))
+
+
+# 2026-11-04（使用者實測，回合3主題「新年」）：closing.txt 跟任務都寫了
+# 「今天只能指這場聊天」，還是常寫出「今天的團圓飯真的很溫馨」「想到這次
+# 團圓飯裡」，把長者的回憶講成今天發生的事。「今天的／這次的」後面接的
+# 不是聊天本身（聊天、分享、故事…）就算違規；「今天聊完」「今天想起」這種
+# 沒有「的」的動詞用法不擋；「今天的中秋節回憶」這種後面幾個字內接回憶／
+# 故事的，講的還是這場聊天，也不擋。
+#
+# 同日補「今天跟／今天和」：「今天跟大家一起烤肉的氛圍真好」「今天跟家人
+# 團圓飯的時光」。「今天跟你聊」這種講聊天本身的（後面接你／我）不擋。
+_CLOSING_TODAY_EVENT_RE = re.compile(
+    r"(?:今天的|這次的|這次(?!的)|今天[跟和](?![你我]))"
+    r"(?![^，。！？]{0,6}?(?:聊|分享|對話|談話|故事|回憶|點滴|內容|陪伴))"
+    r"[一-鿿]"
+)
+
+
+#
+# 2026-11-04（使用者實測，回合3）：收尾語整句只有「聽你說完，我心裡也暖暖的。」
+# ——closing.txt 跟任務都要求提到長者說過的具體人事物，模型還是常只寫這句。
+# 檢查收尾語跟長者說過的話有沒有任何共同的兩字詞；下面這些詞太常見，
+# 不算「提到具體內容」。
+_CLOSING_COMMON_BIGRAMS = {
+    "那時", "時候", "今天", "一起", "大家", "我們", "你們", "現在", "心裡",
+    "感覺", "真的", "開心", "很好", "暖暖", "溫暖", "溫馨", "以前", "回憶",
+    "分享", "聊天", "時光", "很開", "感受", "還是", "的時",
+}
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    chars = re.sub(r"[^一-鿿]", " ", text or "")
+    return {
+        w[i:i + 2] for w in chars.split() for i in range(len(w) - 1)
+    }
+
+
+def closing_lacks_specific_content(closing_text: str, elder_said: str) -> bool:
+    """True 代表收尾語沒有提到長者說過的任何具體內容（套句）。長者說過的話
+    是空的（拿不到逐字稿）時不判斷，回傳 False。"""
+    if not closing_text or not elder_said:
+        return False
+    shared = (_cjk_bigrams(closing_text) & _cjk_bigrams(elder_said)) - _CLOSING_COMMON_BIGRAMS
+    return not shared
+
+
+def closing_treats_memory_as_today(text: str) -> bool:
+    """True 代表收尾語／收尾問題用「今天的X」「這次X」把回憶講成今天的事。"""
+    if not text:
+        return False
+    return bool(_CLOSING_TODAY_EVENT_RE.search(text))
+
+
 async def ai_claims_personal_memory_llm(
     text: str, elder_response: str, llm_service,
 ) -> bool:
@@ -827,8 +896,13 @@ async def ai_claims_personal_memory_llm(
 
     True 代表AI把長者的經歷講成自己的親身回憶／家人／童年往事，冒用第
     一人稱經歷，需要重新生成。失敗（例如LLM服務逾時/回應解析不出來）時
-    保守視為違規，觸發重新生成，理由同 taboo_checker.py 的 llm_topic_check。"""
-    if not text:
+    保守視為違規，觸發重新生成，理由同 taboo_checker.py 的 llm_topic_check。
+
+    2026-11-04（使用者實測，回合3）：「那時候跟家人一起吃團圓飯的溫馨氣氛，
+    你現在講起來都還覺得很舒服。」整句沒有「我」，還是被判成冒用經歷、重打
+    後反而寫出「今天的團圓飯」。沒有「我」就不可能是AI自稱經歷，直接放行，
+    也省一次LLM呼叫。"""
+    if not text or "我" not in text:
         return False
     prompt = (
         f"AI的承接語：「{text}」\n\n"
@@ -981,7 +1055,12 @@ def scene_text_preempts_why_question(scene_text: str, question_text: str) -> boo
 # 強制逐字比對，避免誤傷正常的改寫式依據；引號代表模型在宣稱「長者說過
 # 這句話」，這種宣稱才需要跟長者原話核對是否存在。
 _QUOTED_RE = re.compile(r"[「『][^」』]{2,}[」』]")
-_PUNCT_STRIP_RE = re.compile(r"[，。！？、\s「」『』]")
+# 2026-11-02稽核（實測後補）：原本只去掉全形標點，但STT轉出來的長者原話
+# 用的是半形逗號（例如「一起圍爐,然後晚上…」），模型引用時又寫成全形「，」，
+# 兩邊正規化後對不上——question_anchor_unsupported 把逐字照抄長者原話的
+# 錨點誤判成「編造」，STEP1問題實測4次裡有3次因此白白重打1-3次（每次約
+# 2-3秒）。半形標點一併去掉。
+_PUNCT_STRIP_RE = re.compile(r"[，。！？、；：,.!?;:\s「」『』]")
 _CLAUSE_SPLIT_RE = re.compile(r"[，。；！？]")
 
 # 2026-08-18稽核（使用者提案，實測後補）：實測案例——判斷依據寫「長者說
@@ -1033,17 +1112,56 @@ def question_anchor_unsupported(
     不算違規，只有「宣稱這是引用」卻找不到出處時才算。"""
     if not anchor:
         return False
+    # 2026-11-04（使用者實測）：模型有時把思考內容塞進錨點欄位（「今日主題
+    # 最貼近的核心主題是『家庭』，切入角度是『家人之間的互動』。」），裡面
+    # 的『家庭』被當成引用、找不到出處，問題本身沒問題卻白白重打。錨點照
+    # 格式要用引號開頭逐字引用，不是引號開頭代表寫的是說明文字、不是在宣稱
+    # 引用長者的話，不檢查。
+    if not anchor.lstrip().startswith(("「", "『")):
+        return False
     sources = [elder_response or "", pre_image_detail or "", "、".join(scene_elements or [])]
     normalized_sources = [_PUNCT_STRIP_RE.sub("", s) for s in sources if s]
     if not normalized_sources:
         return False
     for match in _QUOTED_RE.finditer(anchor):
         normalized_quote = _PUNCT_STRIP_RE.sub("", match.group())
-        if not normalized_quote:
+        if not normalized_quote or normalized_quote in _ANCHOR_SECTION_LABELS:
             continue
-        if not any(normalized_quote in src for src in normalized_sources):
+        if not any(_quote_roughly_in(normalized_quote, src) for src in normalized_sources):
             return True
     return False
+
+
+# 2026-11-04（真實療程重播實測，session 2763）：模型在錨點引號裡引用長者
+# 原話時常順手改寫幾個字——原話「想到高雄老家,因為我們都在那邊過新年,然後
+# 圖片很像過新年時候圍爐的氛圍」，錨點寫成「想到了高雄老家，圖片很像過新年
+# 時候圍爐的氛圍」（多一個「了」、省掉中間子句），逐字 substring 比對判成
+# 編造，問題本身明明合規卻連續重打 4 次、退回通用保底句。真正要攔的是
+# 「長者講三杯雞、錨點冒出滷豬腳」這種憑空的新事物，跟原話幾乎沒有字面
+# 重疊；改寫式引用則大部分相鄰兩字都還在原話裡。改成：逐字找不到時，引號
+# 內容的相鄰兩字組合有六成以上出現在同一份來源裡就算有出處。太短（4字以下）
+# 的引用相鄰字組太少、比例不可靠，維持逐字比對。
+_ANCHOR_BIGRAM_MATCH_RATIO = 0.6
+
+# 同一次實測（session 1837）：模型有時把錨點寫成 prompt 段落標題本身
+# （「長者生圖前分享的內容」），是在指出處、不是宣稱長者講過這句話，
+# 不算編造。
+_ANCHOR_SECTION_LABELS = {
+    "長者生圖前分享的內容", "長者剛才說的話", "眼前畫面元素", "畫面元素",
+    # _ANCHOR_FIELD_SPEC 明講純時間回指要寫「無」，模型仍常寫成「「那時候」無」，
+    # 一樣不是在宣稱長者說過這句話。
+    "那時候", "那個時候", "無",
+}
+
+
+def _quote_roughly_in(quote: str, source: str) -> bool:
+    if quote in source:
+        return True
+    if len(quote) <= 4:
+        return False
+    bigrams = {quote[i:i + 2] for i in range(len(quote) - 1)}
+    hits = sum(1 for b in bigrams if b in source)
+    return hits / len(bigrams) >= _ANCHOR_BIGRAM_MATCH_RATIO
 
 
 # 2026-09稽核：anchor沒加引號時 question_anchor_unsupported 不會檢查
@@ -1207,7 +1325,11 @@ _RUSHING_CLOSING_RE = re.compile(r"時間不早|該回去了|該走了|該回家
 # 這類指向特定日曆日期的詞，不抓單獨的「今天」或「現在」——這兩個字在
 # 收尾語裡有合法用法（「謝謝你今天的分享」指今天這場療程；「現在想起
 # 那些精彩的料理時」是規則鼓勵的回想橋接句型），抓了會誤傷。
-_PRESENT_DAY_TIME_RE = re.compile(r"今晚|今天晚上|今天早上|今天中午|昨天|明天")
+# 2026-11-04（使用者實測回報）：補「最近／這陣子／這幾天」——長者說
+# 「大家一起聊天分享近況」（講的是當年團圓飯桌上的事），問題卻問「最近
+# 你們家有什麼新鮮事嗎？」，回合3開場也出現過「最近看了哪些好戲呢？」。
+# 同日補「今年」：回合3收尾問題出現「今年最讓你感動的一件事是什麼？」。
+_PRESENT_DAY_TIME_RE = re.compile(r"今晚|今天晚上|今天早上|今天中午|昨天|明天|最近|這陣子|這幾天|今年")
 
 # 2026-08-17稽核（實測後補）：長者看完AI示意圖、指出跟記憶不一樣（分類2/3，
 # 見 orchestrator.py _generate_image_reveal_reaction）時，實測案例承接語寫成
@@ -1246,7 +1368,7 @@ _TRIVIALIZE_DISCREPANCY_RE = re.compile(
 # 都跟 too_long 一樣只查 q（見 check_format_rules 內部實作），nin/xian/zanmen 等用詞規則因為查的是
 # scene_text+q 的 combined，不在此列——沒辦法排除是 scene_text 那邊的問題。
 _QUESTION_ONLY_FORMAT_RULES = frozenset({
-    "too_long", "double_question", "memory_test", "precise_fact",
+    "too_long", "too_short", "not_a_question", "double_question", "memory_test", "precise_fact",
     "image_description", "comparison_trap", "vague_association",
     "sense_as_method", "confused_tone", "inanimate_subject_misread",
     "present_day_time_reference",
@@ -1345,6 +1467,9 @@ _IMAGE_DESC_RE = re.compile(
 # 答案本質上是「選一個名稱」或「一兩個字帶過」，跟 _PRECISE_FACT_RE／
 # _IMAGE_DESC_RE 是同一類「答案不是敘事」的違規，補在這裡一起用同一套
 # retry_feedback 機制處理。
+# 「跟我說說那天的事吧」這類邀請句沒有問號，但也是在請長者開口，一併放行。
+_QUESTION_CUE_RE = re.compile(r"[？?]|嗎|呢|什麼|怎麼|怎樣|哪|誰|幾|為何|如何|說說|聊聊|分享")
+
 _COMPARISON_TRAP_RE = re.compile(r"哪一?[種樣].{0,15}(?:比較|更)")
 _VAGUE_ASSOCIATION_RE = re.compile(r"讓你想到什麼")
 
@@ -1453,8 +1578,16 @@ def name_used_as_direct_address(text: str, elder_name: str) -> bool:
             return True
     return False
 
+# 2026-11-04（使用者實測，回合3帶前兩回合逐字稿9場）：收尾問題的句型是
+# 「想到（具體錨點），你現在心裡是什麼感覺呢？」，光後半句就12字，錨點講得
+# 具體就超過35字——「想到當年在巷子口和鄰居朋友一起烤肉、戴著柚子皮帽子的
+# 歡樂時光，你現在心裡是什麼感覺呢？」被擋下，重打3次越改越差、最後退回
+# 通用保底句。收尾問題放寬到45字（prompt教的目標是40字）。
+_CLOSING_QUESTION_MAX_LEN = 45
+
+
 def check_format_rules(
-    question_text: str, scene_text: str,
+    question_text: str, scene_text: str, max_question_len: int = 35,
 ) -> list[tuple[str, str]]:
     """
     檢查 question_5w1h.txt 明文規定、但先前沒有對應事後防護的幾條格式/內容規則。
@@ -1473,11 +1606,39 @@ def check_format_rules(
     combined = f"{scene_text or ''}{q}"
     violations: list[tuple[str, str]] = []
 
+    # 2026-11-02稽核（實測後補）：門檻原本跟prompt教的一樣是30字，實測
+    # 「你們在圍爐的時候，有沒有聽到什麼特別的聲音或聞到什麼特別的氣味呢？」
+    # 只超1個字（31字）就被擋，重打後反而問成跟目標感官無關的「天氣或光線」。
+    # 比照 ack_text_too_long 的做法：prompt裡教的目標仍是30字，真正會觸發
+    # 重試的上限放寬到35字，只攔真的長到需要精簡的句子。
+    #
+    # max_question_len：回合3收尾問題傳 _CLOSING_QUESTION_MAX_LEN，見該常數說明。
     length = len(_FORMAT_PUNCT_RE.sub("", q))
-    if length > 30:
+    if length > max_question_len:
         violations.append(("too_long", (
-            f"上一次的問題「{q}」共{length}字，超過30字上限。這次請把這句話縮短到30字以內，"
+            f"上一次的問題「{q}」共{length}字，太長了。這次請把這句話縮短到"
+            f"{max_question_len - 5}字以內，"
             "可以拿掉不影響意思的修飾詞。"
+        )))
+
+    # 2026-11-04（真實療程重播實測，session 1936）：STEP2 結構化輸出的
+    # question 欄位被模型填成「無」（跟 anchor 欄位的「無」搞混），解析後
+    # 不是空字串、不會觸發 parser 的空欄位保底，所有規則也都沒攔到，「無」
+    # 就這樣直接念給長者聽。正常問題不可能只有1-3個字；空字串不在這裡
+    # 處理（text_keys 沒有 question 的生成函式會傳空字串進來）。
+    if 0 < length < 4:
+        violations.append(("too_short", (
+            f"上一次的「問題」欄位只寫了「{q}」，這不是一個完整的問題。這次請在"
+            "「問題」欄位寫出一句真正要問長者的完整問句。"
+        )))
+
+    # 同一次重播（session 1748）：回合2開場的「問題」欄位寫成陳述句「當時
+    # 家人都在廚房裡，聽到鍋子滾水的聲音。」，沒有任何規則攔到，長者聽完
+    # 不知道要回答什麼。沒有問號、也沒有任何疑問詞，才判定不是問句。
+    if length >= 4 and not _QUESTION_CUE_RE.search(q):
+        violations.append(("not_a_question", (
+            f"上一次的「問題」欄位寫「{q}」，這是陳述句，不是問句，長者聽完不知道要"
+            "回答什麼。這次請寫成一句真正在問長者的問句。"
         )))
 
     if len(_DOUBLE_QUESTION_RE.findall(q)) > 1:
@@ -2086,6 +2247,42 @@ async def guarded_generate(
                 "覺得很溫暖」），不要用「想起」這個字。"
             ), False))
 
+        # 收尾把AI寫成跟長者一起過了那段經歷（見 closing_claims_shared_
+        # experience 上方說明）。收尾語跟問題都要查，實測兩個欄位都出現過。
+        closing_check_text = (
+            f"{result.get('closing_text', '')} {result.get('question', '')}"
+            if result.get("closing_text") else ""
+        )
+        if closing_claims_shared_experience(closing_check_text):
+            logger.warning(f"[ResponseGuard] 收尾把AI寫成一起經歷: {closing_check_text!r}")
+            violations.append(("closing_shared_experience", (
+                f"上一次的收尾「{closing_check_text.strip()}」寫成AI跟長者「一起」度過、"
+                "迎接或慶祝了那段經歷，但AI沒有參與長者的回憶，那些事只屬於長者本人。"
+                "這次請改用「你」敘述長者自己的經歷（例如「想到那年的團圓飯，你現在"
+                "心裡是什麼感覺呢？」），不要用「我們一起」「和你一起」。"
+            ), False))
+        if closing_treats_memory_as_today(closing_check_text):
+            logger.warning(f"[ResponseGuard] 收尾把回憶講成今天的事: {closing_check_text!r}")
+            violations.append(("closing_memory_as_today", (
+                f"上一次的收尾「{closing_check_text.strip()}」用「今天的…」「這次…」講長者"
+                "回憶裡的事，聽起來像那件事是今天發生的。「今天」只能指這場聊天本身"
+                "（例如「今天聽你說了這麼多」），回憶裡的事請改用「那時候」「那年」"
+                "（例如把「今天的團圓飯」改成「那年的團圓飯」）。"
+            ), False))
+        closing_elder_said = "\n".join(
+            t for t in (
+                generate_kwargs.get("prior_rounds_transcript", ""),
+                generate_kwargs.get("elder_response", ""),
+            ) if t
+        )
+        if closing_lacks_specific_content(result.get("closing_text", ""), closing_elder_said):
+            logger.warning(f"[ResponseGuard] 收尾語沒提到具體內容: {result.get('closing_text')!r}")
+            violations.append(("closing_generic", (
+                f"上一次的收尾語「{result.get('closing_text')}」沒有提到長者今天說過的任何"
+                "具體人事物，換成任何長者都能講，是套句。這次請在收尾語裡帶到長者說過的"
+                "一件具體的人事物（例如他提到的人、地方或做過的事），再接你聽完的感受。"
+            ), False))
+
         # 承接語／場景文字幾乎整段複誦長者剛才那句話，不是用自己的話轉述
         # （見 scene_text_echoes_elder_response 上方註解）——跟上面
         # is_generic_acknowledgment 是同一類「承接語沒有盡到承接語該做的事」
@@ -2305,7 +2502,12 @@ async def guarded_generate(
         # 把它的結果併進同一份 violations 清單，讓格式規則也能跟上面這些
         # 內容規則一起在同一次retry_feedback裡回報。
         wording_check_text = "".join(result.get(k, "") for k in text_keys if k != "question")
-        format_violations = check_format_rules(question_text, wording_check_text)
+        format_violations = check_format_rules(
+            question_text, wording_check_text,
+            max_question_len=(
+                _CLOSING_QUESTION_MAX_LEN if result.get("closing_text") else 35
+            ),
+        )
         if format_violations:
             format_rules = [code for code, _ in format_violations]
             logger.warning(
@@ -2387,8 +2589,17 @@ async def guarded_generate(
         # ack_composer 算好承接語時，這句話已經在 compose_sentence 內部
         # 查過同一件事，這裡再查一次是白工，呼叫端傳 True 跳過。
         if memory_check_text and not skip_ack_memory_check:
+            # 回合3收尾語呼應的是整場逐字稿（_generate_closing 的
+            # prior_rounds_transcript），只拿長者最後一句比對，收尾語提到的
+            # 回合1內容會被當成「長者沒說過、AI自己編的經歷」。
+            memory_reference = "\n".join(
+                t for t in (
+                    generate_kwargs.get("prior_rounds_transcript", ""),
+                    echo_elder_response_val,
+                ) if t
+            )
             claims_memory = await ai_claims_personal_memory_llm(
-                memory_check_text, echo_elder_response_val, llm_service,
+                memory_check_text, memory_reference, llm_service,
             )
             if claims_memory:
                 logger.warning(f"[ResponseGuard] {memory_check_label}疑似AI冒用第一人稱經歷: {memory_check_text!r}")

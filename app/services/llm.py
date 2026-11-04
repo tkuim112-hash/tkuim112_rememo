@@ -40,6 +40,7 @@ class LLMService:
         messages: list[dict],
         temperature: float | None = None,
         format: dict | str | None = None,
+        num_predict: int | None = None,
     ) -> str:
         """
         送出 messages 格式的對話，對齊 DPO 訓練時的 prompt 結構。
@@ -53,6 +54,8 @@ class LLMService:
                 品質，但保證欄位本身不會被模型漏掉，解決本地小模型在多段
                 標籤格式下常見的「漏欄位」問題）；傳 "json" 則只要求輸出是
                 合法 JSON、不檢查結構。不傳則沿用原本的自由文字輸出。
+            num_predict: 選用，這次最多生成幾個 token。不傳就不限制（Ollama
+                預設）。
 
         Returns:
             LLM 的回應文字
@@ -70,6 +73,8 @@ class LLMService:
         }
         if format is not None:
             payload["format"] = format
+        if num_predict is not None:
+            payload["options"]["num_predict"] = num_predict
         response = await self.client.post(f"{self.host}/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
