@@ -5,7 +5,8 @@ ckip-transformers
 langchain-qdrant
 langchain-text-splitters
 langchain-core
-qdrant-client
+# 對齊 docker-compose 的 qdrant server（目前 1.17.x），client 與 server 的 minor 版本差距不能超過 1
+qdrant-client>=1.17,<1.18
 torch
 sentence-transformers
 einops

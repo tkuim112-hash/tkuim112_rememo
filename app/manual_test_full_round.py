@@ -21,13 +21,18 @@ build_closing_invitation 產生固定的「感謝語＋問題」收尾語，2026
 不再呼應回合3的回答，長者對這句開場邀請語的回答只記錄不再另外生成收尾
 訊息），跟正式部署行為一致，全程只用LLM，不生圖。
 
-用法：在 app/ 目錄下執行 `python manual_test_full_round.py`，每一題會印出
-scene_text/question，接著在終端機手動輸入「長者」的回答，Enter 空白代表
+用法：在 app/ 目錄下執行 `python manual_test_full_round.py [今日主題]`（不給
+主題就用 TEST_USER 預設的「中秋節」），每一題會印出scene_text/question
+跟這一題的生成耗時，接著在終端機手動輸入「長者」的回答，Enter 空白代表
 長者沒回應（模擬治療師按跳過，見 orchestrator.py _NO_RESPONSE_MARKER 說明）。
 全部跑完（心得環節問完最後一題並記錄回答後）自動停止。
+
+用 docker 跑（不用在本機裝套件，Ollama 連線設定直接沿用容器的環境變數）：
+  docker exec -it tku-care-app-1 python manual_test_full_round.py 新年
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -96,10 +101,12 @@ TEST_USER = {
     "today_topic": "中秋節",
     "preferences": "聽廣播",
 }
+if len(sys.argv) > 1:
+    TEST_USER["today_topic"] = sys.argv[1]
 
 
-def _print_turn(label: str, result: dict) -> None:
-    print(f"\n=== {label}（action={result.get('action')}）===")
+def _print_turn(label: str, result: dict, elapsed: float) -> None:
+    print(f"\n=== {label}（action={result.get('action')}，耗時 {elapsed:.1f}s）===")
     if result.get("scene_text"):
         print(f"[場景/承接語] {result['scene_text']}")
     if result.get("question"):
@@ -115,8 +122,10 @@ async def _ask_elder(prompt: str = "\n長者回答（直接 Enter 表示沒回�
 
 async def run_round(
     orchestrator: TherapyOrchestrator, round_number: int, carryover: dict | None,
-) -> tuple[dict, dict, str]:
-    """跑完一整個回合，回傳 (最後一次 result, 最後一次非None的state, 長者最後一句回答)。"""
+) -> tuple[dict, dict, str, list[str]]:
+    """跑完一整個回合，回傳 (最後一次 result, 最後一次非None的state, 長者最後一句回答,
+    這回合長者每一句回答)。"""
+    started = time.time()
     if round_number == 1:
         result = await orchestrator.start_round(
             user_id=TEST_USER["user_id"], session_id=SESSION_ID, round_number=1,
@@ -126,19 +135,22 @@ async def run_round(
             user_id=TEST_USER["user_id"], session_id=SESSION_ID,
             round_number=round_number, carryover=carryover,
         )
-    _print_turn(f"回合{round_number} 開場", result)
+    _print_turn(f"回合{round_number} 開場", result, time.time() - started)
 
     state = result["state"]
     last_elder_response = ""
+    responses: list[str] = []
     while result["state"] is not None:
         last_elder_response = await _ask_elder()
+        responses.append(last_elder_response)
         state = result["state"]
+        started = time.time()
         result = await orchestrator.process_response(
             elder_response=last_elder_response, state=state,
         )
-        _print_turn(f"回合{round_number} 回應", result)
+        _print_turn(f"回合{round_number} 回應", result, time.time() - started)
 
-    return result, state, last_elder_response
+    return result, state, last_elder_response, responses
 
 
 async def main() -> None:
@@ -159,11 +171,21 @@ async def main() -> None:
 
     try:
         carryover: dict | None = None
+        # 照抄 session.py _build_prior_rounds_transcript：回合3開場要看回合1、2
+        # 長者說過的所有話（DB裡每回合 patient_response 是用換行串起來的）。
+        # 原本沒帶，回合3只看得到長者最後一句，測出來的品質比正式環境差。
+        transcript_parts: list[str] = []
 
         for round_number in (1, 2, 3):
-            result, last_state, last_elder_response = await run_round(
+            if round_number == 3 and carryover is not None:
+                carryover["prior_rounds_transcript"] = "\n".join(transcript_parts)
+            result, last_state, last_elder_response, responses = await run_round(
                 orchestrator, round_number, carryover,
             )
+            said = [r for r in responses if r != _NO_RESPONSE_MARKER]
+            if said:
+                joined = "\n".join(said)
+                transcript_parts.append(f"【第{round_number}回合｜長者實際所說】{joined}")
             action = result.get("action")
 
             # carryover／主題紀錄組法照抄 app/routers/session.py session_respond
