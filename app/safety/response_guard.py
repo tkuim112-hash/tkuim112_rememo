@@ -78,7 +78,10 @@ def treats_image_as_real_place(text: str) -> bool:
 # 判定，但整句話仍然是只能回答「有/沒有」的是非題，長者一樣沒辦法展開分享。
 # 這裡直接補上更根本的通用檢查：question_5w1h.txt【提問規則】明文「絕對不用
 # 是非題」，這條規則本身也該有事後防護，不能只靠 prompt 文字。
-_ALTERNATIVE_CHOICE_RE = re.compile(r"還是")
+# 2026-11-06（實測）：「現在還是會很懷念嗎？」的「還是」是「仍然」，「聽到A，還是
+# 聞到B，讓你覺得很懷念嗎？」後面也還是在問是不是，這兩句都被當成二選一放行。
+# 真正的二選一不會用「嗎」結尾，句尾是「嗎」就不算。
+_ALTERNATIVE_CHOICE_RE = re.compile(r"還是(?![^？?]*嗎[？?]?\s*$)")
 _YESNO_MARKERS_RE = re.compile(
     r"嗎|有沒有|是不是|會不會|是否|對不對|好不好|可不可以|能不能|認不認得|熟不熟悉"
 )
@@ -835,7 +838,8 @@ _AI_MEMORY_CHECK_SYSTEM = (
 # （後者還要抓更多樣的冒用經歷措辭，例如直接寫「我小時候」「我媽媽」），
 # 是補上前者對這個特定措辭的漏洞、且不用額外LLM呼叫，可以放在LLM檢查
 # 之前當免費的第一道防線。
-_AI_RECOLLECTION_RE = re.compile(r"(我|讓我|使我)(也|都)?(回)?想起")
+# 2026-11-06（做料理 6 場實測）：補「我也跟著回憶起來了」這種說法。
+_AI_RECOLLECTION_RE = re.compile(r"(我|讓我|使我)(也|都)?(跟著)?(回)?(想起|回憶|回想|憶起)")
 
 
 def ack_claims_recollection(text: str) -> bool:
@@ -905,6 +909,20 @@ def _cjk_bigrams(text: str) -> set[str]:
     }
 
 
+# 套句、功能詞跟逐字稿標籤（【第N回合｜長者實際所說】）常見的字，不算實字。
+_CLOSING_COMMON_CHARS = set(
+    "的了是在有我你他她們也都就還很真好這那個些麼什怎樣一不沒會要能可以"
+    "說聽講聊想看到起來過去著得把被讓給跟和與對呢啊吧嗎呀喔哦啦"
+    "今天現時候以前當年心裡感覺受暖溫馨開快樂美滿幸福謝分享回憶憶念懷"
+    "大家多少些點滴段次件事情樣子氣氛光日最特別"
+    "第回合長者實際所"
+)
+
+
+def _cjk_chars(text: str) -> list[str]:
+    return re.findall(r"[一-鿿]", text or "")
+
+
 def closing_lacks_specific_content(closing_text: str, elder_said: str) -> bool:
     """True 代表收尾語沒有提到長者說過的任何具體內容（套句）。長者說過的話
     是空的（拿不到逐字稿）時不判斷，回傳 False。
@@ -916,7 +934,14 @@ def closing_lacks_specific_content(closing_text: str, elder_said: str) -> bool:
     if not closing_text or not elder_said:
         return False
     shared = (_cjk_bigrams(closing_text) & _cjk_bigrams(elder_said)) - _CLOSING_COMMON_BIGRAMS
-    return not shared
+    if shared:
+        return False
+    # 2026-11-06（做料理 6 場實測）：長者說「常常煮蛋炒飯」「很香」，收尾語寫
+    # 「聽你說起炒菜的香氣」連擋 4 次退回保底句——有呼應，只是換了說法，兩字詞
+    # 對不上。兩字詞找不到時，再看有沒有至少 2 個長者說過的實字。
+    shared_chars = (set(_cjk_chars(closing_text)) & set(_cjk_chars(elder_said))) \
+        - _CLOSING_COMMON_CHARS
+    return len(shared_chars) < 2
 
 
 # 2026-11-04（使用者實測，回合3 18場）：收尾語寫「團圓飯後的溫暖，我在你眼神
@@ -926,6 +951,30 @@ def closing_lacks_specific_content(closing_text: str, elder_said: str) -> bool:
 _CLOSING_CLAIMS_SIGHT_RE = re.compile(
     r"你的?(?:眼神|眼睛|眼裡|臉上|表情)|看(?:到|見)你(?!們)"
 )
+
+
+# 2026-11-06（做料理 6 場實測）：回合3問題寫成「回到現在，你最期待下一次在家
+# 做什麼料理呢？」——closing.txt 已經寫了不要問未來，模型還是會問。「放學以後」
+# 這種講當年的不擋，只擋「以後想／要／會」。
+_CLOSING_FUTURE_RE = re.compile(r"下一次|下次|將來|未來|明年|以後(?:還)?(?:想|要|會)")
+
+
+def closing_asks_future(question: str) -> bool:
+    """True 代表回合3問題在問未來的事。"""
+    if not question:
+        return False
+    return bool(_CLOSING_FUTURE_RE.search(question))
+
+
+# guarded_generate(keep_question_on_fallback=True) 用：這些規則只檢查收尾語本身，
+# 踩到時問題仍然是合格的。closing_shared_experience／closing_memory_as_today
+# 查的是收尾語＋問題，不算。closing_generic 也查兩句，但退回的保底收尾語跟保底
+# 問題一樣空泛，沿用模型的問題不會比較差，算進來。
+_CLOSING_TEXT_ONLY_CODES = {
+    "ack_too_long", "ack_generic", "ack_claims_recollection", "closing_claims_sight",
+    "closing_generic", "ack_echoes_elder", "ack_is_question",
+    "ack_contains_question_mark", "ack_question_duplicate",
+}
 
 
 def closing_claims_to_see_elder(text: str) -> bool:
@@ -1929,6 +1978,7 @@ async def guarded_generate(
     check_scene_text_question: bool = True,
     skip_ack_memory_check: bool = False,
     skip_ack_checks: bool = False,
+    keep_question_on_fallback: bool = False,
     **generate_kwargs,
 ) -> dict:
     """
@@ -2007,6 +2057,13 @@ async def guarded_generate(
                      預設 False，維持原本行為；skip_ack_memory_check 在
                      這個設True時形同多餘，但保留參數不衝突，兩個都設也
                      不會有問題。
+        keep_question_on_fallback: 選用。2026-11-06（做料理 6 場實測）：回合3
+                     收尾語連續被擋（AI冒用經歷、套句…）退回保底時，問題
+                     本身常常是合格的，卻跟著換成空泛的「現在心裡在想些什麼
+                     呢？」。設 True 時，只要某次生成踩到的規則全部只跟收尾語
+                     有關（_CLOSING_TEXT_ONLY_CODES），就記下那次的問題；最後
+                     退回保底時只換收尾語，問題沿用記下的那句（先過一次禁忌
+                     話題檢查）。預設 False，維持原本行為。
         **generate_kwargs: 原封不動轉給 generate_fn 的參數
 
     Returns:
@@ -2046,6 +2103,8 @@ async def guarded_generate(
     # question 有關」，下一輪改呼叫 question_only_retry_fn 只重生 question，
     # 其餘欄位沿用這份鎖住的值；None 代表沒有鎖定，走原本整包重新生成。
     locked_fields: dict | None = None
+    # 見 keep_question_on_fallback 參數說明。
+    salvage_question = ""
     while attempt <= max_retry:
         call_kwargs = dict(generate_kwargs)
         # 見上方 retry_temperature 參數說明：只有從第2次呼叫起（attempt>0，
@@ -2375,6 +2434,13 @@ async def guarded_generate(
                 "（例如「今天聽你說了這麼多」），回憶裡的事請改用「那時候」「那年」"
                 "（例如把「今天的團圓飯」改成「那年的團圓飯」）。"
             ), False))
+        if result.get("closing_text") and closing_asks_future(result.get("question", "")):
+            logger.warning(f"[ResponseGuard] 收尾問題在問未來: {result.get('question')!r}")
+            violations.append(("closing_asks_future", (
+                f"上一次的問題「{result.get('question')}」在問以後、下一次要做什麼，但收尾問題"
+                "只能問長者現在聊完的感受，或回憶裡的事。這次請改問他想到那段回憶，現在"
+                "心裡的感覺。"
+            ), False))
         closing_elder_said = "\n".join(
             t for t in (
                 generate_kwargs.get("prior_rounds_transcript", ""),
@@ -2649,6 +2715,8 @@ async def guarded_generate(
         # 開頭2026-09-13稽核）。
         if violations:
             codes = [code for code, _, _ in violations]
+            if keep_question_on_fallback and all(c in _CLOSING_TEXT_ONLY_CODES for c in codes):
+                salvage_question = result.get("question", "")
             logger.warning(f"[ResponseGuard] 這次生成共踩到{len(violations)}條規則: {codes}，重新生成 (attempt={attempt})")
             # 只有全部踩到的規則都標記為 question-only safe，才能安全鎖住
             # 其餘欄位、下一輪只重生 question；任何一條不是，就解鎖整包
@@ -2728,6 +2796,8 @@ async def guarded_generate(
             )
             if claims_memory:
                 logger.warning(f"[ResponseGuard] {memory_check_label}疑似AI冒用第一人稱經歷: {memory_check_text!r}")
+                if keep_question_on_fallback:
+                    salvage_question = result.get("question", "")
                 retry_feedback = (
                     f"上一次的{memory_check_label}「{memory_check_text}」疑似把長者的經歷"
                     "講成AI自己的親身回憶、家人或童年/過去往事——AI在這段對話裡只是"
@@ -2742,6 +2812,13 @@ async def guarded_generate(
 
         return result
 
+    if salvage_question and not keyword_prescan(salvage_question, taboo_words or []) and not (
+        taboo_words and await llm_topic_check(salvage_question, taboo_words, llm_service)
+    ):
+        logger.error(
+            f"[ResponseGuard] 重試{max_retry}次收尾語仍違規，收尾語退回保底，問題沿用: {salvage_question!r}"
+        )
+        return {**fallback, "question": salvage_question}
     logger.error(f"[ResponseGuard] 重試{max_retry}次仍違規，退回安全保底語句")
     return fallback
 

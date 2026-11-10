@@ -127,7 +127,7 @@ from services.rag_client import RealRAGClient
 from services.user_profile_db import DBUserProfileClient
 from services.audio_bank import q1_invitation_key, five_w1h_key
 from privacy.deidentifier import Deidentifier
-from safety.response_guard import guarded_generate, normalize_anchor
+from safety.response_guard import guarded_generate, normalize_anchor, repair_closing_tag_question
 from safety.element_filter import filter_scene_elements
 
 # 5W1H 涵蓋清單（Why 條件式使用、優先序最低）。補問時不是永遠照這個順序
@@ -1688,7 +1688,12 @@ def _backstop_what_copula(dimension: str | None, question_text: str) -> str | No
 #   跟 When／Where／Why 自己的詞組疊在一起。
 _W_DIMENSION_MARKERS = {
     "Where": re.compile(r"哪裡|哪兒|哪個地方|什麼地方|在哪"),
-    "Who":   re.compile(r"誰|哪位|哪個人"),
+    # 2026-11-06（做料理實測）：「你通常是自己吃這些，還是有家人朋友會一起來吃呢？」
+    # 明明在問誰，字面沒有「誰」被判成問偏，換成固定的「還有誰跟你在一起呢？」。
+    "Who":   re.compile(
+        r"誰|哪位|哪個人|(?:自己|一個人)[^？?]{0,20}還是[^？?]{0,10}"
+        r"(?:家人|朋友|同學|同事|鄰居|親戚|兄弟|姊妹|其他人|別人|大家|一起)"
+    ),
     "What":  re.compile(r"是什麼|什麼事|什麼東西|發生什麼事"),
     "When":  re.compile(r"什麼時候|幾點|哪一年|幾歲"),
     "How":   re.compile(r"怎麼|如何|怎樣"),
@@ -2417,9 +2422,17 @@ class TherapyOrchestrator:
             # 重試時，預設temperature下常常幾乎每次輸出同一句話，拉高重試
             # 溫度能有效跳脫。
             retry_temperature=0.9,
+            # 收尾語連續被擋時，問題本身多半是合格的，只換掉收尾語（見參數說明）。
+            keep_question_on_fallback=True,
             user=user, elder_response=last_elder_response, emotion=emotion,
             prior_rounds_transcript=prior_rounds_transcript,
         )
+        # 2026-11-06：guard 裡已經會拿掉句尾的「吧」，但實測同一份程式碼有時拿掉、
+        # 有時沒有，原因還沒查出來（同一句話直接進 guard 都會拿掉）。送出前再補一次。
+        repaired_closing = repair_closing_tag_question(closing["closing_text"])
+        if repaired_closing is not None:
+            print(f"  → 收尾語送出前拿掉句尾附和語: {closing['closing_text']!r}")
+            closing = {**closing, "closing_text": repaired_closing}
 
         state = {
             "user_id": user_id,
@@ -5443,8 +5456,12 @@ class TherapyOrchestrator:
         pre_image_str = pre_image_detail or "無"
         question_direction_str = _STEP1_OPEN_DIRECTION_HINT
 
+        # 2026-11-06（真實療程，session 2791）：這裡原本沒放今日主題，主題「做料理」、
+        # 長者說「下午放學回家之後」自己煮，問題卻變成「你們下午放學後都做些什麼
+        # 呢？」——丟掉了料理這件事本身，還自己加了長者沒提過的「你們」。
         user_content = (
-            f"【眼前畫面元素】\n{elements_str}\n"
+            f"【今日主題】\n{user['today_topic']}\n"
+            f"\n【眼前畫面元素】\n{elements_str}\n"
             f"{_composition_section(scene_composition)}"
             f"\n【長者生圖前分享的內容】\n{pre_image_str}\n"
             f"\n【已涵蓋的W維度】\n{covered_str}\n"
@@ -5458,6 +5475,10 @@ class TherapyOrchestrator:
             # 什麼，模型不會自己推論出「不要再問」。
             f"【已涵蓋的W維度】是長者已經回答過的角度，不要再問同一個角度"
             f"（例如已涵蓋 Where 就不要再問在哪裡），改從還沒聊到的角度切入。\n"
+            f"【長者生圖前分享的內容】是長者在回答關於「{user['today_topic']}」的問題，"
+            f"裡面提到的時間、地點，指的就是長者{user['today_topic']}的時間、地點——"
+            f"問題的主軸要放在{user['today_topic']}上，不要問那段時間還做了別的什麼；"
+            f"長者沒提過一起的人，就不要用「你們」。\n"
             f"{_retry_feedback_section(retry_feedback)}"
             f"\n【輸出格式】\n"
             f"問題：（≤25字，開放式，開頭要有具體錨點，畫面物件或長者生圖前分享的"
